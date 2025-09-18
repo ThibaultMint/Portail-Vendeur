@@ -1,0 +1,621 @@
+/* ==========================
+   Reset & base
+========================== */
+body, html, #root {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  font-family: 'Inter', Arial, sans-serif;
+  background: #f9fafb;
+  color: #111827;
+}
+
+.app-container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+/* ==========================
+   Header
+========================== */
+.header-fixed {
+  background: #ffffff;
+  border-bottom: 1px solid #e5e7eb;
+  padding: 10px 20px;
+  position: sticky;
+  top: 0;
+  z-index: 100;
+}
+
+.header-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.header-left img {
+  height: 50px;
+}
+
+.header-center h1 {
+  margin: 0;
+  font-size: 1.6rem;
+  font-weight: 700;
+  color: #2c3e50;
+  text-align: center;
+}
+
+.header-right p {
+  margin: 0;
+  font-size: 0.95rem;
+  color: #374151;
+}
+
+/* ==========================
+   Filtres
+========================== */
+.filters {
+  margin-top: 10px;
+  padding: 10px 0;
+  border-top: 1px solid #e5e7eb;
+  border-bottom: 1px solid #e5e7eb;
+  background: #fdfdfd;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+}
+
+.filter-block {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 160px;
+}
+
+.filter-block label {
+  font-size: 0.85rem;
+  color: #374151;
+  line-height: 1.2;
+  height: 18px; /* réserve d’espace */
+}
+
+.filter-block input,
+.filter-block select,
+.filter-block button {
+  height: 32px;
+  padding: 4px 8px;
+  font-size: 0.9rem;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  background: white;
+  cursor: pointer;
+}
+
+/* Bouton filtres avancés */
+.advanced-btn {
+  background: #2ca76a;
+  color: white;
+  border: none;
+  transition: background 0.2s;
+}
+.advanced-btn:hover {
+  background: #238a55;
+}
+
+/* ===== Slider prix aligné comme un input classique ===== */
+.range-slider {
+  position: relative;
+  width: 180px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+}
+
+.range-label {
+  position: absolute;
+  top: -16px;
+  transform: translateX(-50%);
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: #374151;
+  white-space: nowrap;
+}
+
+.range-slider::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 0; right: 0;
+  height: 3px;
+  background: #e5e7eb;
+  border-radius: 2px;
+  transform: translateY(-50%);
+  z-index: 0;
+}
+
+.range-slider .range-track {
+  position: absolute;
+  top: 50%;
+  height: 3px;
+  background: #2ca76a;
+  border-radius: 2px;
+  transform: translateY(-50%);
+  z-index: 1;
+}
+
+.range-slider input[type="range"] {
+  position: absolute;
+  width: 100%;
+  top: 0; bottom: 0;
+  margin: auto;
+  -webkit-appearance: none;
+  background: none;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.range-slider input[type="range"]::-webkit-slider-thumb {
+  pointer-events: all;
+  -webkit-appearance: none;
+  height: 14px; width: 14px;
+  border-radius: 50%;
+  background: #2ca76a;
+  border: 2px solid #fff;
+  box-shadow: 0 0 2px rgba(0,0,0,0.3);
+  cursor: pointer;
+}
+.range-slider input[type="range"]::-moz-range-thumb {
+  pointer-events: all;
+  height: 14px; width: 14px;
+  border-radius: 50%;
+  background: #2ca76a;
+  border: 2px solid #fff;
+  box-shadow: 0 0 2px rgba(0,0,0,0.3);
+  cursor: pointer;
+}
+
+/* Vue grille/liste */
+.view-buttons {
+  display: flex;
+  gap: 4px;
+}
+.view-buttons button {
+  flex: 1;
+  height: 32px;
+  border: 1px solid #d1d5db;
+  background: white;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.view-buttons button.active {
+  background: #2ca76a;
+  color: white;
+  border-color: #2ca76a;
+}
+
+/* Sélecteur de tri */
+.sort-row {
+  display: flex;
+  gap: 4px;
+}
+.sort-row select {
+  flex: 1;
+  height: 32px;
+}
+.sort-row button {
+  width: 32px;
+  height: 32px;
+}
+
+/* ==========================
+   Actions rapides
+========================== */
+.actions {
+  padding: 10px 0;
+  border-bottom: 1px solid #e5e7eb;
+  background: #fdfdfd;
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.icon-btn {
+  background: #2ca76a;
+  color: #fff;
+  border: none;
+  padding: 8px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+.icon-btn:disabled {
+  background: #9ca3af;
+  cursor: not-allowed;
+}
+.icon-btn:hover:not(:disabled) {
+  background: #21915a;
+}
+
+/* ==========================
+   Content
+========================== */
+.content-scroll {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px;
+}
+
+/* ==========================
+   Vue grille
+========================== */
+.grid-container {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 16px;
+}
+
+.velo-card {
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 12px;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.05);
+  cursor: pointer;
+  transition: transform 0.2s, box-shadow 0.2s;
+  text-align: center;
+  position: relative;
+}
+
+.velo-card:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 4px 10px rgba(0,0,0,0.1);
+}
+
+.velo-card.selected {
+  border: 2px solid #2ca76a;
+}
+
+.title {
+  min-height: 48px;
+  font-size: 1rem;
+  margin-bottom: 8px;
+  line-height: 1.2em;
+  text-align: center;
+}
+
+.image-wrapper {
+  position: relative;
+  width: 100%;
+}
+
+.velo-image {
+  width: 100%;
+  height: 160px;
+  object-fit: contain;
+  margin-bottom: 8px;
+  border-radius: 6px;
+}
+
+/* Wishlist cœur dans l’image */
+.wishlist-icon {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  font-size: 22px;
+  color: transparent;
+  cursor: pointer;
+  transition: color 0.2s, transform 0.2s;
+  opacity: 0;
+}
+.image-wrapper:hover .wishlist-icon {
+  opacity: 1;
+  color: rgba(0, 0, 0, 0.25);
+}
+.wishlist-icon:hover {
+  transform: scale(1.2);
+}
+.wishlist-icon.selected {
+  color: #e74c3c !important;
+  opacity: 1;
+}
+
+/* Prix */
+.price-box {
+  margin: 8px 0;
+}
+.new-price {
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: #111827;
+}
+.old-price {
+  text-decoration: line-through;
+  margin-right: 6px;
+}
+.discount {
+  background: #e74c3c;
+  color: #fff;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 0.8rem;
+}
+
+/* ==========================
+   Vue liste
+========================== */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+}
+th, td {
+  padding: 8px 10px;
+  border-bottom: 1px solid #e5e7eb;
+  text-align: left;
+  font-size: 0.9rem;
+}
+th {
+  background: #f3f4f6;
+  font-weight: 600;
+}
+
+/* ==========================
+   Side panel
+========================== */
+.overlay {
+  position: fixed;
+  top: 0; left: 0;
+  width: 100%; height: 100%;
+  background: rgba(0,0,0,0.5);
+  z-index: 999;
+}
+
+.side-panel {
+  position: fixed;
+  top: 0; right: -100%;
+  width: 400px; height: 100%;
+  background: #fff;
+  box-shadow: -2px 0 8px rgba(0,0,0,0.2);
+  padding: 20px;
+  overflow-y: auto;
+  transition: right 0.3s ease;
+  z-index: 1000;
+}
+.side-panel.open { right: 0; }
+
+.close-btn {
+  position: absolute;
+  top: 10px; right: 10px;
+  border: none;
+  background: #e74c3c;
+  color: #fff;
+  font-weight: bold;
+  border-radius: 50%;
+  width: 28px; height: 28px;
+  cursor: pointer;
+}
+
+/* Galerie dans panneau */
+.gallery {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.side-panel-image {
+  width: 100px;
+  height: 80px;
+  object-fit: cover;
+  border-radius: 6px;
+  border: 1px solid #e5e7eb;
+}
+
+/* Détails */
+.details-grid {
+  margin-top: 20px;
+}
+.detail-group {
+  margin-bottom: 20px;
+  border-radius: 8px;
+  background: #f0fdf4;
+  padding: 10px;
+}
+.detail-group h3 {
+  background: #a7d7c5;
+  padding: 6px 10px;
+  margin: -10px -10px 10px -10px;
+  border-radius: 8px 8px 0 0;
+  font-size: 1rem;
+  color: #111827;
+}
+.detail-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+.detail-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid #e5e7eb;
+}
+.detail-table tr:nth-child(even) {
+  background: #f9fafb;
+}
+
+/* ==========================
+   Modals (Preview & Compare)
+========================== */
+.modal-preview {
+  position: fixed;
+  top: 50%; left: 50%;
+  transform: translate(-50%, -50%);
+  background: #fff;
+  padding: 20px;
+  width: 90%; max-width: 900px;
+  max-height: 80vh;
+  overflow-y: auto;
+  border-radius: 10px;
+  box-shadow: 0 6px 20px rgba(0,0,0,0.25);
+  z-index: 1000;
+}
+.modal-preview h2 { margin-top: 0; }
+
+.compare-table {
+  width: 100%;
+  border-collapse: collapse;
+  background: #fff;
+}
+.compare-table th,
+.compare-table td {
+  padding: 8px;
+  border: 1px solid #e5e7eb;
+  text-align: center;
+}
+.compare-table th {
+  background: #f3f4f6;
+}
+
+/* ==========================
+   Filtres avancés (drawer)
+========================== */
+.advanced-filters-drawer {
+  position: fixed;
+  top: 0; right: -100%;
+  width: 500px; height: 100%;
+  background: #fff;
+  box-shadow: -2px 0 8px rgba(0,0,0,0.2);
+  padding: 20px;
+  overflow-y: auto;
+  transition: right 0.3s ease;
+  z-index: 1000;
+}
+.advanced-filters-drawer.open { right: 0; }
+
+.advanced-group {
+  margin-bottom: 20px;
+}
+.advanced-group h3 {
+  font-size: 1rem;
+  margin-bottom: 10px;
+  border-bottom: 1px solid #e5e7eb;
+  padding-bottom: 4px;
+}
+.advanced-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+}
+.filter-adv-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.filter-adv-item input {
+  padding: 6px 8px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  font-size: 0.85rem;
+}
+
+/* Galerie avancée */
+.gallery-advanced { margin-bottom: 15px; }
+.gallery-main { position: relative; text-align: center; }
+.gallery-main-img {
+  max-width: 100%; max-height: 300px;
+  border-radius: 8px;
+  border: 1px solid #ddd;
+  object-fit: contain;
+}
+.nav-btn {
+  position: absolute;
+  top: 50%; transform: translateY(-50%);
+  background: rgba(0,0,0,0.4);
+  color: #fff;
+  border: none;
+  font-size: 2rem;
+  padding: 4px 10px;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: background 0.2s;
+  z-index: 2;
+}
+.nav-btn:hover { background: rgba(0,0,0,0.6); }
+.nav-btn.left { left: 5px; }
+.nav-btn.right { right: 5px; }
+.gallery-thumbs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+  justify-content: center;
+}
+.gallery-thumb {
+  width: 60px; height: 50px;
+  object-fit: cover;
+  border-radius: 4px;
+  border: 2px solid transparent;
+  cursor: pointer;
+  transition: border 0.2s;
+}
+.gallery-thumb.active {
+  border: 2px solid #2ca76a;
+}
+
+/* Prix + bouton dans panneau */
+.price-and-link {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 12px 0;
+}
+.price-and-link .btn-link {
+  background: #2ca76a;
+  color: #fff;
+  padding: 8px 14px;
+  border-radius: 6px;
+  font-weight: 600;
+  text-decoration: none;
+  transition: background 0.2s;
+}
+.price-and-link .btn-link:hover { background: #21915a; }
+
+.filters {
+  display: flex;
+  justify-content: space-between; /* filtres à gauche, tri/vue à droite */
+  align-items: flex-end;
+  gap: 16px;
+  padding: 10px 0;
+  border-top: 1px solid #e5e7eb;
+  border-bottom: 1px solid #e5e7eb;
+  background: #fdfdfd;
+}
+
+.filters-left,
+.filters-right {
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+}
+
+.filter-block {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 140px;
+}
+
+.filter-block input,
+.filter-block select,
+.filter-block button {
+  height: 32px;
+  padding: 4px 8px;
+  font-size: 0.9rem;
+  border: 1px solid #d1d5db;
+  border-radius: 4px;
+  background: white;
+  cursor: pointer;
+}
+
+
