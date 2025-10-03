@@ -1,19 +1,21 @@
 /* ==========================
    Reset & base
 ========================== */
-body, html, #root {
+html, body, #root {
   margin: 0;
   padding: 0;
   height: 100%;
   font-family: 'Inter', Arial, sans-serif;
   background: #f9fafb;
   color: #111827;
+  overflow: hidden; /* 🚫 désactive le scroll global */
 }
 
 .app-container {
   display: flex;
   flex-direction: column;
   height: 100%;
+  background: var(--bg, #ffffff);
 }
 
 /* ==========================
@@ -56,15 +58,22 @@ body, html, #root {
    Filtres
 ========================== */
 .filters {
-  margin-top: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 20px;
   padding: 10px 0;
+  align-items: flex-end;
   border-top: 1px solid #e5e7eb;
   border-bottom: 1px solid #e5e7eb;
   background: #fdfdfd;
+}
+
+.filters-left,
+.filters-right {
   display: flex;
   flex-wrap: wrap;
+  gap: 16px;
   align-items: flex-end;
-  gap: 12px;
 }
 
 .filter-block {
@@ -78,7 +87,6 @@ body, html, #root {
   font-size: 0.85rem;
   color: #374151;
   line-height: 1.2;
-  height: 18px; /* réserve d’espace */
 }
 
 .filter-block input,
@@ -97,14 +105,17 @@ body, html, #root {
 .advanced-btn {
   background: #2ca76a;
   color: white;
+  padding: 6px 12px;
   border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.9em;
+  white-space: nowrap;
   transition: background 0.2s;
 }
-.advanced-btn:hover {
-  background: #238a55;
-}
+.advanced-btn:hover { background: #238a55; }
 
-/* ===== Slider prix aligné comme un input classique ===== */
+/* Range slider */
 .range-slider {
   position: relative;
   width: 180px;
@@ -112,7 +123,6 @@ body, html, #root {
   display: flex;
   align-items: center;
 }
-
 .range-label {
   position: absolute;
   top: -16px;
@@ -122,19 +132,15 @@ body, html, #root {
   color: #374151;
   white-space: nowrap;
 }
-
 .range-slider::before {
   content: "";
   position: absolute;
-  top: 50%;
-  left: 0; right: 0;
+  top: 50%; left: 0; right: 0;
   height: 3px;
   background: #e5e7eb;
   border-radius: 2px;
   transform: translateY(-50%);
-  z-index: 0;
 }
-
 .range-slider .range-track {
   position: absolute;
   top: 50%;
@@ -142,9 +148,7 @@ body, html, #root {
   background: #2ca76a;
   border-radius: 2px;
   transform: translateY(-50%);
-  z-index: 1;
 }
-
 .range-slider input[type="range"] {
   position: absolute;
   width: 100%;
@@ -153,10 +157,9 @@ body, html, #root {
   -webkit-appearance: none;
   background: none;
   pointer-events: none;
-  z-index: 2;
 }
-
-.range-slider input[type="range"]::-webkit-slider-thumb {
+.range-slider input[type="range"]::-webkit-slider-thumb,
+.range-slider input[type="range"]::-moz-range-thumb {
   pointer-events: all;
   -webkit-appearance: none;
   height: 14px; width: 14px;
@@ -166,21 +169,9 @@ body, html, #root {
   box-shadow: 0 0 2px rgba(0,0,0,0.3);
   cursor: pointer;
 }
-.range-slider input[type="range"]::-moz-range-thumb {
-  pointer-events: all;
-  height: 14px; width: 14px;
-  border-radius: 50%;
-  background: #2ca76a;
-  border: 2px solid #fff;
-  box-shadow: 0 0 2px rgba(0,0,0,0.3);
-  cursor: pointer;
-}
 
-/* Vue grille/liste */
-.view-buttons {
-  display: flex;
-  gap: 4px;
-}
+/* Vue grille/liste & tri */
+.view-buttons { display: flex; gap: 4px; }
 .view-buttons button {
   flex: 1;
   height: 32px;
@@ -194,20 +185,9 @@ body, html, #root {
   color: white;
   border-color: #2ca76a;
 }
-
-/* Sélecteur de tri */
-.sort-row {
-  display: flex;
-  gap: 4px;
-}
-.sort-row select {
-  flex: 1;
-  height: 32px;
-}
-.sort-row button {
-  width: 32px;
-  height: 32px;
-}
+.sort-row { display: flex; gap: 4px; }
+.sort-row select { flex: 1; height: 32px; }
+.sort-row button { width: 32px; height: 32px; }
 
 /* ==========================
    Actions rapides
@@ -220,7 +200,6 @@ body, html, #root {
   gap: 10px;
   align-items: center;
 }
-
 .icon-btn {
   background: #2ca76a;
   color: #fff;
@@ -230,22 +209,25 @@ body, html, #root {
   cursor: pointer;
   transition: background 0.2s;
 }
-.icon-btn:disabled {
-  background: #9ca3af;
-  cursor: not-allowed;
-}
-.icon-btn:hover:not(:disabled) {
-  background: #21915a;
-}
+.icon-btn:disabled { background: #9ca3af; cursor: not-allowed; }
+.icon-btn:hover:not(:disabled) { background: #21915a; }
 
 /* ==========================
-   Content
+   Layout & content
 ========================== */
+.content-layout {
+  display: flex;
+  flex: 1;
+  height: 100%;
+}
 .content-scroll {
   flex: 1;
   overflow-y: auto;
   padding: 20px;
+  min-height: 0;
+  transition: flex 0.3s ease;
 }
+.content-layout.with-details .content-scroll { flex: 2; }
 
 /* ==========================
    Vue grille
@@ -255,7 +237,6 @@ body, html, #root {
   grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
   gap: 16px;
 }
-
 .velo-card {
   background: #fff;
   border: 1px solid #e5e7eb;
@@ -267,76 +248,45 @@ body, html, #root {
   text-align: center;
   position: relative;
 }
-
 .velo-card:hover {
   transform: translateY(-3px);
   box-shadow: 0 4px 10px rgba(0,0,0,0.1);
 }
-
 .velo-card.selected {
-  border: 2px solid #2ca76a;
+  border: 2px solid #2ca76a !important;
+  box-shadow: 0 0 8px rgba(44, 167, 106, 0.6) !important;
 }
-
-.title {
-  min-height: 48px;
-  font-size: 1rem;
-  margin-bottom: 8px;
-  line-height: 1.2em;
-  text-align: center;
+.dark .velo-card.selected {
+  box-shadow: 0 0 12px rgba(44, 167, 106, 0.8) !important;
 }
+.title { min-height: 48px; font-size: 1rem; margin-bottom: 8px; line-height: 1.2em; }
 
-.image-wrapper {
-  position: relative;
-  width: 100%;
-}
-
+/* Image & wishlist */
+.image-wrapper { position: relative; width: 100%; }
 .velo-image {
-  width: 100%;
-  height: 160px;
+  width: 100%; height: 160px;
   object-fit: contain;
   margin-bottom: 8px;
   border-radius: 6px;
 }
-
-/* Wishlist cœur dans l’image */
 .wishlist-icon {
   position: absolute;
-  top: 8px;
-  right: 8px;
+  top: 8px; right: 8px;
   font-size: 22px;
-  color: transparent;
   cursor: pointer;
   transition: color 0.2s, transform 0.2s;
   opacity: 0;
 }
-.image-wrapper:hover .wishlist-icon {
-  opacity: 1;
-  color: rgba(0, 0, 0, 0.25);
-}
-.wishlist-icon:hover {
-  transform: scale(1.2);
-}
-.wishlist-icon.selected {
-  color: #e74c3c !important;
-  opacity: 1;
-}
+.image-wrapper:hover .wishlist-icon { opacity: 1; color: rgba(0,0,0,0.25); }
+.wishlist-icon:hover { transform: scale(1.2); }
+.wishlist-icon.selected { color: #e74c3c !important; opacity: 1; }
 
 /* Prix */
-.price-box {
-  margin: 8px 0;
-}
-.new-price {
-  font-size: 1.1rem;
-  font-weight: 700;
-  color: #111827;
-}
-.old-price {
-  text-decoration: line-through;
-  margin-right: 6px;
-}
+.price-box { margin: 8px 0; }
+.new-price { font-size: 1.1rem; font-weight: 700; }
+.old-price { text-decoration: line-through; margin-right: 6px; }
 .discount {
-  background: #e74c3c;
-  color: #fff;
+  background: #e74c3c; color: #fff;
   padding: 2px 6px;
   border-radius: 4px;
   font-size: 0.8rem;
@@ -357,35 +307,86 @@ th, td {
   text-align: left;
   font-size: 0.9rem;
 }
-th {
-  background: #f3f4f6;
-  font-weight: 600;
-}
+th { background: #f3f4f6; font-weight: 600; }
+table tbody tr:nth-child(odd) { background: #f9f9f9; }
+table tbody tr:nth-child(even) { background: #ffffff; }
+table tbody tr td { padding: 6px 10px; }
 
 /* ==========================
-   Side panel
+   Side panels & overlays
 ========================== */
 .overlay {
   position: fixed;
   top: 0; left: 0;
   width: 100%; height: 100%;
-  background: rgba(0,0,0,0.5);
-  z-index: 999;
+  background: rgba(0,0,0,0.4);
+  z-index: 900;
 }
-
-.side-panel {
+.side-panel, .advanced-filters-drawer, .side-panel-velo {
   position: fixed;
-  top: 0; right: -100%;
-  width: 400px; height: 100%;
+  top: 0;
+  right: -100%;
+  height: 100%;
   background: #fff;
   box-shadow: -2px 0 8px rgba(0,0,0,0.2);
   padding: 20px;
   overflow-y: auto;
   transition: right 0.3s ease;
-  z-index: 1000;
 }
-.side-panel.open { right: 0; }
+.velo-detail-img {
+  width: 100%;
+  max-height: 250px;
+  object-fit: contain;
+  margin-bottom: 12px;
+  border-radius: 6px;
+  border: 1px solid #ddd;
+}
 
+.side-panel.open,
+.advanced-filters-drawer.open,
+.side-panel-velo.open { right: 0; }
+.side-panel { width: 400px; z-index: 1000; }
+.advanced-filters-drawer { width: 500px; z-index: 1000; }
+.side-panel-velo { width: 500px; z-index: 1000; }
+
+/* ==========================
+   Modales
+========================== */
+.modal-preview,
+.alerts-modal,
+.modal-gallery {
+  position: fixed;
+  top: 50%; left: 50%;
+  transform: translate(-50%, -50%);
+  background: #fff;
+  border-radius: 10px;
+  box-shadow: 0 6px 20px rgba(0,0,0,0.25);
+  z-index: 1100;
+}
+.modal-preview {
+  padding: 20px;
+  width: 90%;
+  max-width: 900px;
+  max-height: 80vh;
+  overflow-y: auto;
+}
+.alerts-modal {
+  width: 90%; height: 90%;
+  padding: 20px;
+  border-radius: 12px;
+}
+.modal-gallery {
+  width: 90%; max-width: 1000px;
+  height: 80%;
+  background: #000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.modal-gallery-img { max-width: 100%; max-height: 100%; object-fit: contain; }
+
+
+/* Boutons dans modales */
 .close-btn {
   position: absolute;
   top: 10px; right: 10px;
@@ -398,139 +399,427 @@ th {
   cursor: pointer;
 }
 
-/* Galerie dans panneau */
-.gallery {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-bottom: 10px;
-}
-.side-panel-image {
-  width: 100px;
-  height: 80px;
-  object-fit: cover;
-  border-radius: 6px;
-  border: 1px solid #e5e7eb;
-}
-
-/* Détails */
-.details-grid {
-  margin-top: 20px;
-}
-.detail-group {
-  margin-bottom: 20px;
-  border-radius: 8px;
-  background: #f0fdf4;
-  padding: 10px;
-}
-.detail-group h3 {
-  background: #a7d7c5;
-  padding: 6px 10px;
-  margin: -10px -10px 10px -10px;
-  border-radius: 8px 8px 0 0;
-  font-size: 1rem;
-  color: #111827;
-}
-.detail-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 0.9rem;
-}
-.detail-table td {
-  padding: 6px 8px;
-  border-bottom: 1px solid #e5e7eb;
-}
-.detail-table tr:nth-child(even) {
-  background: #f9fafb;
-}
+/* ==========================
+   Dark mode
+========================== */
+.app-container.dark { background: #0b1220; color: #e5e7eb; }
+/* ... 👉 toutes tes règles dark restent identiques, mais sans doublons inutiles ... */
 
 /* ==========================
-   Modals (Preview & Compare)
+   DARK MODE
+   S'applique quand .app-container a la classe .dark
 ========================== */
-.modal-preview {
-  position: fixed;
-  top: 50%; left: 50%;
-  transform: translate(-50%, -50%);
-  background: #fff;
-  padding: 20px;
-  width: 90%; max-width: 900px;
+.app-container.dark {
+  background: #0b1220; /* fond global */
+  color: #e5e7eb;      /* texte global */
+}
+
+/* Header */
+.dark .header-fixed {
+  background: #0f172a;
+  border-bottom: 1px solid #1f2937;
+}
+.dark .header-center h1,
+.dark .header-right p {
+  color: #e5e7eb;
+}
+.dark .user-menu {
+  background: #0f172a !important;
+  border-color: #1f2937 !important;
+  color: #e5e7eb !important;
+}
+
+/* Bouton toggle */
+.theme-toggle {
+  margin-left: 10px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid #cbd5e1;
+  background: #ffffff;
+  cursor: pointer;
+}
+.app-container.dark .theme-toggle {
+  border-color: #334155;
+  background: #1e293b;
+  color: #e5e7eb;
+}
+
+/* Barre de filtres */
+.dark .filters {
+  background: #0f172a;
+  border-top-color: #1f2937;
+  border-bottom-color: #1f2937;
+}
+.dark .filter-block label {
+  color: #cbd5e1;
+}
+.dark .filter-block input,
+.dark .filter-block select,
+.dark .filter-block button {
+  background: #0b1220;
+  color: #e5e7eb;
+  border: 1px solid #334155;
+}
+.dark .advanced-btn {
+  background: #22c55e;
+  color: #0b1220;
+}
+
+/* Range slider */
+.dark .range-slider::before {
+  background: #334155;
+}
+.dark .range-slider .range-track {
+  background: #22c55e;
+}
+.dark .range-slider input[type="range"]::-webkit-slider-thumb {
+  background: #22c55e;
+  border-color: #0b1220;
+}
+.dark .range-label {
+  color: #cbd5e1;
+}
+
+/* Actions */
+.dark .actions {
+  background: #0f172a;
+  border-bottom: 1px solid #1f2937;
+}
+.dark .icon-btn {
+  background: #22c55e;
+  color: #0b1220;
+  border: 1px solid transparent;
+}
+.dark .icon-btn:disabled {
+  background: #475569;
+  color: #cbd5e1;
+}
+
+/* Liste / Grille */
+.dark .velo-card {
+  background: #0f172a;
+  border-color: #1f2937;
+  color: #e5e7eb;
+}
+.dark .title { color: #e5e7eb; }
+
+/* Tableau (vue liste & tableaux divers) */
+.dark table {
+  background: #0f172a;
+  border-color: #1f2937;
+  color: #e5e7eb;
+}
+.dark th {
+  background: #111827;
+  color: #e5e7eb;
+}
+.dark td, .dark th {
+  border-bottom: 1px solid #1f2937;
+}
+
+/* Colonne de détails */
+.dark .velo-details {
+  background: #0f172a;
+  border-left: 1px solid #1f2937;
+  color: #e5e7eb;
+}
+.dark .detail-group {
+  background: #111827;
+}
+.dark .detail-group h3 {
+  background: #1f2937;
+  color: #e5e7eb;
+}
+.dark .detail-table tr:nth-child(even) {
+  background: #0b1220;
+}
+
+/* Modales & drawers */
+.dark .modal-preview,
+.dark .alerts-modal,
+.dark .advanced-filters-drawer,
+.dark .modal-gallery {
+  background: #0f172a;
+  color: #e5e7eb;
+  border: 1px solid #1f2937;
+}
+
+/* Liens / boutons verts */
+.dark .btn-link {
+  background: #22c55e;
+  color: #0b1220;
+}
+
+/* Prix */
+.dark .new-price { color: #e5e7eb; }
+.dark .old-price { color: #f87171; } /* rouge doux */
+.dark .discount { background: #ef4444; color: #fff; }
+
+/* Texte des infos secondaires (année, taille, km) en blanc en mode sombre */
+.dark .velo-card div[style*="color: #555"] {
+  color: #ffffff !important;
+}
+.dark .user-menu button {
+  color: #e5e7eb !important;
+}
+/* Désactive le mode sombre uniquement pour la prévisualisation du mail */
+.dark .email-preview-content {
+  background: #F9FAFB !important;
+  color: #111 !important;
+}
+
+.dark .email-preview-content * {
+  background: inherit !important;
+  color: inherit !important;
+}
+/* Style de base (clair) */
+.infos-secondaires {
+  font-size: 0.9em;
+  color: #555;
+}
+
+/* En mode sombre → texte en blanc */
+.dark .infos-secondaires {
+  color: #fff;
+}
+/* Empêche le mode sombre de toucher à l’aperçu email */
+.email-preview-light {
+  all: revert;          /* annule héritage global */
+  background: #F9FAFB;  /* couleur claire forcée */
+  color: #111827;       /* texte noir */
+  border: 1px solid #ddd;
+  padding: 10px;
+  margin-bottom: 10px;
+}
+
+/* Important : neutraliser aussi si .dark est actif */
+.dark .email-preview-light {
+  all: revert;
+  background: #F9FAFB;
+  color: #111827;
+  border: 1px solid #ddd;
+}
+/* Lignes de catégories du comparateur en sombre */
+.dark .compare-table tr td[colspan] {
+  background: #1f2937 !important; /* gris foncé */
+  color: #e5e7eb !important;      /* texte gris clair */
+}
+/* Vue liste - alternance lignes */
+table tbody tr:nth-child(odd) {
+  background: #f9f9f9; /* clair */
+}
+
+table tbody tr:nth-child(even) {
+  background: #ffffff; /* clair */
+}
+
+/* Mode sombre */
+.dark table tbody tr:nth-child(odd) {
+  background: #1e293b; /* bleu-gris foncé */
+}
+
+.dark table tbody tr:nth-child(even) {
+  background: #0f172a; /* encore plus foncé */
+}
+
+/* Un peu d’espace pour respirer */
+table tbody tr td {
+  padding: 6px 10px;
+}
+/* ==========================
+   Comparateur - lisibilité
+========================== */
+
+/* Catégories : centrées et bien visibles */
+.compare-table tbody tr td:first-child {
+  background: #f4f4f4;
+  font-weight: bold;
+  text-align: center;
+}
+.dark .compare-table tbody tr td:first-child {
+  background: #334155;
+  color: #f9fafb;
+}
+
+/* Colonnes vélos différenciées (s'étendent sur toute la colonne) */
+.compare-table th:nth-child(2),
+.compare-table td:nth-child(2) {
+  background: #fff7ed; /* orange pastel clair */
+}
+.compare-table th:nth-child(3),
+.compare-table td:nth-child(3) {
+  background: #f0f9ff; /* bleu pastel clair */
+}
+.compare-table th:nth-child(4),
+.compare-table td:nth-child(4) {
+  background: #f5fdf4; /* vert pastel clair */
+}
+.compare-table th:nth-child(5),
+.compare-table td:nth-child(5) {
+  background: #fdf2f8; /* rose pastel clair */
+}
+
+/* Mode sombre : variantes plus foncées */
+.dark .compare-table th:nth-child(2),
+.dark .compare-table td:nth-child(2) {
+  background: #3b2f2f;
+}
+.dark .compare-table th:nth-child(3),
+.dark .compare-table td:nth-child(3) {
+  background: #1e3a5f;
+}
+.dark .compare-table th:nth-child(4),
+.dark .compare-table td:nth-child(4) {
+  background: #1d3d2d;
+}
+.dark .compare-table th:nth-child(5),
+.dark .compare-table td:nth-child(5) {
+  background: #4a2f4a;
+}
+
+/* Lignes alternées très légères pour la lisibilité (par-dessus les couleurs) */
+.compare-table tbody tr:nth-child(odd) td {
+  opacity: 0.98;
+}
+.compare-table tbody tr:nth-child(even) td {
+  opacity: 0.92;
+}
+/* Prix dans le comparateur */
+.compare-table th div.price-highlight {
+  color: #e53935;      /* rouge vif */
+  font-weight: bold;   /* gras */
+  font-size: 1.1em;    /* légèrement plus grand */
+}
+.dark .compare-table th div.price-highlight {
+  color: #ff6b6b;      /* rouge vif adapté au sombre */
+}
+/* Masquer la scrollbar dans l’aperçu du mail */
+#email-preview-content {
+  scrollbar-width: none; /* Firefox */
+  -ms-overflow-style: none; /* IE/Edge */
+}
+
+#email-preview-content::-webkit-scrollbar {
+  display: none; /* Chrome, Safari */
+}
+/* Carte vélo sélectionnée */
+.velo-card.selected {
+  border: 2px solid #2ca76a !important;
+  box-shadow: 0 0 8px rgba(44, 167, 106, 0.6) !important;
+}
+
+/* Mode sombre : forcer la bordure verte bien visible */
+.dark .velo-card.selected {
+  border: 2px solid #2ca76a !important;
+  box-shadow: 0 0 12px rgba(44, 167, 106, 0.8) !important;
+}
+.modal-preview h2 {
+  margin-bottom: 10px;
+  color: #2ca76a;
+}
+/* Modale Gemini - Mode sombre */
+.dark .gemini-response {
+  color: #000000; /* texte blanc */
+  background: #1e293b; /* fond plus sombre mais lisible */
+  border-color: #334155;
+}
+.compare-table-wrapper {
   max-height: 80vh;
   overflow-y: auto;
-  border-radius: 10px;
-  box-shadow: 0 6px 20px rgba(0,0,0,0.25);
-  z-index: 1000;
+  overflow-x: hidden; /* pas de scroll horizontal */
 }
-.modal-preview h2 { margin-top: 0; }
 
 .compare-table {
   width: 100%;
   border-collapse: collapse;
-  background: #fff;
 }
+
 .compare-table th,
 .compare-table td {
   padding: 8px;
-  border: 1px solid #e5e7eb;
+  border: 1px solid #444;
   text-align: center;
 }
-.compare-table th {
-  background: #f3f4f6;
+
+/* 👇 Ajuste automatiquement la largeur selon le nombre de colonnes */
+.compare-table.dynamic th,
+.compare-table.dynamic td {
+  width: auto;
 }
 
-/* ==========================
-   Filtres avancés (drawer)
-========================== */
-.advanced-filters-drawer {
-  position: fixed;
-  top: 0; right: -100%;
-  width: 500px; height: 100%;
+/* Fixe la ligne des vélos */
+.compare-table thead th {
+  position: sticky;
+  top: 0;
+  background: #f3f4f6;
+  z-index: 2;
+}
+
+.dark .compare-table thead th {
+  background: #1e293b;
+  color: #fff;
+  border-color: #555;
+}
+
+.dark .compare-table td {
+  border-color: #555;
+  color: #e5e7eb;
+}
+html, body {
+  height: 100%;
+  margin: 0;
+  overflow: hidden; /* 🚫 désactive le scroll global */
+  background: var(--bg, #111); /* 👈 pour éviter la bande blanche */
+}
+.modal-preview {
+  max-width: 95%;
+  max-height: none;     /* enlève la limite verticale */
+  height: auto;         /* prend la taille du contenu */
+  overflow-y: visible;  /* 🚫 enlève le scroll vertical */
+}
+/* Colonne de droite (fiche vélo) — on remet les limites */
+.velo-details {
+  flex: 1;                 /* prend 1/3 quand la liste est en 2/3 */
   background: #fff;
-  box-shadow: -2px 0 8px rgba(0,0,0,0.2);
+  border-left: 1px solid #ddd;
   padding: 20px;
   overflow-y: auto;
-  transition: right 0.3s ease;
-  z-index: 1000;
-}
-.advanced-filters-drawer.open { right: 0; }
-
-.advanced-group {
-  margin-bottom: 20px;
-}
-.advanced-group h3 {
-  font-size: 1rem;
-  margin-bottom: 10px;
-  border-bottom: 1px solid #e5e7eb;
-  padding-bottom: 4px;
-}
-.advanced-grid {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 8px;
-}
-.filter-adv-item {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-.filter-adv-item input {
-  padding: 6px 8px;
-  border: 1px solid #d1d5db;
-  border-radius: 6px;
-  font-size: 0.85rem;
+  max-width: 450px;        /* limite la largeur du panneau */
+  animation: slideIn 0.3s ease;
+  position: relative;
 }
 
-/* Galerie avancée */
-.gallery-advanced { margin-bottom: 15px; }
-.gallery-main { position: relative; text-align: center; }
+/* Animation d’ouverture (si elle a disparu chez toi) */
+@keyframes slideIn {
+  from { opacity: 0; transform: translateX(50px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+
+/* Image principale dans la fiche vélo :
+   on cible les DEUX classes possibles pour couvrir ton code */
+.velo-detail-img,
 .gallery-main-img {
-  max-width: 100%; max-height: 300px;
+  width: 100%;
+  height: auto;
+  max-height: 300px;       /* 👈 limite la hauteur */
+  object-fit: contain;     /* garde les proportions sans rogner */
   border-radius: 8px;
   border: 1px solid #ddd;
-  object-fit: contain;
+  display: block;
+  margin: 0 auto 12px;     /* centre l’image + espace bas */
 }
+
+/* Conteneur de l'image principale (utile pour les flèches) */
+.gallery-main {
+  position: relative;
+  text-align: center;
+}
+
+/* Boutons de navigation dans la galerie (gauche/droite) */
 .nav-btn {
   position: absolute;
-  top: 50%; transform: translateY(-50%);
+  top: 50%;
+  transform: translateY(-50%);
   background: rgba(0,0,0,0.4);
   color: #fff;
   border: none;
@@ -541,9 +830,11 @@ th {
   transition: background 0.2s;
   z-index: 2;
 }
-.nav-btn:hover { background: rgba(0,0,0,0.6); }
 .nav-btn.left { left: 5px; }
 .nav-btn.right { right: 5px; }
+.nav-btn:hover { background: rgba(0,0,0,0.6); }
+
+/* Bande de miniatures sous l'image principale */
 .gallery-thumbs {
   display: flex;
   flex-wrap: wrap;
@@ -552,7 +843,8 @@ th {
   justify-content: center;
 }
 .gallery-thumb {
-  width: 60px; height: 50px;
+  width: 60px;
+  height: 50px;
   object-fit: cover;
   border-radius: 4px;
   border: 2px solid transparent;
@@ -563,13 +855,19 @@ th {
   border: 2px solid #2ca76a;
 }
 
-/* Prix + bouton dans panneau */
+/* (Optionnel) Ajuste le fond en mode sombre pour la fiche */
+.app-container.dark .velo-details {
+  background: #0f172a;
+  border-left: 1px solid #1f2937;
+  color: #e5e7eb;
+}
 .price-and-link {
   display: flex;
   align-items: center;
   justify-content: space-between;
   margin: 12px 0;
 }
+
 .price-and-link .btn-link {
   background: #2ca76a;
   color: #fff;
@@ -579,43 +877,2673 @@ th {
   text-decoration: none;
   transition: background 0.2s;
 }
-.price-and-link .btn-link:hover { background: #21915a; }
 
-.filters {
-  display: flex;
-  justify-content: space-between; /* filtres à gauche, tri/vue à droite */
-  align-items: flex-end;
-  gap: 16px;
-  padding: 10px 0;
-  border-top: 1px solid #e5e7eb;
-  border-bottom: 1px solid #e5e7eb;
-  background: #fdfdfd;
+.price-and-link .btn-link:hover {
+  background: #21915a;
+}
+/* =========================================================
+   PATCH : Page entière pile à 100vh, sans scroll global
+   - La page ne scrolle pas
+   - Les colonnes gauche/droite scrollement
+   - Rien n’est coupé en bas
+========================================================= */
+
+/* Empêche le scroll global */
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  overflow: hidden; /* ❌ pas de scroll global */
 }
 
-.filters-left,
-.filters-right {
+/* Container principal occupe pile la hauteur de l’écran */
+.app-container {
+  height: 100vh;
   display: flex;
-  align-items: flex-end;
+  flex-direction: column;
+}
+
+/* Header prend sa place naturelle */
+.header-fixed {
+  flex: 0 0 auto;
+}
+
+/* Contenu principal occupe le reste */
+.content-layout {
+  flex: 1 1 auto;
+  height: 0;         /* 👈 évite que ça dépasse */
+  min-height: 0;     /* 👈 permet le scroll interne */
+  display: flex;
+}
+
+/* Colonne gauche (liste vélos) */
+.content-scroll {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-y: auto; /* ✅ scroll interne */
+}
+
+/* Colonne droite (fiche vélo) */
+.velo-details {
+  flex: 1;
+  max-width: 450px;
+  min-height: 0;
+  overflow-y: auto; /* ✅ scroll interne */
+  background: #fff;
+  border-left: 1px solid #ddd;
+  padding: 20px;
+  position: relative;
+}
+
+/* Quand fiche ouverte → ratio 2:1 */
+.content-layout.with-details .content-scroll {
+  flex: 2;
+}
+/* ==========================
+   Drawer Filtres Avancés
+========================== */
+.advanced-filters-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  width: 500px;
+  height: 100%;
+  background: #fff;
+  padding: 20px;
+  overflow-y: auto;
+  box-shadow: -2px 0 8px rgba(0,0,0,0.2);
+  z-index: 1000;
+  animation: slideInRight 0.3s ease;
+}
+
+@keyframes slideInRight {
+  from { right: -100%; opacity: 0; }
+  to { right: 0; opacity: 1; }
+}
+
+.advanced-filters-drawer h2 {
+  font-size: 1.4rem;
+  margin-bottom: 20px;
+  color: #2ca76a;
+}
+
+/* Groupes */
+.advanced-group {
+  margin-bottom: 25px;
+}
+
+.advanced-group h3 {
+  font-size: 1.1rem;
+  margin-bottom: 12px;
+  border-bottom: 1px solid #e5e7eb;
+  padding-bottom: 4px;
+  color: #374151;
+}
+
+/* Grille 2 colonnes */
+.advanced-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+
+/* Items de filtre */
+.filter-adv-item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.filter-adv-item label {
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: #374151;
+}
+
+/* Inputs texte / number */
+.filter-adv-item input[type="text"],
+.filter-adv-item input[type="number"] {
+  padding: 6px 8px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  font-size: 0.9rem;
+  width: 100%;
+  background: #fff;
+}
+
+/* Checkboxes */
+.checkbox-item label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.9rem;
+  color: #374151;
+}
+
+/* ==========================
+   Sliders (simples et doubles)
+========================== */
+.filter-adv-item input[type="range"] {
+  width: 100%;
+  cursor: pointer;
+}
+
+.range-slider {
+  position: relative;
+  width: 100%;
+  padding: 10px 0 20px;
+}
+
+.range-slider input[type="range"] {
+  position: absolute;
+  left: 0;
+  width: 100%;
+  pointer-events: none;
+  -webkit-appearance: none;
+  background: none;
+  height: 6px;
+}
+
+.range-slider input[type="range"]::-webkit-slider-thumb {
+  pointer-events: all;
+  -webkit-appearance: none;
+  height: 16px;
+  width: 16px;
+  border-radius: 50%;
+  background: #2ca76a;
+  border: 2px solid #fff;
+  cursor: pointer;
+  box-shadow: 0 0 2px rgba(0,0,0,0.4);
+}
+
+.range-slider input[type="range"]::-moz-range-thumb {
+  pointer-events: all;
+  height: 16px;
+  width: 16px;
+  border-radius: 50%;
+  background: #2ca76a;
+  border: 2px solid #fff;
+  cursor: pointer;
+  box-shadow: 0 0 2px rgba(0,0,0,0.4);
+}
+
+/* Barre de fond */
+.range-slider::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 0;
+  right: 0;
+  height: 4px;
+  background: #e5e7eb;
+  border-radius: 2px;
+  transform: translateY(-50%);
+  z-index: 0;
+}
+
+/* Valeurs affichées sous le slider */
+.range-slider .range-values {
+  margin-top: 26px;
+  font-size: 0.85rem;
+  color: #374151;
+  text-align: center;
+}
+
+/* Bouton Appliquer */
+.advanced-filters-drawer .add-alert-btn {
+  display: block;
+  margin-top: 20px;
+  width: 100%;
+  padding: 10px 14px;
+  border: none;
+  border-radius: 8px;
+  background: #2ca76a;
+  color: #fff;
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.advanced-filters-drawer .add-alert-btn:hover {
+  background: #238a55;
+}
+/* Conteneur */
+.range-slider {
+  position: relative;
+  width: 100%;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Piste grise */
+.range-slider-track {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  right: 0;
+  height: 6px;
+  background: #e5e7eb;
+  border-radius: 3px;
+  transform: translateY(-50%);
+  z-index: 1;
+}
+
+/* Piste colorée entre les curseurs */
+.range-slider-range {
+  position: absolute;
+  top: 50%;
+  height: 6px;
+  background: #2ca76a;
+  border-radius: 3px;
+  transform: translateY(-50%);
+  z-index: 2;
+}
+
+/* Input range (les deux superposés) */
+.range-slider input[type="range"] {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 40px;
+  pointer-events: none;
+  background: none;
+  z-index: 3;
+  -webkit-appearance: none;
+}
+
+/* Curseur */
+.range-slider input[type="range"]::-webkit-slider-thumb {
+  pointer-events: all;
+  -webkit-appearance: none;
+  height: 18px;
+  width: 18px;
+  border-radius: 50%;
+  background: #2ca76a;
+  border: 2px solid #fff;
+  cursor: pointer;
+  box-shadow: 0 0 3px rgba(0,0,0,0.4);
+}
+.range-slider input[type="range"]::-moz-range-thumb {
+  pointer-events: all;
+  height: 18px;
+  width: 18px;
+  border-radius: 50%;
+  background: #2ca76a;
+  border: 2px solid #fff;
+  cursor: pointer;
+  box-shadow: 0 0 3px rgba(0,0,0,0.4);
+}
+
+/* Valeurs affichées */
+.range-values {
+  margin-top: 40px;
+  font-size: 0.9rem;
+  color: #374151;
+  text-align: center;
+}
+/* === Résumé des filtres principaux === */
+.filters-summary {
+  margin-bottom: 20px;
+  padding: 12px;
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+}
+
+.filters-summary h3 {
+  margin: 0 0 10px 0;
+  font-size: 1rem;
+  font-weight: 600;
+  color: #2c3e50;
+}
+
+.filters-summary ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.filters-summary li {
+  font-size: 0.9rem;
+  color: #374151;
+  margin-bottom: 4px;
+}
+
+/* Bouton reset */
+.reset-btn {
+  margin-top: 10px;
+  padding: 8px 12px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  background: #f3f4f6;
+  color: #374151;
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: background 0.2s ease;
+}
+
+.reset-btn:hover {
+  background: #e5e7eb;
+}
+.filters-section {
+  margin-bottom: 20px;
+  padding: 12px;
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+}
+
+.filters-section h3,
+.filters-section summary {
+  font-size: 1rem;
+  font-weight: 600;
+  color: #2c3e50;
+  margin-bottom: 10px;
+  cursor: pointer;
+}
+
+.filters-section summary {
+  list-style: none;
+}
+
+.filters-section summary::-webkit-details-marker {
+  display: none;
+}
+
+.filters-section[open] summary {
+  color: #2ca76a;
+}
+
+.advanced-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
   gap: 12px;
+}
+/* MultiSelect */
+.multi-select { position: relative; display: inline-block; }
+.multi-select-btn {
+  background: #fff; border: 1px solid #d1d5db; border-radius: 6px;
+  padding: 6px 10px; cursor: pointer; font-size: 0.9rem;
+}
+.dark .multi-select-btn { background:#0b1220; color:#e5e7eb; border-color:#334155; }
+
+.multi-select-dropdown {
+  position: absolute; top: calc(100% + 6px); left: 0; z-index: 1400;
+  background: #fff; color:#111; border: 1px solid #e5e7eb; border-radius: 8px;
+  box-shadow: 0 6px 16px rgba(0,0,0,0.15);
+  padding: 8px; width: 240px; max-height: 260px; overflow-y: auto;
+}
+.dark .multi-select-dropdown { background:#0f172a; color:#e5e7eb; border-color:#1f2937; }
+
+.multi-select-item { display: flex; align-items: center; gap: 8px; padding: 4px 2px; }
+.multi-select-empty { padding: 8px; font-size: 0.9rem; color:#6b7280; }
+.multi-select-clear {
+  margin-top: 6px; width: 100%; padding: 6px 8px; font-size: 0.85rem;
+  border: 1px solid #d1d5db; background:#f3f4f6; border-radius: 6px; cursor: pointer;
+}
+.dark .multi-select-clear { border-color:#334155; background:#1e293b; color:#e5e7eb; }
+
+/* grille des multiselects dans le drawer */
+.multiselect-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 10px; align-items: start;
+}
+/* ==========================
+   Drawer Filtres Avancés (amélioré)
+========================== */
+.advanced-filters-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  width: 520px;
+  height: 100%;
+  background: #fff;
+  padding: 24px;
+  overflow-y: auto;
+  box-shadow: -4px 0 16px rgba(0,0,0,0.25);
+  z-index: 1000;
+  border-top-left-radius: 12px;
+  border-bottom-left-radius: 12px;
+  animation: slideInRight 0.3s ease;
+}
+
+@keyframes slideInRight {
+  from { transform: translateX(100%); opacity: 0; }
+  to   { transform: translateX(0); opacity: 1; }
+}
+
+.advanced-filters-drawer h2 {
+  font-size: 1.4rem;
+  margin-bottom: 20px;
+  color: #2ca76a;
+  font-weight: 700;
+  border-bottom: 2px solid #2ca76a;
+  padding-bottom: 6px;
+}
+
+/* Groupes */
+.advanced-group {
+  margin-bottom: 28px;
+  padding: 12px;
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+}
+
+.advanced-group h3 {
+  font-size: 1rem;
+  margin-bottom: 14px;
+  font-weight: 600;
+  color: #374151;
+  border-bottom: 1px solid #e5e7eb;
+  padding-bottom: 4px;
+}
+
+/* Grille */
+.advanced-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+/* Items */
+.filter-adv-item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.filter-adv-item label {
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: #374151;
+}
+
+.filter-adv-item input[type="text"],
+.filter-adv-item input[type="number"] {
+  padding: 6px 10px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  font-size: 0.9rem;
+  width: 100%;
+  background: #fff;
+}
+
+/* Boutons drawer */
+.advanced-filters-drawer .add-alert-btn,
+.advanced-filters-drawer .cancel-btn {
+  display: inline-block;
+  margin-top: 12px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  font-size: 0.95rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.2s ease;
+}
+
+.advanced-filters-drawer .add-alert-btn {
+  background: #2ca76a;
+  color: #fff;
+  border: none;
+}
+.advanced-filters-drawer .add-alert-btn:hover { background: #238a55; }
+
+.advanced-filters-drawer .cancel-btn {
+  background: #f3f4f6;
+  border: 1px solid #d1d5db;
+  color: #374151;
+}
+.advanced-filters-drawer .cancel-btn:hover { background: #e5e7eb; }
+
+/* ==========================
+   MultiSelect (dans le drawer)
+========================== */
+.multi-select-btn {
+  background: #fff;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  padding: 6px 10px;
+  cursor: pointer;
+  font-size: 0.9rem;
+  text-align: left;
+  width: 100%;
+}
+.multi-select-btn:hover {
+  border-color: #2ca76a;
+}
+
+.multi-select-dropdown {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 1400;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  box-shadow: 0 6px 16px rgba(0,0,0,0.15);
+  padding: 8px;
+  width: 100%;
+  max-height: 260px;
+  overflow-y: auto;
+}
+.multi-select-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+.multi-select-item:hover { background: #f3f4f6; }
+
+.multi-select-clear {
+  margin-top: 6px;
+  width: 100%;
+  padding: 6px 8px;
+  font-size: 0.85rem;
+  border: 1px solid #d1d5db;
+  background: #f3f4f6;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.multi-select-clear:hover { background: #e5e7eb; }
+
+/* ==========================
+   Mode sombre amélioré
+========================== */
+.dark .advanced-filters-drawer {
+  background: #0f172a;
+  color: #e5e7eb;
+  border-left: 1px solid #1f2937;
+}
+
+.dark .advanced-filters-drawer h2 {
+  color: #22c55e;
+  border-bottom-color: #1f2937;
+}
+
+.dark .advanced-group {
+  background: #1e293b;
+  border-color: #334155;
+}
+.dark .advanced-group h3 {
+  color: #e5e7eb;
+  border-bottom-color: #334155;
+}
+
+.dark .filter-adv-item input {
+  background: #0b1220;
+  border: 1px solid #334155;
+  color: #e5e7eb;
+}
+
+.dark .multi-select-btn {
+  background: #1e293b;
+  border-color: #334155;
+  color: #e5e7eb;
+}
+.dark .multi-select-dropdown {
+  background: #0f172a;
+  border-color: #1f2937;
+}
+.dark .multi-select-item:hover {
+  background: #1e293b;
+}
+.dark .multi-select-clear {
+  background: #1e293b;
+  border-color: #334155;
+  color: #e5e7eb;
+}
+/* ==========================
+   Drawer Filtres Avancés (pro)
+========================== */
+.advanced-filters-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  width: 480px;
+  height: 100%;
+  background: #fff;
+  padding: 28px 24px;
+  overflow-y: auto;
+  box-shadow: -4px 0 16px rgba(0,0,0,0.25);
+  z-index: 1000;
+  border-top-left-radius: 12px;
+  border-bottom-left-radius: 12px;
+  animation: slideInRight 0.3s ease;
+}
+
+.advanced-filters-drawer h2 {
+  font-size: 1.4rem;
+  margin-bottom: 24px;
+  color: #2ca76a;
+  font-weight: 700;
+  border-bottom: 2px solid #2ca76a;
+  padding-bottom: 8px;
+}
+
+/* Groupes */
+.advanced-group {
+  margin-bottom: 32px;
+}
+
+.advanced-group h3 {
+  font-size: 1rem;
+  margin-bottom: 16px;
+  font-weight: 600;
+  color: #374151;
+  border-bottom: 1px solid #e5e7eb;
+  padding-bottom: 6px;
+}
+
+/* Grille interne → moins tassée */
+.advanced-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 18px;
+}
+@media (min-width: 640px) {
+  .advanced-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+/* Items */
+.filter-adv-item {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.filter-adv-item label {
+  font-size: 0.9rem;
+  font-weight: 500;
+  color: #374151;
+}
+
+.filter-adv-item input[type="text"],
+.filter-adv-item input[type="number"] {
+  padding: 8px 10px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  font-size: 0.9rem;
+  width: 100%;
+  background: #fff;
+}
+
+/* MultiSelect boutons */
+.multi-select-btn {
+  background: #fff;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  padding: 8px 10px;
+  cursor: pointer;
+  font-size: 0.9rem;
+  text-align: left;
+  width: 100%;
+  transition: border-color 0.2s;
+}
+.multi-select-btn:hover {
+  border-color: #2ca76a;
+}
+
+/* Dropdown */
+.multi-select-dropdown {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 1400;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  box-shadow: 0 6px 16px rgba(0,0,0,0.15);
+  padding: 8px;
+  width: 100%;
+  max-height: 260px;
+  overflow-y: auto;
+}
+.multi-select-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.2s;
+  font-size: 0.9rem;
+}
+.multi-select-item:hover { background: #f3f4f6; }
+
+/* Bouton clear */
+.multi-select-clear {
+  margin-top: 8px;
+  width: 100%;
+  padding: 8px;
+  font-size: 0.85rem;
+  border: 1px solid #d1d5db;
+  background: #f3f4f6;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.multi-select-clear:hover { background: #e5e7eb; }
+
+/* ==========================
+   Boutons drawer
+========================== */
+.advanced-filters-drawer .add-alert-btn,
+.advanced-filters-drawer .cancel-btn {
+  display: inline-block;
+  margin-top: 16px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  font-size: 0.95rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.2s ease;
+}
+
+.advanced-filters-drawer .add-alert-btn {
+  background: #2ca76a;
+  color: #fff;
+  border: none;
+}
+.advanced-filters-drawer .add-alert-btn:hover { background: #238a55; }
+
+.advanced-filters-drawer .cancel-btn {
+  background: #f3f4f6;
+  border: 1px solid #d1d5db;
+  color: #374151;
+}
+.advanced-filters-drawer .cancel-btn:hover { background: #e5e7eb; }
+
+/* ==========================
+   Mode sombre amélioré
+========================== */
+.dark .advanced-filters-drawer {
+  background: #0f172a;
+  color: #e5e7eb;
+  border-left: 1px solid #1f2937;
+}
+
+.dark .advanced-filters-drawer h2 {
+  color: #22c55e;
+  border-bottom-color: #1f2937;
+}
+
+.dark .advanced-group h3 {
+  color: #f9fafb;
+  border-bottom-color: #334155;
+}
+
+.dark .filter-adv-item label {
+  color: #f1f5f9; /* très clair pour le contraste */
+}
+
+.dark .filter-adv-item input {
+  background: #1e293b;
+  border: 1px solid #334155;
+  color: #e5e7eb;
+}
+
+.dark .multi-select-btn {
+  background: #1e293b;
+  border-color: #334155;
+  color: #e5e7eb;
+}
+.dark .multi-select-dropdown {
+  background: #0f172a;
+  border-color: #1f2937;
+}
+.dark .multi-select-item {
+  color: #f1f5f9;
+}
+.dark .multi-select-item:hover {
+  background: #1e293b;
+}
+.dark .multi-select-clear {
+  background: #1e293b;
+  border-color: #334155;
+  color: #e5e7eb;
+}
+.prospect-counter {
+  margin: 16px 0;
+  padding: 12px;
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  font-size: 0.95rem;
+}
+
+.prospect-icon {
+  font-size: 1.2rem;
+  margin-right: 6px;
+}
+
+.prospect-total {
+  font-weight: 600;
+  display: inline-block;
+  margin-bottom: 10px;
+}
+
+.prospect-actions {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.prospect-actions button {
+  background: #2ca76a;
+  color: #fff;
+  border: none;
+  padding: 6px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.85rem;
+  transition: background 0.2s;
+}
+.prospect-actions button:hover {
+  background: #238a55;
+}
+
+.prospect-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.prospect-list li {
+  margin: 4px 0;
+  font-size: 0.9rem;
+}
+.prospect-counter {
+  margin: 16px 0;
+  padding: 10px;
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  font-size: 0.95rem;
+}
+
+.prospect-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* Icône + tooltip */
+.prospect-icon-wrapper {
+  position: relative;
+  display: inline-block;
+}
+
+.prospect-icon {
+  font-size: 1.2rem;
+  cursor: pointer;
+}
+
+.prospect-tooltip {
+  display: none;
+  position: absolute;
+  top: 120%;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #fff;
+  color: #111;
+  padding: 8px 10px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+  white-space: nowrap;
+  z-index: 20;
+  font-size: 0.85rem;
+}
+.prospect-icon-wrapper:hover .prospect-tooltip {
+  display: block;
+}
+
+/* Total */
+.prospect-total {
+  font-weight: 600;
+  min-width: 20px;
+  text-align: center;
+}
+
+/* Boutons + / - */
+.prospect-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.prospect-actions button {
+  background: #2ca76a;
+  color: #fff;
+  border: none;
+  padding: 4px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.9rem;
+  transition: background 0.2s;
+}
+.prospect-actions button:hover {
+  background: #238a55;
+}
+
+/* Mode sombre */
+.dark .prospect-counter {
+  background: #0f172a;
+  border: 1px solid #1f2937;
+  color: #e5e7eb;
+}
+.dark .prospect-tooltip {
+  background: #1e293b;
+  color: #e5e7eb;
+  border: 1px solid #334155;
+}
+/* ===== Prospects / Intérêts ===== */
+.interest-widget {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 6px 0 14px;
+  padding: 8px 10px;
+  border: 1px solid #e5e7eb;
+  background: #ffffff;
+  border-radius: 8px;
+  position: relative;
+}
+
+.interest-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  position: relative;
+}
+
+.interest-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: #f3f4f6;
+  border: 1px solid #e5e7eb;
+  color: #111827;
+  cursor: default;
+}
+
+.interest-count {
+  font-weight: 700;
+  font-size: 0.95rem;
+  color: #111827;
+}
+
+/* Tooltip survol de l'icône */
+.interest-left:hover .interest-tooltip {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+}
+
+.interest-tooltip {
+  position: absolute;
+  top: 36px;
+  left: 0;
+  min-width: 260px;
+  max-width: 320px;
+  background: #ffffff;
+  color: #111827;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  box-shadow: 0 10px 24px rgba(0,0,0,0.15);
+  padding: 10px;
+  z-index: 50;
+
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(6px);
+  transition: all 120ms ease;
+}
+
+.interest-tooltip-title {
+  font-weight: 600;
+  margin-bottom: 6px;
+  color: #1f2937;
+}
+
+.interest-tooltip-empty {
+  color: #6b7280;
+  font-size: 0.9rem;
+}
+
+.interest-tooltip-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.interest-tooltip-list li {
+  padding: 4px 0;
+  border-bottom: 1px dashed #eee;
+}
+.interest-tooltip-list li:last-child { border-bottom: none; }
+
+.interest-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.interest-btn {
+  width: 30px;
+  height: 30px;
+  border-radius: 6px;
+  border: 1px solid #d1d5db;
+  background: #f9fafb;
+  font-weight: 700;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  transition: transform 0.05s ease, background 0.15s ease, border 0.15s ease;
+}
+.interest-btn:hover {
+  background: #eef2ff;
+  border-color: #c7d2fe;
+}
+.interest-btn:active {
+  transform: translateY(1px);
+}
+
+/* Dark mode */
+.dark .interest-widget {
+  background: #0f172a;
+  border-color: #1f2937;
+}
+.dark .interest-icon {
+  background: #0b1220;
+  border-color: #334155;
+  color: #e5e7eb;
+}
+.dark .interest-count {
+  color: #e5e7eb;
+}
+.dark .interest-tooltip {
+  background: #0f172a;
+  color: #e5e7eb;
+  border-color: #1f2937;
+}
+.dark .interest-tooltip-title {
+  color: #e5e7eb;
+}
+.dark .interest-tooltip-empty {
+  color: #93a1b2;
+}
+.dark .interest-btn {
+  background: #0b1220;
+  border-color: #334155;
+  color: #e5e7eb;
+}
+.dark .interest-btn:hover {
+  background: #1e293b;
+  border-color: #334155;
+}
+/* ===== Notes ===== */
+.notes-widget {
+  margin: 8px 0 16px;
+}
+.notes-btn {
+  background: #f9fafb;
+  border: 1px solid #d1d5db;
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: background 0.2s, border 0.2s;
+}
+.notes-btn:hover {
+  background: #eef2ff;
+  border-color: #c7d2fe;
+}
+
+/* Modal */
+.notes-modal {
+  position: fixed;
+  top: 50%; left: 50%;
+  transform: translate(-50%, -50%);
+  background: #fff;
+  color: #111827;
+  border-radius: 10px;
+  box-shadow: 0 8px 30px rgba(0,0,0,0.25);
+  z-index: 1100;
+  padding: 20px;
+  width: 90%;
+  max-width: 600px;
+  max-height: 80vh;
+  overflow-y: auto;
+}
+
+.notes-modal h2 {
+  margin-bottom: 16px;
+  color: #2ca76a;
+}
+
+.notes-modal textarea {
+  width: 100%;
+  min-height: 100px;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  padding: 8px;
+  font-size: 0.95rem;
+  margin-bottom: 12px;
+  resize: vertical;
+}
+
+.notes-actions {
+  text-align: right;
+  margin-bottom: 20px;
+}
+
+.save-btn {
+  background: #2ca76a;
+  color: #fff;
+  border: none;
+  padding: 8px 14px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: 600;
+  transition: background 0.2s;
+}
+.save-btn:hover {
+  background: #238a55;
+}
+
+/* Liste des autres notes */
+.notes-list {
+  margin-top: 20px;
+}
+.note-item {
+  border-top: 1px solid #e5e7eb;
+  padding: 10px 0;
+}
+.note-item strong {
+  display: block;
+  margin-bottom: 4px;
+  color: #1f2937;
+}
+.note-item p {
+  margin: 0;
+  font-size: 0.9rem;
+  color: #374151;
+}
+
+/* Dark mode */
+.dark .notes-modal {
+  background: #0f172a;
+  color: #e5e7eb;
+  border: 1px solid #1f2937;
+}
+.dark .notes-modal textarea {
+  background: #0b1220;
+  color: #e5e7eb;
+  border: 1px solid #334155;
+}
+.dark .note-item strong {
+  color: #e5e7eb;
+}
+.dark .note-item p {
+  color: #cbd5e1;
+}
+/* Vue grille/liste — mode sombre */
+.dark .view-buttons button {
+  background: #0b1220;
+  border: 1px solid #334155;
+  color: #cbd5e1;
+}
+
+.dark .view-buttons button.active {
+  background: #22c55e;   /* vert vif */
+  color: #0b1220;        /* texte sombre pour contraste */
+  border-color: #22c55e;
+}
+/* Supprime les labels inutiles */
+.filter-block label {
+  display: none;
+}
+
+/* Harmonise le select */
+.sort-row select {
+  min-width: 140px;
+  height: 32px;
+}
+/* Compteur de vélos affichés */
+.velo-counter {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  font-family: 'Inter', sans-serif;
+}
+
+.velo-counter .velo-count {
+  font-size: 1.4rem;
+  font-weight: 700;
+  color: #2ca76a; /* vert accent */
+}
+
+.velo-counter .velo-separator {
+  font-size: 1.2rem;
+  color: #6b7280; /* gris neutre */
+  margin: 0 2px;
+}
+
+.velo-counter .velo-total {
+  font-size: 1.2rem;
+  font-weight: 600;
+  color: #374151;
+}
+
+.velo-counter .velo-label {
+  font-size: 0.85rem;
+  color: #6b7280;
+  margin-left: 4px;
+}
+
+/* Mode sombre */
+.app-container.dark .velo-counter .velo-count {
+  color: #22c55e;
+}
+.app-container.dark .velo-counter .velo-total {
+  color: #e5e7eb;
+}
+.app-container.dark .velo-counter .velo-label {
+  color: #9ca3af;
+}
+.detail-table td:last-child {
+  font-weight: normal;
+  color: inherit;
+}
+
+.dark .detail-table td:last-child {
+  font-weight: normal;
+  color: inherit;
+}
+.velo-highlights {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  margin: 10px 0;
+  font-size: 1rem;
+  font-weight: 500;
+  color: #374151;
+}
+
+.velo-highlights .highlight {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: #f3f4f6;
+  padding: 6px 12px;
+  border-radius: 6px;
+}
+
+.dark .velo-highlights {
+  color: #e5e7eb;
+}
+
+.dark .velo-highlights .highlight {
+  background: #1f2937;
+}
+.price-and-link {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 12px 0;
+  flex-wrap: wrap; /* évite les débordements */
+}
+
+.velo-highlights-inline {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 0 0 auto;
+}
+
+.velo-highlights-inline .highlight {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.9rem;
+  background: #f3f4f6;
+  padding: 4px 10px;
+  border-radius: 6px;
+}
+
+.dark .velo-highlights-inline .highlight {
+  background: #1f2937;
+  color: #e5e7eb;
+}
+.highlight {
+  position: relative;
+  cursor: help;
+}
+
+.highlight[data-tooltip]::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  bottom: 125%; /* place le tooltip au-dessus */
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(0,0,0,0.8);
+  color: #fff;
+  padding: 4px 8px;
+  border-radius: 6px;
+  font-size: 0.75rem;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease;
+}
+
+.highlight[data-tooltip]:hover::after {
+  opacity: 1;
+}
+.velo-extras {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 14px 0;
+}
+
+.interest-widget,
+.notes-widget {
+  flex: 1;
+  background: #f9fafb;
+  padding: 10px;
+  border-radius: 8px;
+  border: 1px solid #e5e7eb;
+}
+
+.dark .interest-widget,
+.dark .notes-widget {
+  background: #1f2937;
+  border-color: #334155;
+}
+.velo-extras {
+  display: flex;
+  gap: 12px;
+  margin-top: 8px; /* collé au bloc prix */
+  align-items: stretch; /* force les 2 blocs à la même hauteur */
+}
+
+.interest-widget {
+  flex: 7; /* 70% */
+  background: #f9fafb;
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid #e5e7eb;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  min-height: 40px; /* 👈 assure même hauteur */
+}
+
+.notes-widget {
+  flex: 3; /* 30% */
+  display: flex;
+  align-items: stretch; /* 👈 occupe même hauteur */
+}
+
+.notes-btn {
+  width: 100%;
+  border-radius: 6px;
+  border: 1px solid #e5e7eb;
+  background: #f3f4f6;
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: background 0.2s;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+/* hover */
+.notes-btn:hover {
+  background: #e5e7eb;
+}
+
+/* Mode sombre */
+.dark .interest-widget {
+  background: #1f2937;
+  border-color: #334155;
+}
+
+.dark .notes-btn {
+  background: #1f2937;
+  border-color: #334155;
+  color: #e5e7eb;
+}
+
+.dark .notes-btn:hover {
+  background: #334155;
+}
+/* Style général du select tri */
+.sort-row select {
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid #d1d5db;
+  background: #f9fafb;
+  color: #111827;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.sort-row button {
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid #d1d5db;
+  background: #f9fafb;
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+
+/* Mode sombre */
+.dark .sort-row select,
+.dark .sort-row button {
+  background: #1f2937;      /* gris sombre */
+  border-color: #374151;    /* gris plus clair pour contraste */
+  color: #e5e7eb;           /* texte clair */
+}
+
+.dark .sort-row select:focus,
+.dark .sort-row button:hover {
+  background: #374151;      /* léger éclaircissement au hover/focus */
+}
+.advanced-filters-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  width: 500px;
+  height: 100vh;
+  background: #fff;
+  display: flex;
+  flex-direction: column;
+  box-shadow: -2px 0 8px rgba(0,0,0,0.2);
+  z-index: 1000;
+  animation: slideInRight 0.3s ease;
+}
+
+/* Header fixe */
+.drawer-header {
+  flex: 0 0 auto;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 20px;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+/* Contenu scrollable */
+.advanced-filters-drawer-content {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 20px;
+}
+
+/* Footer fixe */
+.drawer-footer {
+  flex: 0 0 auto;
+  padding: 12px 20px;
+  border-top: 1px solid #e5e7eb;
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+/* === Drawer : structure solide, pas de débordement === */
+.advanced-filters-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  width: 520px;
+  max-width: 100vw;
+  height: 100vh;
+  background: #fff;
+  z-index: 1000;
+
+  display: grid;
+  grid-template-rows: auto 1fr auto; /* header / contenu / footer */
+  box-sizing: border-box;
+  overflow: hidden;           /* pas de scroll global du drawer */
+  border-left: 1px solid #e5e7eb;
+}
+
+/* header */
+.advanced-filters-drawer .drawer-header,
+.advanced-filters-drawer > h2 {
+  /* si tu as un <h2> direct, on le traite comme header */
+  padding: 12px 16px;
+  margin: 0;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+/* si tu gardes ton h2 tel quel */
+.advanced-filters-drawer > h2 {
+  font-size: 1.2rem;
+  color: #2c3e50;
+}
+
+/* contenu scrollable */
+.advanced-filters-drawer-content {
+  padding: 16px;
+  overflow-y: auto;           /* le scroll est ICI */
+  overflow-x: hidden;         /* on coupe l’horizontal */
+  min-width: 0;               /* évite les débordements de grid children */
+  -webkit-overflow-scrolling: touch;
+}
+
+/* footer fixe */
+.drawer-footer {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+  padding: 12px 16px;
+  border-top: 1px solid #e5e7eb;
+  background: #fff;
+}
+
+/* grille des filtres (évite les overflows) */
+.advanced-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); /* s’adapte */
+  gap: 14px;
+  min-width: 0; /* important pour empêcher les débordements */
+}
+
+/* les items ne doivent pas imposer une min-width trop grande */
+.advanced-filters-drawer .filter-block,
+.advanced-filters-drawer .filter-adv-item,
+.advanced-filters-drawer .multi-select {
+  min-width: 0 !important;  /* override si des minWidth inline traînent */
+}
+
+/* wrapper autour du slider */
+.slider-wrap {
+  padding: 0 6px;          /* petit padding sans casser la largeur */
+}
+
+/* le composant rc-slider ne doit jamais dépasser */
+.advanced-filters-drawer .rc-slider {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+/* valeurs sous le slider */
+.slider-values {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.85em;
+  margin-top: 6px;
+}
+
+/* MultiSelect : pas de dépassement horizontal */
+.advanced-filters-drawer .multi-select-dropdown {
+  max-width: 100%;
+  right: 0;                 /* si trop à gauche, on plaque à droite */
+  left: auto;
+}
+
+/* Dark mode */
+.app-container.dark .advanced-filters-drawer {
+  background: #0f172a;
+  border-left-color: #1f2937;
+}
+
+.app-container.dark .advanced-filters-drawer .drawer-header,
+.app-container.dark .advanced-filters-drawer > h2 {
+  border-bottom-color: #1f2937;
+  color: #e5e7eb;
+}
+
+.app-container.dark .advanced-filters-drawer-content {
+  color: #e5e7eb;
+}
+
+.app-container.dark .drawer-footer {
+  border-top-color: #1f2937;
+  background: #0f172a;
+}
+
+/* labels lisibles en mode sombre */
+.app-container.dark .advanced-filters-drawer label {
+  color: #cbd5e1;
+}
+
+/* les selects / inputs doivent suivre le thème */
+.app-container.dark .advanced-filters-drawer input,
+.app-container.dark .advanced-filters-drawer select,
+.app-container.dark .advanced-filters-drawer button {
+  background: #0b1220;
+  color: #e5e7eb;
+  border: 1px solid #334155;
+}
+.filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 20px;
+  padding: 12px 16px;
+  background: #fdfdfd;
+  border-top: 1px solid #e5e7eb;
+  border-bottom: 1px solid #e5e7eb;
+  align-items: flex-end;
+}
+
+.filters-left {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  align-items: flex-end;
 }
 
 .filter-block {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  min-width: 140px;
+  min-width: 180px;
+  flex: 1 1 180px; /* responsive */
+}
+
+.filter-block label {
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: #374151;
 }
 
 .filter-block input,
-.filter-block select,
-.filter-block button {
-  height: 32px;
-  padding: 4px 8px;
+.filter-block select {
+  height: 36px;
+  padding: 6px 10px;
   font-size: 0.9rem;
   border: 1px solid #d1d5db;
-  border-radius: 4px;
-  background: white;
+  border-radius: 6px;
+  background: #fff;
+  color: #111827;
+  box-sizing: border-box;
+}
+
+/* Prix */
+.price-filter {
+  min-width: 220px;
+}
+.slider-wrap {
+  padding: 0 6px;
+}
+.slider-values {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.85em;
+  margin-top: 5px;
+}
+
+/* Bouton filtres avancés */
+.advanced-btn {
+  height: 36px;
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: none;
+  background: #2ca76a;
+  color: #000000;
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+.advanced-btn:hover {
+  background: #238a55;
+}
+
+/* Mode sombre */
+.dark .filters {
+  background: #0f172a;
+  border-top-color: #1f2937;
+  border-bottom-color: #1f2937;
+}
+
+.dark .filter-block label {
+  color: #cbd5e1;
+}
+
+.dark .filter-block input,
+.dark .filter-block select {
+  background: #0b1220;
+  color: #e5e7eb;
+  border: 1px solid #334155;
+}
+/* Conteneur */
+.filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 20px;
+  padding: 12px 16px;
+  background: #fdfdfd;
+  border-top: 1px solid #e5e7eb;
+  border-bottom: 1px solid #e5e7eb;
+  align-items: flex-end;
+}
+
+.filters-left {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  align-items: flex-end;
+}
+
+/* Chaque bloc */
+.filter-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 180px;
+  flex: 1 1 180px;
+}
+
+/* Légendes visibles */
+.filter-block label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #374151;
+  letter-spacing: 0.2px;
+}
+
+/* Inputs & selects */
+.filter-block input,
+.filter-block select,
+.filter-block button {
+  height: 36px;
+  padding: 6px 10px;
+  font-size: 0.9rem;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  background: #fff;
+  color: #111827;
+  box-sizing: border-box;
+}
+
+/* Slider */
+.price-filter {
+  min-width: 220px;
+}
+.slider-wrap {
+  padding: 0 6px;
+}
+.slider-values {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.8rem;
+  margin-top: 4px;
+  color: #4b5563;
+}
+
+/* Bouton avancés */
+.advanced-btn {
+  width: 100%;
+  background: #2ca76a;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+.advanced-btn:hover {
+  background: #238a55;
+}
+
+/* Mode sombre */
+.dark .filters {
+  background: #0f172a;
+  border-top-color: #1f2937;
+  border-bottom-color: #1f2937;
+}
+.dark .filter-block label {
+  color: #cbd5e1;
+}
+.dark .filter-block input,
+.dark .filter-block select,
+.dark .filter-block button {
+  background: #0b1220;
+  color: #e5e7eb;
+  border: 1px solid #334155;
+}
+.dark .slider-values {
+  color: #94a3b8;
+}
+.feedback-modal {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 400px;
+  max-width: 90vw;
+  background: #fff;
+  padding: 20px;
+  border-radius: 12px;
+  z-index: 1001;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.2);
+}
+
+.feedback-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.feedback-form label {
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: #374151;
+}
+
+.feedback-form select,
+.feedback-form textarea {
+  padding: 8px 10px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  font-size: 0.9rem;
+}
+
+.feedback-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.feedback-actions button {
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: none;
   cursor: pointer;
 }
 
+.feedback-actions .save-btn {
+  background: #2ca76a;
+  color: white;
+}
 
+.feedback-actions .save-btn:hover {
+  background: #238a55;
+}
+
+/* Dark mode */
+.dark .feedback-modal {
+  background: #0f172a;
+  color: #e5e7eb;
+}
+.dark .feedback-form select,
+.dark .feedback-form textarea {
+  background: #0b1220;
+  color: #e5e7eb;
+  border: 1px solid #334155;
+}
+.advanced-group {
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 18px;
+}
+
+.group-infos {
+  background: #f9f9ff; /* pastel violet clair */
+}
+.group-transmission {
+  background: #f0fff9; /* pastel vert clair */
+}
+.group-vae {
+  background: #fff9f0; /* pastel orange clair */
+}
+.group-cadre {
+  background: #f0f8ff; /* pastel bleu clair */
+}
+.group-roues {
+  background: #fff0f9; /* pastel rose clair */
+}
+.group-freinage {
+  background: #f9fff0; /* pastel jaune clair */
+}
+
+.filter-block label,
+.filter-adv-item label {
+  display: block;
+  font-weight: 500;
+  margin-bottom: 4px;
+  color: #333;
+}
+
+.slider-values {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.85em;
+  margin-top: 6px;
+  color: #444;
+}
+.save-alert-btn {
+  background: #2ca76a;
+  color: #fff;
+  border: none;
+  padding: 10px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.save-alert-modal {
+  position: fixed;
+  inset: 50% auto auto 50%;
+  transform: translate(-50%, -50%);
+  width: min(520px, 92vw);
+  background: var(--bg-card, #fff);
+  border: 1px solid #ddd;
+  border-radius: 10px;
+  padding: 18px;
+  z-index: 1001;
+}
+
+.save-alert-form {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.save-alert-form input[type="text"],
+.save-alert-form input[type="email"],
+.save-alert-form input[type="tel"],
+.save-alert-form input[type="date"] {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid #d7d7d7;
+  border-radius: 8px;
+  background: var(--bg-input, #fff);
+}
+
+.save-alert-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.save-alert-actions .save-btn {
+  background: #111827;
+  color: #fff;
+  border: none;
+  padding: 10px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-weight: 600;
+}
+/* Fond assombri */
+.overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.6);
+  z-index: 1000;
+}
+
+/* === MODALE PLEIN ÉCRAN (PORTAL) === */
+.gallery-overlay{
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  background: rgba(0,0,0,0.75);
+  display: grid;
+  place-items: center;              /* centre l'ensemble */
+}
+
+.gallery-frame{
+  position: relative;
+  width: min(96vw, 1400px);
+  height: auto;
+  max-height: 94vh;                 /* un peu plus de marge en bas */
+  padding: 48px 96px 56px;          /* réserve de place pour boutons/close */
+  box-sizing: border-box;
+  display: grid;
+  place-items: center;              /* centre l'image à l'intérieur */
+}
+
+.gallery-img{
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;              /* jamais tronquée */
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0,0,0,.35);
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+/* actions */
+.gallery-close{
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  border: none;
+  background: rgba(0,0,0,0.6);
+  color: #fff;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.gallery-arrow{
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  border: none;
+  background: rgba(0,0,0,0.55);
+  color: #fff;
+  width: 48px;
+  height: 64px;
+  border-radius: 12px;
+  cursor: pointer;
+  font-size: 28px;
+  display: grid;
+  place-items: center;
+}
+.gallery-arrow.left{ left: 16px; }
+.gallery-arrow.right{ right: 16px; }
+
+.gallery-arrow:hover,
+.gallery-close:hover{
+  background: rgba(0,0,0,0.75);
+}
+/* === GALERIE DÉTAIL (colonne de droite) === */
+.gallery-advanced .gallery-main{
+  position: relative;
+  display: flex;
+  align-items: center;              /* centre verticalement */
+  justify-content: center;          /* centre horizontalement */
+  background: var(--bg-card, #fff);
+  border-radius: 8px;
+  min-height: 260px;
+  padding: 4px 20px;                /* un peu d’air + place pour flèches */
+  box-sizing: border-box;
+}
+
+.gallery-advanced .gallery-main-img{
+  max-width: 100%;
+  max-height: 100%;                /* évite les débordements */
+  object-fit: contain;
+  display: block;
+  cursor: zoom-in;
+  border-radius: 6px;
+}
+
+.gallery-advanced .nav-btn{
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  border: none;
+  background: rgba(0,0,0,0.45);
+  color: #fff;
+  width: 34px;
+  height: 48px;
+  border-radius: 10px;
+  font-size: 22px;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+}
+.gallery-advanced .nav-btn.left{ left: 8px; }
+.gallery-advanced .nav-btn.right{ right: 8px; }
+.gallery-advanced .nav-btn:hover{ background: rgba(0,0,0,0.65); }
+
+.gallery-advanced .gallery-thumbs{
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+  overflow-x: auto;
+}
+.gallery-advanced .gallery-thumb{
+  width: 60px;
+  height: 60px;
+  object-fit: cover;
+  border-radius: 6px;
+  opacity: .75;
+  cursor: pointer;
+  border: 1px solid rgba(0,0,0,0.08);
+}
+.gallery-advanced .gallery-thumb.active{
+  opacity: 1;
+  outline: 2px solid #2ca76a;      /* vert Mint */
+  outline-offset: 2px;
+}
+/* === FORCE l’overlay des flèches dans la galerie de droite === */
+.gallery-advanced .gallery-main {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  min-height: 260px;
+  background: var(--bg-card, #fff);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.gallery-advanced .gallery-main::before{
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(ellipse at left center, rgba(0,0,0,.28), transparent 60%),
+    radial-gradient(ellipse at right center, rgba(0,0,0,.28), transparent 60%);
+  opacity: 0;
+  transition: opacity .15s ease;
+  pointer-events: none;
+  z-index: 1;
+}
+.gallery-advanced .gallery-main:hover::before{ opacity: 1; }
+
+.gallery-advanced .gallery-main-img{
+  max-width: 100%;
+  max-height: 360px;
+  object-fit: contain;
+  display: block;
+  cursor: zoom-in;
+  border-radius: 6px;
+  user-select: none;
+  -webkit-user-drag: none;
+  z-index: 0;
+}
+
+/* Boutons flèches — on monte la spécificité et on force l’opacité */
+.gallery-advanced .gallery-main button.nav-btn{
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%) scale(.96);
+  border: none;
+  background: rgba(0,0,0,0.45);
+  color: #fff;
+  width: 36px;
+  height: 48px;
+  border-radius: 10px;
+  font-size: 22px;
+  cursor: pointer;
+  display: grid !important;            /* si un style global l’avait caché */
+  place-items: center;
+  opacity: 0 !important;               /* cachées par défaut */
+  visibility: hidden;
+  transition: opacity .15s ease, transform .15s ease, background .15s ease;
+  z-index: 3;                          /* au-dessus de l’overlay */
+  pointer-events: auto;
+}
+.gallery-advanced .gallery-main:hover button.nav-btn{
+  opacity: 1 !important;
+  visibility: visible;
+  transform: translateY(-50%) scale(1);
+}
+.gallery-advanced .gallery-main button.nav-btn.left{  left: 8px; }
+.gallery-advanced .gallery-main button.nav-btn.right{ right: 8px; }
+.gallery-advanced .gallery-main button.nav-btn:hover{ background: rgba(0,0,0,0.65); }
+
+/* Mobile (pas de hover) : visibles en permanence */
+@media (hover: none){
+  .gallery-advanced .gallery-main button.nav-btn{
+    opacity: 1 !important;
+    visibility: visible;
+    transform: translateY(-50%) scale(1);
+  }
+  .gallery-advanced .gallery-main::before{ opacity: .75; }
+}
+/* Supprime la petite bande blanche sous les miniatures */
+.gallery-advanced .gallery-thumbs{
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+  line-height: 0;            /* tue l'espace baseline des <img> inline */
+  padding: 0;                /* au cas où */
+}
+
+.gallery-advanced .gallery-thumb{
+  display: block;            /* évite le gap baseline */
+  width: 72px;
+  height: 56px;
+  object-fit: cover;
+  border-radius: 6px;
+  border: 1px solid #ddd;
+}
+
+/* Si tu voyais aussi une mince bande blanche sous l'image principale */
+.gallery-advanced .gallery-main{
+  background: transparent;   /* override l'ancien fond blanc */
+  min-height: unset;         /* évite du vide si l'image est petite */
+}
+/* === FEEDBACK MODAL — plus grande et confortable === */
+.feedback-modal {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: min(900px, 95vw);         /* + large par défaut */
+  max-height: 85vh;                /* garde dans le viewport */
+  overflow: auto;                  /* scroll interne si besoin */
+  padding: 24px;
+  border-radius: 12px;
+  background: var(--bg-card, #fff);
+  box-shadow: 0 20px 60px rgba(0,0,0,0.25);
+  z-index: 3000;                   /* au-dessus de l’overlay */
+  box-sizing: border-box;
+}
+
+/* Titre & bouton fermer */
+.feedback-modal h2 {
+  margin: 0 0 16px;
+  font-size: 20px;
+}
+.feedback-modal .close-btn {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  line-height: 1;
+}
+
+/* Mise en page interne */
+.feedback-modal .feedback-form {
+  display: grid;
+  gap: 12px;
+}
+
+/* Champs confortables */
+.feedback-modal select,
+.feedback-modal input,
+.feedback-modal textarea {
+  font-size: 16px;
+}
+
+/* Zone de texte bien plus grande par défaut */
+.feedback-modal textarea {
+  min-height: 280px;              /* ← agrandi ici */
+  width: 100%;
+  resize: vertical;                /* l’utilisateur peut agrandir encore */
+  line-height: 1.45;
+  padding: 12px;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  box-sizing: border-box;
+}
+
+/* Boutons */
+.feedback-modal .save-btn {
+  align-self: end;
+  padding: 10px 14px;
+  border-radius: 8px;
+}
+/* === Save Alert modal (scope: modal-preview + form-vertical) === */
+
+/* conteneur un peu plus large + scroll interne si besoin */
+.modal-preview:has(form.form-vertical) {
+  width: min(940px, 95vw);
+  max-height: 90vh;
+  overflow: auto;
+  padding: 24px;
+  border-radius: 14px;
+  box-shadow: 0 18px 60px rgba(0,0,0,0.25);
+}
+
+/* header */
+.modal-preview:has(form.form-vertical) > div:first-child {
+  margin-bottom: 10px;
+}
+
+/* grille du formulaire */
+.modal-preview form.form-vertical {
+  display: grid;
+  grid-template-columns: 1fr;   /* 1 colonne par défaut */
+  gap: 14px;
+}
+
+/* rangées 2 colonnes déjà présentes dans ton JSX */
+.modal-preview form.form-vertical .row-2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;   /* 2 colonnes égales */
+  gap: 14px 20px;                   /* vertical / horizontal */
+}
+
+/* champs confortables */
+.modal-preview form.form-vertical label {
+  font-size: 13px;
+  color: #374151;
+  margin-bottom: 6px;
+  display: block;
+}
+
+.modal-preview form.form-vertical input,
+.modal-preview form.form-vertical select,
+.modal-preview form.form-vertical textarea {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid #d1d5db;
+  border-radius: 10px;
+  font-size: 14px;
+  background: #fff;
+  color: #111827;
+  box-sizing: border-box;
+}
+
+.modal-preview form.form-vertical textarea {
+  min-height: 160px;
+  resize: vertical;
+  line-height: 1.45;
+}
+
+/* zone actions (n’impacte pas la barre d’actions globale) */
+.modal-preview form.form-vertical .actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding-top: 12px;
+  margin-top: 4px;
+  border-top: 1px solid #e5e7eb;
+}
+
+.modal-preview form.form-vertical .actions .save-btn,
+.modal-preview form.form-vertical .actions button {
+  padding: 10px 14px;
+  border-radius: 10px;
+  font-weight: 600;
+  cursor: pointer;
+  border: 1px solid #e5e7eb;
+  background: #fff;
+}
+
+.modal-preview form.form-vertical .actions .save-btn {
+  background: #2ca76a;
+  border-color: #2ca76a;
+  color: #fff;
+}
+.modal-preview form.form-vertical .actions .save-btn:hover { filter: brightness(0.95); }
+
+/* responsive: 1 colonne sous 900px */
+@media (max-width: 900px) {
+  .modal-preview form.form-vertical .row-2 {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Dark mode */
+.dark .modal-preview:has(form.form-vertical) {
+  background: #0f172a;
+  color: #e5e7eb;
+  border: 1px solid #1f2937;
+}
+.dark .modal-preview form.form-vertical input,
+.dark .modal-preview form.form-vertical select,
+.dark .modal-preview form.form-vertical textarea {
+  background: #0b1220;
+  color: #e5e7eb;
+  border: 1px solid #334155;
+}
+.dark .modal-preview form.form-vertical .actions {
+  border-top-color: #1f2937;
+}
+/* Dark mode — email (menu utilisateur) lisible en blanc */
+.app-container.dark .user-info,
+.app-container.dark .user-info span,
+.app-container.dark .user-info svg {
+  color: #e5e7eb !important;   /* texte + icône */
+  fill: #e5e7eb !important;
+}
+
+/* (optionnel) hover du menu déroulant en sombre */
+.app-container.dark .user-menu button:hover {
+  background: #1e293b;
+}
+/* === Modale Signature === */
+.signature-modal{
+  position: fixed;
+  inset: 50% auto auto 50%;
+  transform: translate(-50%, -50%);
+  width: min(980px, 96vw);
+  max-height: 88vh;
+  overflow: auto;
+  background: var(--bg-card, #fff);
+  color: #111827;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  padding: 20px;
+  z-index: 1100;
+  box-shadow: 0 18px 60px rgba(0,0,0,.25);
+}
+
+.signature-modal h2{
+  margin: 0 0 14px;
+  color: #2ca76a;
+}
+
+.sig-layout{
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+.sig-editor label{
+  font-size: .9rem;
+  font-weight: 600;
+  color: #374151;
+}
+
+.sig-editor textarea{
+  width: 100%;
+  min-height: 320px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 13px;
+  line-height: 1.45;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  padding: 10px;
+  box-sizing: border-box;
+  background: #fff;
+  color: #111;
+  resize: vertical;
+}
+
+.sig-actions{
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+  margin-top: 10px;
+}
+
+.sig-actions .reset-btn{
+  background: #f3f4f6;
+  border: 1px solid #d1d5db;
+  color: #374151;
+  padding: 8px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.sig-actions .reset-btn:hover{ background:#e5e7eb; }
+
+.sig-preview{
+  border: 1px dashed #d1d5db;
+  border-radius: 10px;
+  padding: 12px;
+  background: #fafafa;
+}
+
+.sig-preview-title{
+  font-weight: 600;
+  margin-bottom: 8px;
+  color: #374151;
+}
+
+.sig-preview-box{
+  padding: 12px;
+  background: #fff;
+  border: 1px solid #eee;
+  border-radius: 8px;
+  min-height: 320px;
+  overflow: auto;
+}
+
+/* Dark mode */
+.app-container.dark .signature-modal{
+  background: #0f172a; color: #e5e7eb; border-color:#1f2937;
+}
+.app-container.dark .sig-editor textarea{
+  background: #0b1220; color: #e5e7eb; border-color:#334155;
+}
+.app-container.dark .sig-preview{ border-color:#334155; background:#0b1220; }
+.app-container.dark .sig-preview-box{ background:#0f172a; border-color:#334155; }
+.app-container.dark .sig-actions .reset-btn{
+  background:#1e293b; border-color:#334155; color:#e5e7eb;
+}
+.app-container.dark .sig-actions .reset-btn:hover{ background:#334155; }
+
+/* Responsive */
+@media (max-width: 900px){
+  .sig-layout{ grid-template-columns: 1fr; }
+}
+/* -------- Header right container -------- */
+.header-right{
+  margin-left:auto;
+  display:flex;
+  align-items:center;
+  gap:12px;
+}
+
+/* -------- Counter pill -------- */
+.header-counter{
+  display:flex;
+  align-items:baseline;
+  gap:6px;
+  padding:6px 12px;
+  border-radius:999px;
+  border:1px solid rgba(17,24,39,.08);
+  background:rgba(255,255,255,.7);
+  backdrop-filter:blur(6px);
+  box-shadow:0 6px 16px rgba(17,24,39,.08);
+  font-weight:700;
+  color:#111827;
+}
+.header-counter .count{
+  font-size:16px;
+  line-height:1;
+}
+.header-counter .sep{
+  opacity:.45;
+  font-weight:600;
+}
+.header-counter .total{
+  opacity:.8;
+  font-weight:600;
+}
+.header-counter .label{
+  margin-left:6px;
+  font-weight:600;
+  font-size:12px;
+  opacity:.8;
+}
+
+/* mode sombre */
+.dark .header-counter{
+  background:rgba(31,41,55,.55);
+  border-color:rgba(255,255,255,.12);
+  color:#F9FAFB;
+  box-shadow:0 6px 16px rgba(0,0,0,.25);
+}
+.dark .header-counter .sep,
+.dark .header-counter .total,
+.dark .header-counter .label{ opacity:.9; }
+
+/* -------- Bell button -------- */
+.bell-btn{
+  position:relative;
+  width:38px;
+  height:38px;
+  border-radius:999px;
+  border:1px solid rgba(17,24,39,.08);
+  background:#fff;
+  display:grid;
+  place-items:center;
+  cursor:pointer;
+  transition:transform .15s ease, box-shadow .2s ease, background .2s ease;
+  box-shadow:0 6px 16px rgba(17,24,39,.08);
+}
+.bell-btn:hover{ transform:translateY(-1px); }
+.bell-btn:active{ transform:translateY(0); }
+.dark .bell-btn{
+  background:#1f2937;
+  border-color:rgba(255,255,255,.12);
+  box-shadow:0 6px 16px rgba(0,0,0,.25);
+}
+.bell-icon{ font-size:16px; line-height:1; }
+
+/* badge rouge */
+.bell-btn .badge{
+  position:absolute;
+  top:-4px;
+  right:-4px;
+  min-width:18px;
+  height:18px;
+  padding:0 5px;
+  border-radius:9px;
+  background:#ef4444;
+  color:#fff;
+  font-size:11px;
+  font-weight:700;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  box-shadow:0 2px 6px rgba(239,68,68,.45);
+}
+
+/* petite animation quand il y a des non-lus */
+.bell-btn.has-unread .bell-icon{
+  animation:ring 1.2s ease-in-out 0s 2;
+}
+@keyframes ring{
+  0% { transform: rotate(0); }
+  15%{ transform: rotate(18deg); }
+  30%{ transform: rotate(-14deg); }
+  45%{ transform: rotate(10deg); }
+  60%{ transform: rotate(-6deg); }
+  75%{ transform: rotate(3deg); }
+  100%{ transform: rotate(0); }
+}
+
+/* un poil d'espace avant le bouton thème si besoin */
+.theme-toggle{ margin-left:4px; }
+/* === Header en grille : gauche | centre (auto) | droite === */
+.header-fixed .header-bar{
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 12px;
+  position: relative;
+}
+
+/* chaque zone */
+.header-left{ justify-self: start; }
+.header-center{ justify-self: center; }
+.header-right{ justify-self: end; }
+
+/* le titre bien centré et propre */
+.header-center h1{
+  margin: 0;
+  text-align: center;
+  font-size: 20px;         /* ajuste si besoin */
+  line-height: 1.2;
+  white-space: nowrap;     /* évite les retours & garde l’alignement */
+  overflow: hidden;
+  text-overflow: ellipsis; /* coupe proprement si l’espace est trop petit */
+}
+
+/* si tu avais mis un margin-left:auto: sur header-right, on neutralise */
+.header-right{ margin-left: 0 !important; }

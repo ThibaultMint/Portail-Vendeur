@@ -1,0 +1,75 @@
+.range-slider {
+  position: relative;
+  width: 100%;
+  height: 40px;
+}
+
+/* Piste grise */
+.range-slider-track {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  right: 0;
+  height: 6px;
+  background: #e5e7eb;
+  border-radius: 3px;
+  transform: translateY(-50%);
+  z-index: 1;
+}
+
+/* Piste verte entre les curseurs */
+.range-slider-range {
+  position: absolute;
+  top: 50%;
+  height: 6px;
+  background: #2ca76a;
+  border-radius: 3px;
+  transform: translateY(-50%);
+  z-index: 2;
+}
+
+/* Inputs (superposés invisibles) */
+.range-slider input[type="range"] {
+  position: absolute;
+  left: 0;
+  width: 100%;
+  height: 40px;
+  pointer-events: none; /* on désactive, sauf pour les thumbs */
+  background: none;
+  z-index: 3;
+  -webkit-appearance: none;
+}
+
+/* Curseurs */
+.range-slider input[type="range"]::-webkit-slider-thumb {
+  pointer-events: all;
+  -webkit-appearance: none;
+  height: 18px;
+  width: 18px;
+  border-radius: 50%;
+  background: #2ca76a;
+  border: 2px solid #fff;
+  cursor: pointer;
+  box-shadow: 0 0 3px rgba(0,0,0,0.4);
+}
+.range-slider input[type="range"]::-moz-range-thumb {
+  pointer-events: all;
+  height: 18px;
+  width: 18px;
+  border-radius: 50%;
+  background: #2ca76a;
+  border: 2px solid #fff;
+  cursor: pointer;
+  box-shadow: 0 0 3px rgba(0,0,0,0.4);
+}
+
+/* Valeurs affichées */
+.range-values {
+  margin-top: 100px; /* plus proche mais pas collé */
+  padding: 4px 8px;
+  border-radius: 10px;
+  background: #f9fafb;
+  font-size: 0.85rem;
+  color: #374151;
+  display: inline-block;
+}
