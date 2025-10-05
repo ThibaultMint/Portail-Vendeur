@@ -3547,3 +3547,51 @@ html, body, #root {
 
 /* si tu avais mis un margin-left:auto: sur header-right, on neutralise */
 .header-right{ margin-left: 0 !important; }
+/* Tooltip stock par variantes */
+.stock-highlight {
+  position: relative;
+}
+
+.stock-tooltip {
+  position: absolute;
+  top: 120%;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--tooltip-bg, #111);
+  color: #fff;
+  padding: 8px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: nowrap;          /* tout sur une ligne; change en normal si tu veux le retour à la ligne */
+  box-shadow: 0 6px 18px rgba(0,0,0,.18);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .15s ease;
+  z-index: 50;
+}
+
+.stock-highlight:hover .stock-tooltip {
+  opacity: 1;
+}
+
+.stock-tooltip::after {
+  content: "";
+  position: absolute;
+  top: -6px;
+  left: 50%;
+  transform: translateX(-50%);
+  border: 6px solid transparent;
+  border-bottom-color: var(--tooltip-bg, #111);
+}
+
+/* optionnel: un peu d'espace entre l'icône et le nombre */
+.highlight[aria-label="stock"],
+.stock-highlight > span[aria-label="stock"] {
+  margin-right: 4px;
+}
+/* Le bloc qui affiche le texte du tooltip */
+.stock-tooltip {
+  white-space: pre; /* garde les \n et évite les retours à la ligne automatiques */
+}
+

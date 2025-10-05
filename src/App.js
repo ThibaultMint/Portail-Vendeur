@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
-import { GoogleGenerativeAI } from "@google/generative-ai";
 import { supabase } from "./supabaseClient";
 import Login from "./Login";
 import { FaTrash, FaEnvelope, FaSyncAlt, FaBalanceScale, FaHeart, FaUser, FaUserCircle } from "react-icons/fa";
@@ -7,7 +6,6 @@ import logoMint from "./logo mint.png";
 import "./App.css";
 import Slider from "rc-slider";
 import "rc-slider/assets/index.css";
-import RangeSlider from "./components/RangeSlider";
 import { createPortal } from "react-dom";
 
 // 🚨 Mets ta vraie clé Gemini ici :
@@ -83,6 +81,7 @@ const fieldLabels = {
   "Pièces neuves": "Pièces neuves",
   "Défauts visuels": "Défauts visuels",
   "Points forts": "Points forts",
+  "Tailles conseillées": "Tailles de cadre disponibles",
 };
 
 /* =============================
@@ -95,9 +94,6 @@ const fieldGroups = {
     "Type de vélo",
     "Poids du vélo",
     "Kilométrage",
-    "Taille du cadre",
-    "Taille Minimum",
-    "Taille Maximum",
   ],
   Transmission: [
     "Transmission",
@@ -287,6 +283,334 @@ const applyMulti = (list, field, selected) => {
   const wanted = new Set((selected || []).map(cleanText));
   return list.filter((v) => wanted.has(cleanText(v[field])));
 };
+
+/* =========================
+   Helpers variantes & tailles
+   ========================= */
+
+// --- STOCK PAR VARIANTE ---
+// lit "Stock variant 1/2/3..." (tolère espaces/._-)
+const getVariantStockMap = (row) => {
+  const map = {};
+  if (!row || typeof row !== "object") return map;
+  for (const [key, val] of Object.entries(row)) {
+    const k = String(key).toLowerCase().replace(/[\s._-]+/g, "");
+    const m = k.match(/^stockvariant(\d+)$/) || k.match(/^stockvar(\d+)$/);
+    if (m) {
+      const idx = Number(m[1]);
+      const n = parseNumericValue(val);
+      map[idx] = Number.isFinite(n) ? n : null; // null => inconnu
+    }
+  }
+  return map;
+};
+
+const isVariantInStock = (stockMap, idx) => {
+  // S’il n’y a AUCUNE info de stock, on n’exclut rien.
+  if (!stockMap || Object.keys(stockMap).length === 0) return true;
+  const s = stockMap[idx];
+  // Exclure uniquement si on sait que c’est 0
+  return !(Number.isFinite(s) && s <= 0);
+};
+
+// --- LIBELLÉS (S/M/L…) PAR VARIANTE ---
+// depuis "Taille cadre variant N" (tolère espaces/._- et 'var' abrégé)
+const getVariantLabelsMap = (row) => {
+  const labels = {};
+  if (!row || typeof row !== "object") return labels;
+
+  for (const [key, val] of Object.entries(row)) {
+    const cleaned = String(key).toLowerCase().replace(/[\s._-]+/g, "");
+    const m =
+      cleaned.match(/^taillecadrevar(?:iant|iante)?(\d+)$/) ||
+      cleaned.match(/^taillecadrevar(\d+)$/);
+    if (m) {
+      const idx = Number(m[1]);
+      const label = cleanText(val);
+      if (label && label !== "N/A") labels[idx] = label;
+    }
+  }
+
+  // Fallback ancien champ si AUCUNE colonne variant
+  if (Object.keys(labels).length === 0) {
+    const fb = cleanText(row["Taille du cadre"]);
+    if (fb && fb !== "N/A") labels[1] = fb;
+  }
+  return labels;
+};
+
+// --- PLAGES DE TAILLE (cm) PAR VARIANTE ---
+// depuis "TailleMin VarN" / "TailleMax VarN" (tolère "Variant" et séparateurs)
+const getVariantRangesMap = (row) => {
+  const ranges = {};
+  if (!row || typeof row !== "object") return ranges;
+
+  for (const [key, val] of Object.entries(row)) {
+    const k = String(key).toLowerCase().replace(/[\s._-]+/g, "");
+    let m = k.match(/^taille(min|minimum)(variant|var)?(\d+)$/);
+    if (m) {
+      const idx = Number(m[3]);
+      ranges[idx] = ranges[idx] || {};
+      ranges[idx].min = parseNumericValue(val);
+      continue;
+    }
+    m = k.match(/^taille(max|maximum)(variant|var)?(\d+)$/);
+    if (m) {
+      const idx = Number(m[3]);
+      ranges[idx] = ranges[idx] || {};
+      ranges[idx].max = parseNumericValue(val);
+      continue;
+    }
+  }
+  return ranges;
+};
+
+/* ============ AFFICHAGES ============ */
+
+// 1) Tailles de cadre disponibles (labels S/M/L…), en filtrant le stock
+const getFrameSizes = (row) => {
+  const labelsMap = getVariantLabelsMap(row);
+  const stockMap = getVariantStockMap(row);
+
+  // S’il n’y a AUCUNE colonne variant, getVariantLabelsMap renvoie le fallback “Taille du cadre”.
+  const hasRealVariants = Object.keys(labelsMap).some((i) => Number(i) !== 1 || labelsMap[1] !== cleanText(row["Taille du cadre"]));
+
+  const idxs = Object.keys(labelsMap)
+    .map(Number)
+    .filter((i) => isVariantInStock(stockMap, i))
+    .sort((a, b) => a - b);
+
+  const labels = idxs.map((i) => labelsMap[i]).filter(Boolean);
+
+  // Si on avait des colonnes variantes mais toutes à 0 → renvoyer [] pour ne rien afficher
+  if (hasRealVariants && labels.length === 0) return [];
+
+  // Sinon (pas de colonnes variantes), labels contient le fallback éventuel
+  return labels;
+};
+
+const formatFrameSizes = (row) => {
+  const sizes = getFrameSizes(row);
+  return sizes.length ? sizes.join(" / ") : "N/A";
+};
+
+// 2) Plages conseillées en cm par taille (ex: "S : 165–175 cm ; M : 176–186 cm")
+const formatVariantSizeRanges = (row) => {
+  const labelsMap = getVariantLabelsMap(row);
+  const rangesMap = getVariantRangesMap(row);
+  const stockMap  = getVariantStockMap(row);
+
+  const allIdxs = Array.from(
+    new Set([...Object.keys(labelsMap), ...Object.keys(rangesMap)].map(Number))
+  ).sort((a, b) => a - b);
+
+  const parts = allIdxs
+    .filter((i) => isVariantInStock(stockMap, i))
+    .map((i) => {
+      const label = labelsMap[i] || `Var${i}`;
+      const min = rangesMap[i]?.min;
+      const max = rangesMap[i]?.max;
+      if (!Number.isFinite(min) || !Number.isFinite(max)) return null;
+      return `${label} : ${Math.round(min)}–${Math.round(max)} cm`;
+    })
+    .filter(Boolean);
+
+  return parts.length ? parts.join(" / ") : null;
+};
+
+/* ============ RECHERCHE PAR TAILLE (cm) ============ */
+
+// Version “liste de paires [min,max]” (in-stock) si besoin ailleurs
+const getHeightRanges = (row) => {
+  const rangesMap = getVariantRangesMap(row);
+  const stockMap  = getVariantStockMap(row);
+
+  const variantIdxs = Object.keys(rangesMap).map(Number);
+  const hasVariants = variantIdxs.length > 0;
+
+  if (hasVariants) {
+    const ranges = variantIdxs
+      .filter((i) => isVariantInStock(stockMap, i))
+      .map((i) => {
+        const { min, max } = rangesMap[i] || {};
+        return (Number.isFinite(min) && Number.isFinite(max)) ? [min, max] : null;
+      })
+      .filter(Boolean);
+    return ranges; // peut être [] si tout est out-of-stock
+  }
+
+  // Fallback ancien schéma
+  const min = parseNumericValue(row["Taille Minimum"]);
+  const max = parseNumericValue(row["Taille Maximum"]);
+  return (Number.isFinite(min) && Number.isFinite(max)) ? [[min, max]] : [];
+};
+
+// Filtre “taille cycliste” : ne matche que des variantes EN STOCK
+const heightMatches = (heightCm, row) => {
+  const h = parseNumericValue(heightCm);
+  if (h == null) return true; // pas de saisie → on ne filtre pas
+
+  const labelsMap = getVariantLabelsMap(row);
+  const rangesMap = getVariantRangesMap(row);
+  const stockMap  = getVariantStockMap(row);
+
+  const hasVariants =
+    Object.keys(labelsMap).length > 0 ||
+    Object.keys(rangesMap).length > 0 ||
+    Object.keys(stockMap).length > 0;
+
+  if (hasVariants) {
+    const idxs = Object.keys(rangesMap)
+      .map(Number)
+      .filter((i) => isVariantInStock(stockMap, i));
+
+    // Si on a des variantes mais AUCUNE en stock → ne pas matcher
+    if (idxs.length === 0) return false;
+
+    return idxs.some((i) => {
+      const r = rangesMap[i];
+      return Number.isFinite(r?.min) && Number.isFinite(r?.max) && h >= r.min && h <= r.max;
+    });
+  }
+
+  // Fallback ancien schéma (sans variantes)
+  const min = parseNumericValue(row["Taille Minimum"]);
+  const max = parseNumericValue(row["Taille Maximum"]);
+  if (Number.isFinite(min) && Number.isFinite(max)) return h >= min && h <= max;
+
+  // Pas d’infos de taille → on ne filtre pas
+  return true;
+};
+
+/* ============ Compat (si l’ancien code appelle encore ces noms) ============ */
+
+// Variantes “brutes” (labels), déjà filtrées par stock
+const getSizeVariants = (row) => getFrameSizes(row);
+
+// Chaîne jointe des variantes (labels), filtrées par stock
+const formatSizeVariants = (row) => formatFrameSizes(row);
+
+// ---- Email helpers: Points forts ----
+const escapeHtml = (s = "") =>
+  String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+
+// Bloc email centré + taille qui survit au copier-coller Pipedrive
+const renderPointsFortsEmail = (val) => {
+  if (!val) return "";
+
+  // Normalisation en liste (string, <br>, virgules, points-virgules, puces)
+  let items = [];
+  if (Array.isArray(val)) {
+    items = val;
+  } else {
+    const s = String(val || "").replace(/<br\s*\/?>/gi, "\n");
+    items = s
+      .split(/[;\n,•]+/g)
+      .map(t => t.trim().replace(/^[-–•\u2022]+\s*/, ""))
+      .filter(Boolean);
+  }
+  if (!items.length) return "";
+
+  const text = items.join(" – ");
+
+  // Astuces "qui collent" dans Pipedrive :
+  // - <font size="2"> pour réduire la taille (1-7)
+  // - <small> (x2) comme backup si Pipedrive touche au <font>
+  // - table + align="center" pour un centrage robuste
+  return [
+    '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:0;padding:0;">',
+      '<tr><td align="center" style="padding:0;margin:0;">',
+        '<div style="margin:10px 0 0 0;text-align:center;">',
+
+          // Titre
+          '<small><small><font size="2" style="line-height:1.35;color:#6b7280;">',
+            '<b>Pourquoi il va vous plaire</b>',
+          '</font></small></small>',
+
+          '<br/>',
+
+          // Texte (centré, largeur lisible)
+          '<div style="display:inline-block;max-width:520px;margin:0;">',
+            '<small><small><font size="2" style="line-height:1.45;color:#374151;">',
+              text,
+            '</font></small></small>',
+          '</div>',
+
+        '</div>',
+      '</td></tr>',
+    '</table>',
+  ].join('');
+};
+// ===== Tooltip stock par variantes (version sans conflit) =====
+
+// petit nettoyage
+const _clean = (s) => (s == null ? "" : String(s).trim());
+
+// --- FIX — construit {index -> quantité} à partir des colonnes "Stock variant N"
+// Garde les décimales "9.0" -> 9 (et "9,0" -> 9), au lieu de transformer en "90".
+const _buildVariantStockMap = (row) => {
+  const map = {};
+  if (!row || typeof row !== "object") return map;
+
+  const toInt = (val) => {
+    if (val == null) return 0;
+    if (typeof val === "number") return Math.round(val);
+    const n = parseFloat(String(val).trim().replace(",", "."));
+    return Number.isFinite(n) ? Math.round(n) : 0;
+  };
+
+  for (const [key, val] of Object.entries(row)) {
+    // accepte: "Stock variant 1", "Stock var 2", "stock_variant_3", etc.
+    const k = String(key).toLowerCase().replace(/[\s._-]+/g, "");
+    const m = k.match(/^stock(?:variant|var)?(\d+)$/);
+    if (!m) continue;
+
+    const idx = Number(m[1]);
+    const qty = toInt(val);
+    if (qty > 0) map[idx] = qty;         // ignore 0 / null
+  }
+  return map;
+};
+
+
+// "56 : 2 stock\n58 : 10 stock" (une ligne par variante)
+const formatVariantStockInline = (row) => {
+  if (!row || typeof row !== "object") return "";
+
+  // Labels {index -> "S" | "M" | "56" ...} depuis "Taille cadre variant N"
+  const labels = {};
+  for (const [key, val] of Object.entries(row)) {
+    const k = String(key).toLowerCase().replace(/[\s._-]+/g, "");
+    const m =
+      k.match(/^taillecadrevar(?:iant|iante)?(\d+)$/) ||
+      k.match(/^taillecadrevar(\d+)$/);
+    if (!m) continue;
+    const idx = Number(m[1]);
+    const label = (val == null ? "" : String(val).trim());
+    if (label) labels[idx] = label;
+  }
+
+  // Quantités {index -> number} depuis "Stock variant N"
+  const stocks = _buildVariantStockMap(row); // ← ta fonction existante
+  const idxs = Object.keys(stocks).map(Number).sort((a, b) => a - b);
+
+  const NBSP = "\u00A0"; // espace insécable pour éviter "56:" puis ligne suivante "2"
+  const parts = [];
+  for (const i of idxs) {
+    const qty = stocks[i] || 0;
+    if (qty > 0) {
+      const label = labels[i] || `Var${i}`;
+      parts.push(`${label}${NBSP}:${NBSP}${qty}${NBSP}en stock`);
+    }
+  }
+  return parts.join("\n"); // un retour à la ligne entre chaque variante
+};
+
+
+
 
 
 
@@ -954,15 +1278,12 @@ const applyAllFilters = (sourceVelos, f = {}) => {
   if (f.typeVelo) items = items.filter((v) => v["Type de vélo"] === f.typeVelo);
 
   if (f.tailleCycliste) {
-    const cible = Number(f.tailleCycliste);
-    items = items.filter((v) => {
-      const min = parseNumericValue(v["Taille Minimum"]);
-      const max = parseNumericValue(v["Taille Maximum"]);
-      if (!Number.isNaN(min) && cible < min) return false;
-      if (!Number.isNaN(max) && cible > max) return false;
-      return true;
-    });
-  }
+  const cible = parseNumericValue(f.tailleCycliste);
+  items = items.filter((v) => heightMatches(cible, v));
+}
+
+
+
 
   // 2) Prix principal
   items = items.filter((v) => {
@@ -1001,8 +1322,6 @@ const applyAllFilters = (sourceVelos, f = {}) => {
   items = applyMulti(items, "Catégorie", f.categories);
   items = applyMulti(items, "Type de vélo", f.typesVelo);
   items = applyMulti(items, "Taille du cadre", f.taillesCadre);
-  items = applyMulti(items, "Taille Minimum", f.taillesMinCm);
-  items = applyMulti(items, "Taille Maximum", f.taillesMaxCm);
 
   // Transmission
   items = applyMulti(items, "Transmission", f.transmission);
@@ -1245,9 +1564,12 @@ const strikeCompat = (txt = "") =>
               // Infos
               '<div style="font-size:13px;color:#374151;margin:6px 0;line-height:1.45;">',
                 '<span><b>Année:</b> ', (v.Année || 'N/A'), '</span>',
-                ' &nbsp;•&nbsp; <span><b>Taille:</b> ', (v["Taille du cadre"] || 'N/A'), '</span>',
+                ' &nbsp;•&nbsp; <span><b>Taille:</b> ' + (formatFrameSizes(v) || 'N/A') + '</span>',
                 ' &nbsp;•&nbsp; <span><b>Kilométrage:</b> ', (v.Kilométrage || 'N/A'), '</span>',
               '</div>',
+              // Après '</div>' du bloc "Infos", ajoute CETTE ligne dans le même chunks.push:
+(renderPointsFortsEmail(v["Points forts"]) || ''),
+
               // Prix (barré + % rouge) — compatible Pipedrive (espaces + rouge + barré garanti)
 '<div style="margin:8px 0;">',
   ' <span style="display:inline-block;font-size:18px;line-height:1.2;"><b>' + pFmt + '</b></span>',
@@ -1970,7 +2292,7 @@ ${Object.entries(v)
                   <div className="infos-secondaires">
                     <strong>Année:</strong> {v.Année || "N/A"}
                     <br />
-                    <strong>Taille:</strong> {v["Taille du cadre"] || "N/A"}
+                    <strong>Tailles :</strong> {formatSizeVariants(v)}
                     {v["Type de vélo"] === "Électrique" && (
                       <>
                         <br />
@@ -2061,10 +2383,21 @@ ${Object.entries(v)
               {renderPriceBox(selectedVelo)}
               {/* Indicateurs clés */}
   <div className="velo-highlights-inline">
-  <div className="highlight" data-tooltip="Quantité en stock">
+  <div className="highlight stock-highlight">
     <span role="img" aria-label="stock">📦</span>
     {selectedVelo["Total Inventory Qty"] || 0}
+
+    {(() => {
+      const detail = formatVariantStockInline(selectedVelo);
+      if (!detail) return null;
+      return (
+        <div className="stock-tooltip">
+          {detail}
+        </div>
+      );
+    })()}
   </div>
+
   <div className="highlight" data-tooltip="Jours depuis publication">
     <span role="img" aria-label="jours">📅</span>
     {getDaysSincePublication(selectedVelo["Published At"])} j
@@ -2186,28 +2519,52 @@ ${Object.entries(v)
 )}
 
         
-            <div className="details-grid">
-  {Object.entries(fieldGroups).map(([groupName, fields]) => (
-    <div key={groupName} className="detail-group">
-      <h3>{groupName}</h3>
-      <table className="detail-table">
-        <tbody>
-          {fields.map((field) => (
-            <tr key={field}>
-              <td>
-                <strong>{fieldLabels[field] || field}</strong>
-              </td>
-              <td>{selectedVelo[field] || "N/A"}</td>
-            </tr>
-          ))}
+    <div className="details-grid">
+  {Object.entries(fieldGroups).map(([groupName, fields]) => {
+    const isInfos = groupName === "Infos générales";
+    // On retire l'ancien champ pour éviter le doublon
+    const fieldsToShow = isInfos
+      ? fields.filter((f) => f !== "Taille du cadre")
+      : fields;
 
-          
+    const rangesStr = isInfos ? formatVariantSizeRanges(selectedVelo) : null;
 
-        </tbody>
-      </table>
-    </div>
-  ))}
+    return (
+      <div key={groupName} className="detail-group">
+        <h3>{groupName}</h3>
+        <table className="detail-table">
+          <tbody>
+            {fieldsToShow.map((field) => (
+              <tr key={field}>
+                <td><strong>{fieldLabels[field] || field}</strong></td>
+                <td>{selectedVelo[field] || "N/A"}</td>
+              </tr>
+            ))}
+
+            {/* On ajoute UNE SEULE fois ces deux lignes, dans "Infos générales" */}
+            {isInfos && (
+              <>
+                <tr>
+                  <td><strong>Tailles de Cadre</strong></td>
+                  <td>{formatFrameSizes(selectedVelo)}</td>
+                </tr>
+
+                {rangesStr && (
+                  <tr>
+                    <td><strong>Tailles Recommandées</strong></td>
+                    <td>{rangesStr}</td>
+                  </tr>
+                )}
+              </>
+            )}
+          </tbody>
+        </table>
+      </div>
+    );
+  })}
 </div>
+
+
           </div>
         )}
       </div>
