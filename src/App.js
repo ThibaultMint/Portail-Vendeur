@@ -16,6 +16,8 @@ const API_KEY = "XXXXXXXXXXXX";
 ============================= */
 const fieldLabels = {
   Title: "Nom du vélo",
+  "Marque": "Marque",
+  "Modèle": "Modèle",
   "Prix réduit": "Prix",
   "Prix original": "Prix barré",
   URL: "Lien produit",
@@ -89,6 +91,8 @@ const fieldLabels = {
 ============================= */
 const fieldGroups = {
   "Infos générales": [
+      "Marque",
+  "Modèle",
     "Année",
     "Catégorie",
     "Type de vélo",
@@ -1490,7 +1494,7 @@ useEffect(() => {
     return;
   }
 
-  const mint = "#8FD9A8";
+  const mint = "#A2E4B8";
   const accentRed = "#d32f2f";
 
   // Barré robuste pour Pipedrive (caractères combinants)
@@ -3432,19 +3436,7 @@ ${Object.entries(v)
         <label>Nom de l’alerte</label>
         <input name="title" placeholder="Ex: Pierre – VTT Trail" required />
 
-        <div className="row-2">
-          <div>
-            <label>Client (nom)</label>
-            <input name="client_name" placeholder="Ex: Pierre Dupont" />
-          </div>
-          <div>
-            <label>Téléphone</label>
-            <input name="client_phone" placeholder="+33 ..." />
-          </div>
-        </div>
-
-        <label>Email (optionnel)</label>
-        <input name="client_email" type="email" placeholder="client@exemple.com" />
+        
 
         <div className="row-2">
           <div>
