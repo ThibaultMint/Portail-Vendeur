@@ -146,7 +146,7 @@ const fieldGroups = {
 const numericFields = {
   "Année": { min: 2017, max: 2025, step: 1, unit: "" },
   "Poids du vélo": { min: 0, max: 35, step: 1, unit: "kg" },
-  "Kilométrage": { min: 0, max: 25000, step: 100, unit: "km" },
+  "Kilométrage": { min: 0, max: 40000, step: 100, unit: "km" },
   "Débattement fourche": { min: 0, max: 220, step: 5, unit: "mm" },
   "Débattement amortisseur": { min: 0, max: 220, step: 5, unit: "mm" },
   "Nb de vitesses": { min: 1, max: 13, step: 1, unit: "" },
@@ -795,7 +795,7 @@ useEffect(() => {
     poidsMin: 0,
     poidsMax: 35,
     kilometrageMin: 0,
-    kilometrageMax: 25000,
+    kilometrageMax: 40000,
     debattementFourcheMin: 0,
     debattementFourcheMax: 220,
     debattementAmortisseurMin: 0,
@@ -3137,9 +3137,9 @@ ${Object.entries(v)
               <div style={{ padding: "0 10px" }}>
                 <Slider
                   min={0}
-                  max={25000}
+                  max={40000}
                   step={50}
-                  value={filters.kilometrageMax ?? 25000}
+                  value={filters.kilometrageMax ?? 40000}
                   onChange={(val) =>
                     setFilters({ ...filters, kilometrageMax: val })
                   }
@@ -3149,7 +3149,7 @@ ${Object.entries(v)
                   ]}
                 />
                 <div className="slider-values">
-                  {filters.kilometrageMax ?? 25000} km
+                  {filters.kilometrageMax ?? 40000} km
                 </div>
               </div>
             </div>
