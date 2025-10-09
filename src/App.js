@@ -148,7 +148,7 @@ const fieldGroups = {
 
 // Champs numériques -> sliders (noms EXACTS des colonnes)
 const numericFields = {
-  "Année": { min: 2017, max: 2025, step: 1, unit: "" },
+  "Année": { min: 2017, max: 2026, step: 1, unit: "" },
   "Poids du vélo": { min: 0, max: 35, step: 1, unit: "kg" },
   "Kilométrage": { min: 0, max: 40000, step: 100, unit: "km" },
   "Débattement fourche": { min: 0, max: 220, step: 5, unit: "mm" },
@@ -851,7 +851,7 @@ useEffect(() => {
     prixMax: 10000,
 
     anneeMin: 2017,
-    anneeMax: 2025,
+    anneeMax: 2026,
     poidsMin: 0,
     poidsMax: 35,
     kilometrageMin: 0,
