@@ -226,12 +226,22 @@ const formatPrice = (value) => {
 };
 
 /** Liste à cocher déroulante réutilisable */
-function MultiSelect({ label, options, values, onChange, placeholder = "Choisir…" }) {
+function MultiSelect({
+  label,
+  options,
+  values,
+  onChange,
+  placeholder = "Choisir…",
+  includeEmpty = true,          // ← NEW: affiche l’option “vide”
+  emptyLabel = EMPTY_LABEL,     // ← NEW
+}) {
   const [open, setOpen] = useState(false);
+
   const toggle = (val) => {
     if (values.includes(val)) onChange(values.filter((v) => v !== val));
     else onChange([...values, val]);
   };
+
   return (
     <div className="multi-select">
       <button type="button" className="multi-select-btn" onClick={() => setOpen((o) => !o)}>
@@ -239,6 +249,18 @@ function MultiSelect({ label, options, values, onChange, placeholder = "Choisir�
       </button>
       {open && (
         <div className="multi-select-dropdown" onMouseLeave={() => setOpen(false)}>
+          {/* Option "vide" en premier si demandé */}
+          {includeEmpty && (
+            <label className="multi-select-item" key="__empty__">
+              <input
+                type="checkbox"
+                checked={values.includes(EMPTY_TOKEN)}
+                onChange={() => toggle(EMPTY_TOKEN)}
+              />
+              <span>{emptyLabel}</span>
+            </label>
+          )}
+
           {options.length === 0 ? (
             <div className="multi-select-empty">{placeholder}</div>
           ) : (
@@ -249,6 +271,7 @@ function MultiSelect({ label, options, values, onChange, placeholder = "Choisir�
               </label>
             ))
           )}
+
           {values.length > 0 && (
             <button type="button" className="multi-select-clear" onClick={() => onChange([])}>
               Effacer la sélection
@@ -259,6 +282,7 @@ function MultiSelect({ label, options, values, onChange, placeholder = "Choisir�
     </div>
   );
 }
+
 const parseDateFlexible = (val) => {
   if (!val) return NaN;
   const t = Date.parse(val);
@@ -284,9 +308,41 @@ const parseNumericValue = (val) => {
 // Helper multi-select réutilisable (global)
 const applyMulti = (list, field, selected) => {
   if (!selected || selected.length === 0) return list;
-  const wanted = new Set((selected || []).map(cleanText));
-  return list.filter((v) => wanted.has(cleanText(v[field])));
+
+  const wantEmpty = selected.includes(EMPTY_TOKEN);
+  const realValues = new Set(
+    selected
+      .filter((v) => v !== EMPTY_TOKEN)
+      .map((s) => String(s).trim())
+  );
+
+  return list.filter((row) => {
+    const raw = row?.[field];
+    const empty = isEmptyLike(raw);
+
+    // Si l’utilisateur veut les champs vides
+    if (wantEmpty && empty) return true;
+
+    // Sinon, si des valeurs réelles sont cochées, on teste l’inclusion
+    if (realValues.size > 0) {
+      const val = String(raw ?? "").trim();
+      if (!val) return false;
+      return realValues.has(val);
+    }
+
+    // Si l’utilisateur n’a coché QUE “vide” (realValues.size === 0)
+    return wantEmpty && empty;
+  });
 };
+
+// ====== "vide" helpers ======
+const EMPTY_TOKEN = "__EMPTY__";
+const EMPTY_LABEL = "— Vide —";
+const isEmptyLike = (val) => {
+  const s = String(val ?? "").trim();
+  return !s || s.toUpperCase() === "N/A";
+};
+
 
 /* =========================
    Helpers variantes & tailles
