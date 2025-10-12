@@ -477,6 +477,42 @@ const formatVariantSizeRanges = (row) => {
 
   return parts.length ? parts.join(" / ") : null;
 };
+// ====== Helpers numéros de série par variante ======
+
+// Retire les accents pour matcher des noms de colonnes avec/ sans accents
+const stripDiacritics = (s) =>
+  String(s ?? "")
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "");
+
+// Map {index -> [serials]} depuis "Numéros de série variant N" (ou "... var N")
+const getVariantSerialsMap = (row) => {
+  const map = {};
+  if (!row || typeof row !== "object") return map;
+
+  for (const [key, val] of Object.entries(row)) {
+    // normalisation : minuscule, supprime espaces/._-, retire accents
+    const cleaned = stripDiacritics(String(key).toLowerCase()).replace(/[\s._-]+/g, "");
+    // ex acceptés : "numerosdeserievariant1", "numerosdeserievar1"
+    const m = cleaned.match(/^numerosdeserievar(?:iant)?(\d+)$/);
+    if (!m) continue;
+
+    const idx = Number(m[1]);
+    const raw = String(val ?? "").trim();
+    if (!raw) continue;
+
+    // Séparateurs possibles : "|" ou "," ; on nettoie et on garde non vides
+    const parts = raw
+      .split(/[|,]/)
+      .map((x) => x.trim())
+      .filter(Boolean);
+
+    if (parts.length) map[idx] = parts;
+  }
+
+  return map;
+};
+
 
 /* ============ RECHERCHE PAR TAILLE (cm) ============ */
 
@@ -604,13 +640,58 @@ const renderPointsFortsEmail = (val) => {
     '</table>',
   ].join('');
 };
-// ===== Tooltip stock par variantes (version sans conflit) =====
+// Bloc "Pourquoi il va vous plaire" pour l'email (petit, centré, safe Pipedrive)
+const renderWhyEmail = (raw) => {
+  const txt = (raw ?? "").toString().trim();
+  if (!txt) return "";
+  const sanitized = txt
+    .replace(/<\/?[^>]+(>|$)/g, "")   // enlève HTML
+    .replace(/\s+/g, " ")             // espaces propres
+    .slice(0, 600);                   // sécurité
+
+  return [
+    '<div style="text-align:center;margin:6px 0 2px 0;">',
+      '<span style="font-size:12px;line-height:1.4;color:#111827;"><b>Pourquoi il va vous plaire</b></span>',
+    '</div>',
+    '<div style="text-align:center;margin:0 0 8px 0;">',
+      '<span style="font-size:12px;line-height:1.45;color:#374151;display:inline-block;max-width:360px;">',
+        sanitized,
+      '</span>',
+    '</div>'
+  ].join('');
+};
+
+// ===== Tooltip stock par variantes (compat + N° de série) =====
 
 // petit nettoyage
 const _clean = (s) => (s == null ? "" : String(s).trim());
 
-// --- FIX — construit {index -> quantité} à partir des colonnes "Stock variant N"
-// Garde les décimales "9.0" -> 9 (et "9,0" -> 9), au lieu de transformer en "90".
+// retire accents
+const _stripDiacritics = (s) =>
+  String(s ?? "")
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "");
+
+// --- labels {index -> "S" | "M" | "56"...} depuis "Taille cadre variant N"
+const _getVariantLabelsMap = (row) => {
+  const labels = {};
+  if (!row || typeof row !== "object") return labels;
+
+  for (const [key, val] of Object.entries(row)) {
+    const k = String(key).toLowerCase().replace(/[\s._-]+/g, "");
+    const m =
+      k.match(/^taillecadrevar(?:iant|iante)?(\d+)$/) ||
+      k.match(/^taillecadrevar(\d+)$/);
+    if (!m) continue;
+    const idx = Number(m[1]);
+    const label = _clean(val);
+    if (label) labels[idx] = label;
+  }
+  return labels;
+};
+
+// --- stock {index -> qty} depuis "Stock variant N"
+// (garde 9.0 -> 9 ; 9,0 -> 9 ; ignore 0/null)
 const _buildVariantStockMap = (row) => {
   const map = {};
   if (!row || typeof row !== "object") return map;
@@ -623,55 +704,109 @@ const _buildVariantStockMap = (row) => {
   };
 
   for (const [key, val] of Object.entries(row)) {
-    // accepte: "Stock variant 1", "Stock var 2", "stock_variant_3", etc.
     const k = String(key).toLowerCase().replace(/[\s._-]+/g, "");
     const m = k.match(/^stock(?:variant|var)?(\d+)$/);
     if (!m) continue;
 
     const idx = Number(m[1]);
     const qty = toInt(val);
-    if (qty > 0) map[idx] = qty;         // ignore 0 / null
+    if (qty > 0) map[idx] = qty; // ignore 0 / null
   }
   return map;
 };
 
+// --- numéros de série {index -> [serials]} depuis "Numéros de série variant N"
+const _getVariantSerialsMap = (row) => {
+  const map = {};
+  if (!row || typeof row !== "object") return map;
 
-// "56 : 2 stock\n58 : 10 stock" (une ligne par variante)
+  for (const [key, val] of Object.entries(row)) {
+    const cleaned = _stripDiacritics(String(key).toLowerCase()).replace(/[\s._-]+/g, "");
+    // ex acceptés : "numerosdeserievariant1", "numerosdeserievar1"
+    const m = cleaned.match(/^numerosdeserievar(?:iant)?(\d+)$/);
+    if (!m) continue;
+
+    const idx = Number(m[1]);
+    const raw = _clean(val);
+    if (!raw) continue;
+
+    const parts = raw
+      .split(/[|,]/)
+      .map((x) => x.trim())
+      .filter(Boolean);
+
+    if (parts.length) map[idx] = parts;
+  }
+  return map;
+};
+
+// ===== Sortie texte (compat) : "S : 2 en stock\nM : 5 en stock"
 const formatVariantStockInline = (row) => {
   if (!row || typeof row !== "object") return "";
 
-  // Labels {index -> "S" | "M" | "56" ...} depuis "Taille cadre variant N"
-  const labels = {};
-  for (const [key, val] of Object.entries(row)) {
-    const k = String(key).toLowerCase().replace(/[\s._-]+/g, "");
-    const m =
-      k.match(/^taillecadrevar(?:iant|iante)?(\d+)$/) ||
-      k.match(/^taillecadrevar(\d+)$/);
-    if (!m) continue;
-    const idx = Number(m[1]);
-    const label = (val == null ? "" : String(val).trim());
-    if (label) labels[idx] = label;
-  }
+  const labels = _getVariantLabelsMap(row);
+  const stocks = _buildVariantStockMap(row);
 
-  // Quantités {index -> number} depuis "Stock variant N"
-  const stocks = _buildVariantStockMap(row); // ← ta fonction existante
-  const idxs = Object.keys(stocks).map(Number).sort((a, b) => a - b);
+  const idxs = Object.keys(stocks)
+    .map(Number)
+    .filter((i) => stocks[i] > 0)
+    .sort((a, b) => a - b);
 
-  const NBSP = "\u00A0"; // espace insécable pour éviter "56:" puis ligne suivante "2"
-  const parts = [];
-  for (const i of idxs) {
-    const qty = stocks[i] || 0;
-    if (qty > 0) {
-      const label = labels[i] || `Var${i}`;
-      parts.push(`${label}${NBSP}:${NBSP}${qty}${NBSP}en stock`);
-    }
-  }
-  return parts.join("\n"); // un retour à la ligne entre chaque variante
+  const NBSP = "\u00A0";
+  const lines = idxs.map((i) => {
+    const label = labels[i] || `Var${i}`;
+    const qty = stocks[i];
+    return `${label}${NBSP}:${NBSP}${qty}${NBSP}en stock`;
+  });
+
+  return lines.join("\n");
 };
 
+// ===== Sortie HTML enrichie (avec N° de série sous chaque ligne)
+const formatVariantStockHTML = (row) => {
+  if (!row || typeof row !== "object") return null;
 
+  const labels = _getVariantLabelsMap(row);
+  const stocks = _buildVariantStockMap(row);
+  const serials = _getVariantSerialsMap(row);
 
+  const idxs = Object.keys(stocks)
+    .map(Number)
+    .filter((i) => stocks[i] > 0)
+    .sort((a, b) => a - b);
 
+  if (idxs.length === 0) return null;
+
+  const blocks = idxs.map((i) => {
+    const label = labels[i] || `Var ${i}`;
+    const qty = stocks[i];
+    const ser = serials[i] || [];
+
+    const serialLine = ser.length
+      ? `<div style="font-size:11px; opacity:.9; margin-top:2px;">N° série&nbsp;: ${ser.join(" &middot; ")}</div>`
+      : "";
+
+    return `
+      <div style="margin:0 0 6px 0;">
+        <div><strong>${label}</strong> : ${qty} en stock</div>
+        ${serialLine}
+      </div>
+    `;
+  });
+
+  return `
+    <div class="stock-tooltip-inner" style="text-align:left; font-size:12px; line-height:1.35;">
+      ${blocks.join("")}
+    </div>
+  `;
+};
+// Affiche le kilométrage sans décimale et avec " km" collé
+const formatKm = (val) => {
+  const n = parseNumericValue(val); // tu l’as déjà
+  if (n == null) return "N/A";
+  const rounded = Math.round(n); // supprime .0/.3 etc.
+  return `${rounded.toLocaleString("fr-FR")} km`;
+};
 
 
 
@@ -1610,43 +1745,44 @@ const strikeCompat = (txt = "") =>
       const pFmt = hasPrice ? price.toLocaleString("fr-FR") + " €" : "Prix N/A";
       const cFmt = hasCompare ? compare.toLocaleString("fr-FR") + " €" : "";
       const discount = hasCompare ? Math.round((1 - price / compare) * 100) : null;
+      const kmFmt = formatKm(v.Kilométrage);
 
       chunks.push(
-        '<td valign="top" align="center" style="width:50%;padding:0 8px;margin:0;">',
-          '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid #E5E7EB;border-radius:10px;background:#fff;">',
-            '<tr><td style="padding:12px;text-align:center;">',
-              // Titre
-              '<div style="font-weight:600;font-size:15px;color:#111827;margin:0 0 8px;">', (v.Title || ''), '</div>',
-              // Image
-              (img
-                ? '<img src="' + img + '" alt="" width="220" style="max-width:100%;height:auto;border:1px solid #eee;border-radius:8px;margin:0 auto 8px;display:block;">'
-                : ''),
-              // Infos
-              '<div style="font-size:13px;color:#374151;margin:6px 0;line-height:1.45;">',
-                '<span><b>Année:</b> ', (v.Année || 'N/A'), '</span>',
-                ' &nbsp;•&nbsp; <span><b>Taille:</b> ' + (formatFrameSizes(v) || 'N/A') + '</span>',
-                ' &nbsp;•&nbsp; <span><b>Kilométrage:</b> ', (v.Kilométrage || 'N/A'), '</span>',
-              '</div>',
-              // Après '</div>' du bloc "Infos", ajoute CETTE ligne dans le même chunks.push:
-(renderPointsFortsEmail(v["Points forts"]) || ''),
+  '<td valign="top" align="center" style="width:50%;padding:0 8px;margin:0;">',
+    '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid #E5E7EB;border-radius:10px;background:#fff;">',
+      '<tr><td style="padding:12px;text-align:center;">',
+        // Titre
+        '<div style="font-weight:600;font-size:15px;color:#111827;margin:0 0 8px;">', (v.Title || ''), '</div>',
+        // Image
+        (img
+          ? '<img src="' + img + '" alt="" width="220" style="max-width:100%;height:auto;border:1px solid #eee;border-radius:8px;margin:0 auto 8px;display:block;">'
+          : ''),
+        // Infos
+        '<div style="font-size:13px;color:#374151;margin:6px 0;line-height:1.45;">',
+          '<span><b>Année:</b> ', (v.Année || 'N/A'), '</span>',
+          ' &nbsp;•&nbsp; <span><b>Taille:</b> ', (formatFrameSizes(v) || 'N/A'), '</span>',
+          ' &nbsp;•&nbsp; <span><b>Kilométrage:</b> ', kmFmt, '</span>',
+        '</div>',
+        // ← ICI on insère le bloc "Pourquoi il va vous plaire"
+        (renderWhyEmail(v["Points forts"]) || ''),
+        // Prix (barré + % rouge) — compatible Pipedrive
+        '<div style="margin:8px 0;">',
+          ' <span style="display:inline-block;font-size:18px;line-height:1.2;"><b>' + pFmt + '</b></span>',
+          (hasCompare
+            ? '&nbsp;&nbsp;<span style="display:inline-block;font-size:14px;line-height:1.2;">' + strikeCompat(cFmt) + '</span>'
+              + '&nbsp;&nbsp;<span style="display:inline-block;font-size:12px;line-height:1.2;font-weight:700;color:' + accentRed + ';white-space:nowrap;"><font color="' + accentRed + '">-' + discount + '%</font></span>'
+            : ''
+          ),
+        '</div>',
+        // CTA
+        (v.URL
+          ? '<a href="' + v.URL + '" target="_blank" style="display:inline-block;padding:10px 14px;background:' + mint + ';color:#111827;text-decoration:none;border-radius:8px;font-weight:700;font-size:14px;">Voir le vélo</a>'
+          : ''),
+      '</td></tr>',
+    '</table>',
+  '</td>'
+);
 
-              // Prix (barré + % rouge) — compatible Pipedrive (espaces + rouge + barré garanti)
-'<div style="margin:8px 0;">',
-  ' <span style="display:inline-block;font-size:18px;line-height:1.2;"><b>' + pFmt + '</b></span>',
-  (hasCompare
-    ? '&nbsp;&nbsp;<span style="display:inline-block;font-size:14px;line-height:1.2;">' + strikeCompat(cFmt) + '</span>'
-      + '&nbsp;&nbsp;<span style="display:inline-block;font-size:12px;line-height:1.2;font-weight:700;color:' + accentRed + ';white-space:nowrap;"><font color="' + accentRed + '">-' + discount + '%</font></span>'
-    : ''
-  ),
-'</div>',
-              // CTA
-              (v.URL
-                ? '<a href="' + v.URL + '" target="_blank" style="display:inline-block;padding:10px 14px;background:' + mint + ';color:#111827;text-decoration:none;border-radius:8px;font-weight:700;font-size:14px;">Voir le vélo</a>'
-                : ''),
-            '</td></tr>',
-          '</table>',
-        '</td>'
-      );
     }
 
     chunks.push('</tr></table>');
@@ -2356,7 +2492,7 @@ ${Object.entries(v)
                     {v["Type de vélo"] === "Électrique" && (
                       <>
                         <br />
-                        <strong>Kilométrage:</strong> {v.Kilométrage || "N/A"}
+                        <strong>Kilométrage:</strong> {formatKm(v.Kilométrage)}
                       </>
                     )}
                   </div>
@@ -2389,7 +2525,7 @@ ${Object.entries(v)
                     <td>{v["Catégorie"] || "N/A"}</td>
                     <td>{v.Année || "N/A"}</td>
                     <td>{v["Prix réduit"] ? `${v["Prix réduit"]} ` : "N/A"}</td>
-                    <td>{v.Kilométrage || "N/A"}</td>
+                    <td>{formatKm(v.Kilométrage)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -2443,20 +2579,33 @@ ${Object.entries(v)
               {renderPriceBox(selectedVelo)}
               {/* Indicateurs clés */}
   <div className="velo-highlights-inline">
-  <div className="highlight stock-highlight">
-    <span role="img" aria-label="stock">📦</span>
-    {selectedVelo["Total Inventory Qty"] || 0}
+  {(() => {
+  // total = somme par variantes si dispo, sinon fallback colonne globale
+  const stocksMap = _buildVariantStockMap(selectedVelo);
+  const totalStock =
+    Object.keys(stocksMap).length > 0
+      ? Object.values(stocksMap).reduce((a, b) => a + (b || 0), 0)
+      : (Number(selectedVelo["Total Inventory Qty"]) || 0);
 
-    {(() => {
-      const detail = formatVariantStockInline(selectedVelo);
-      if (!detail) return null;
-      return (
-        <div className="stock-tooltip">
-          {detail}
-        </div>
-      );
-    })()}
-  </div>
+  // HTML du tooltip (avec N° de série si dispo)
+  const stockTooltipHTML = formatVariantStockHTML(selectedVelo);
+
+  return (
+    <div className="highlight has-tooltip">
+      <span role="img" aria-label="stock">📦</span>
+      {totalStock}
+
+      {stockTooltipHTML && (
+        <div
+          className="tooltip-bubble"
+          // affiche le HTML enrichi: "S : 2 en stock" + “N° série : …”
+          dangerouslySetInnerHTML={{ __html: stockTooltipHTML }}
+        />
+      )}
+    </div>
+  );
+})()}
+
 
   <div className="highlight" data-tooltip="Jours depuis publication">
     <span role="img" aria-label="jours">📅</span>
@@ -2579,14 +2728,12 @@ ${Object.entries(v)
 )}
 
         
-    <div className="details-grid">
+   <div className="details-grid">
   {Object.entries(fieldGroups).map(([groupName, fields]) => {
     const isInfos = groupName === "Infos générales";
-    // On retire l'ancien champ pour éviter le doublon
     const fieldsToShow = isInfos
       ? fields.filter((f) => f !== "Taille du cadre")
       : fields;
-
     const rangesStr = isInfos ? formatVariantSizeRanges(selectedVelo) : null;
 
     return (
@@ -2597,18 +2744,20 @@ ${Object.entries(v)
             {fieldsToShow.map((field) => (
               <tr key={field}>
                 <td><strong>{fieldLabels[field] || field}</strong></td>
-                <td>{selectedVelo[field] || "N/A"}</td>
+                <td>
+                  {field === "Kilométrage"
+                    ? formatKm(selectedVelo?.Kilométrage)
+                    : (selectedVelo?.[field] ?? "N/A")}
+                </td>
               </tr>
             ))}
 
-            {/* On ajoute UNE SEULE fois ces deux lignes, dans "Infos générales" */}
             {isInfos && (
               <>
                 <tr>
                   <td><strong>Tailles de Cadre</strong></td>
                   <td>{formatFrameSizes(selectedVelo)}</td>
                 </tr>
-
                 {rangesStr && (
                   <tr>
                     <td><strong>Tailles Recommandées</strong></td>
@@ -2623,8 +2772,6 @@ ${Object.entries(v)
     );
   })}
 </div>
-
-
           </div>
         )}
       </div>
@@ -2744,7 +2891,7 @@ ${Object.entries(v)
                                 .filter((v) => selected[v.URL])
                                 .slice(0, 4)
                                 .map((v) => (
-                                  <td key={v.URL + field}>{v[field] !== undefined ? String(v[field]) : "N/A"}</td>
+                                  <td key={v.URL + field}>{v[field] !== undefined ? (field === "Kilométrage" ? formatKm(v[field]) : String(v[field])) : "N/A"}</td>
                                 ))}
                             </tr>
                           ))}
