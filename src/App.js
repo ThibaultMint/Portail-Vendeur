@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { supabase } from "./supabaseClient";
 import Login from "./Login";
-import { FaTrash, FaEnvelope, FaSyncAlt, FaBalanceScale, FaHeart, FaUser, FaUserCircle } from "react-icons/fa";
+import { FaTrash, FaEnvelope, FaSyncAlt, FaBalanceScale, FaHeart, FaUser, FaUserCircle, FaSms } from "react-icons/fa";
 import logoMint from "./logo mint.png";
 import "./App.css";
 import Slider from "rc-slider";
@@ -661,6 +661,7 @@ const renderWhyEmail = (raw) => {
   ].join('');
 };
 
+
 // ===== Tooltip stock par variantes (compat + N° de série) =====
 
 // petit nettoyage
@@ -1149,6 +1150,63 @@ useEffect(() => {
   const [emailHTML, setEmailHTML] = useState("");
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [formHeight, setFormHeight] = useState(0);
+
+  // ====== SMS (état + helpers) ======
+const [showSmsModal, setShowSmsModal] = useState(false);
+const [smsText, setSmsText] = useState("");
+
+// Prénom du vendeur depuis la session
+function getPrenomVendeur() {
+  const full = session?.user?.user_metadata?.full_name?.trim();
+  const fromEmail = session?.user?.email?.split("@")[0];
+  const base = (full || fromEmail || "Votre conseiller").trim();
+  return base.split(/\s+/)[0]; // premier mot = prénom
+}
+
+// Prix court "1 999€"
+function formatPrixCourt(val) {
+  let n = typeof val === "string" ? Number(val.replace(/[^\d.-]/g, "")) : val;
+  if (!Number.isFinite(n)) return "N/A";
+  return `${n.toLocaleString("fr-FR")}€`;
+}
+
+// Construit un SMS ≤ 670 caractères (avec sauts de ligne souhaités)
+function buildSmsFromSelection() {
+  const selection = velos.filter((v) => selected[v.URL]);
+  const prenom = getPrenomVendeur();
+  const phone = (personalPhone && personalPhone.trim()) || "+33 4 84 98 00 28";
+
+  const intro = `Bonjour,\n\nVoici une sélection de vélos rien que pour vous :\n`;
+  const outro =
+    `\n` + // ligne vide entre la liste et la signature
+    `Répondez-moi directement ou appelez-moi pour en discuter.\n` +
+    `Sportivement,\n` +
+    `${prenom}, conseiller cycle Mint-Bikes (${phone})`;
+
+  let body = "";
+  for (const v of selection) {
+    const titre = v.Title || "Vélo";
+    const annee = v.Année ? ` ${v.Année}` : "";
+    const prix = formatPrixCourt(v["Prix réduit"]);
+    const url = v.URL ? ` ${v.URL}` : "";
+    const ligne = `- ${titre}${annee} — ${prix}${url}\n\n`; // ligne vide après chaque vélo
+
+    const candidat = intro + body + ligne + outro;
+    if (candidat.length <= 670) {
+      body += ligne;
+    } else {
+      break;
+    }
+  }
+
+  let sms = intro + body + outro;
+  if (sms.length > 670) sms = sms.slice(0, 667) + "...";
+  return sms;
+}
+
+// (exemple d’ouverture de la modale SMS)
+// setSmsText(buildSmsFromSelection()); setShowSmsModal(true);
+
 
   // Gemini
   const [showGeminiModal, setShowGeminiModal] = useState(false);
@@ -2382,6 +2440,22 @@ ${Object.entries(v)
       <FaEnvelope />
     </button>
     <button
+  onClick={() => {
+    const txt = buildSmsFromSelection();
+    if (!txt || Object.values(selected).every((v) => !v)) {
+      alert("⚠️ Sélectionne au moins 1 vélo pour préparer le SMS !");
+      return;
+    }
+    setSmsText(txt);
+    setShowSmsModal(true);
+  }}
+  className="icon-btn"
+  title="Prévisualiser le SMS"
+  disabled={selectedCount === 0}
+>
+  <FaSms />
+</button>
+    <button
       onClick={() => setShowCompare(true)}
       className="icon-btn"
       title="Comparer"
@@ -2827,6 +2901,58 @@ ${Object.entries(v)
           </div>
         </>
       )}
+      {/* PREVIEW SMS */}
+      {showSmsModal && (
+  <>
+    <div className="overlay" onClick={() => setShowSmsModal(false)}></div>
+    <div className="modal-preview" style={{ maxWidth: 700, width: "90%" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+        <h2 style={{ margin: 0 }}>Prévisualisation du SMS</h2>
+        <div style={{ display: "flex", gap: 10 }}>
+          <span style={{ alignSelf: "center", fontSize: 12, color: smsText.length > 670 ? "#c0392b" : "#666" }}>
+            {smsText.length}/670
+          </span>
+          <button
+            onClick={() => {
+              navigator.clipboard.writeText(smsText).then(
+                () => alert("✅ SMS copié"),
+                () => alert("❌ Impossible de copier automatiquement. Sélectionne et copie manuellement.")
+              );
+            }}
+            style={{ padding: "6px 10px", background: "#2ca76a", color: "#fff", border: "none", borderRadius: 6, cursor: "pointer" }}
+          >
+            📋 Copier
+          </button>
+          <button
+            onClick={() => setShowSmsModal(false)}
+            style={{ padding: "6px 10px", background: "#e74c3c", color: "#fff", border: "none", borderRadius: 6, cursor: "pointer" }}
+          >
+            ✖ Fermer
+          </button>
+        </div>
+      </div>
+
+      <p style={{ marginTop: 0, fontStyle: "italic", color: "#9CA3AF" }}>
+        Le texte est automatiquement limité à 670 caractères.
+      </p>
+
+      <textarea
+        readOnly
+        value={smsText}
+        style={{
+          width: "100%",
+          minHeight: 240,
+          resize: "vertical",
+          border: "1px solid #ddd",
+          borderRadius: 8,
+          padding: 12,
+          fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, Arial",
+          lineHeight: 1.45,
+        }}
+      />
+    </div>
+  </>
+)}
 
       {/* COMPARATEUR */}
       {showCompare && (
