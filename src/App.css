@@ -3625,4 +3625,11 @@ html, body, #root {
 .highlight.has-tooltip .tooltip-bubble .stock-tooltip-inner {
   white-space: normal;
 }
+.last-update {
+  font-size: 0.8em;
+  color: #9ca3af; /* gris clair */
+  font-weight: 400;
+  margin-left: 8px;
+  white-space: nowrap;
+}
 

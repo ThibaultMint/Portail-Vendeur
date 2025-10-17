@@ -883,6 +883,45 @@ const toTime = (val) => {
   return Number.isNaN(t) ? 0 : t;
 };
 
+
+const [lastUpdate, setLastUpdate] = useState(null);
+
+const timeAgoFr = (date) => {
+  if (!date) return "";
+  const now = Date.now();
+  const diffSec = Math.floor((now - new Date(date).getTime()) / 1000);
+  if (diffSec < 10) return "à l’instant";
+  if (diffSec < 60) return `il y a ${diffSec} s`;
+  const diffMin = Math.floor(diffSec / 60);
+  if (diffMin < 60) return `il y a ${diffMin} min`;
+  const diffH = Math.floor(diffMin / 60);
+  if (diffH < 24) return `il y a ${diffH} h`;
+  const diffJ = Math.floor(diffH / 24);
+  if (diffJ < 30) return `il y a ${diffJ} j`;
+  return new Date(date).toLocaleDateString("fr-FR");
+};
+
+
+// Utilise la colonne "Updated At" de velosmint (ou "Published At" si besoin)
+const fetchLastUpdate = async () => {
+  try {
+    const { data, error } = await supabase
+      .from("velosmint")
+      .select('"Updated At"')        // garde les guillemets si la colonne a un espace
+      .order("Updated At", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (!error && data?.["Updated At"]) {
+      const t = Date.parse(data["Updated At"]);
+      if (!Number.isNaN(t)) setLastUpdate(new Date(t));
+    }
+  } catch (e) {
+    console.error("fetchLastUpdate error:", e);
+  }
+};
+
+
 // ===== ALERTE : fetch + calcul des nouveaux vélos =====
 const fetchAlerts = useCallback(async () => {
   if (!session?.user?.id) {
@@ -1482,7 +1521,9 @@ useEffect(() => {
       setVelos(velosFetched);
          };
     fetchVelos();
+    fetchLastUpdate();
   }, []);
+
 
 function GalleryModal({ isOpen, images = [], index = 0, onClose, onPrev, onNext }) {
   if (!isOpen || !images.length) return null;
@@ -2265,7 +2306,14 @@ ${Object.entries(v)
   </>
 )}
           <div className="header-center">
-            <h1>Portail Vendeur Mint-Bikes</h1>
+            <h1>
+  Portail Vendeur Mint-Bikes{" "}
+  {lastUpdate && (
+    <span className="last-update">
+      (mis à jour {timeAgoFr(lastUpdate)})
+    </span>
+  )}
+</h1>
           </div>
           {/* ...dans .header-bar */}
 <div className="header-right">
