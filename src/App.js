@@ -1,12 +1,32 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { supabase } from "./supabaseClient";
 import Login from "./Login";
-import { FaTrash, FaEnvelope, FaSyncAlt, FaBalanceScale, FaHeart, FaUser, FaUserCircle, FaSms } from "react-icons/fa";
+import { 
+  FaTrash, FaEnvelope, FaSyncAlt, FaBalanceScale, FaHeart, FaUser, FaUserCircle, 
+  FaSms, FaPercent, FaLink, FaCheckSquare, FaFileExport 
+} from "react-icons/fa";
 import logoMint from "./logo mint.png";
 import "./App.css";
 import Slider from "rc-slider";
 import "rc-slider/assets/index.css";
 import { createPortal } from "react-dom";
+import {
+  ResponsiveContainer,
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  PieChart,
+  Pie,
+  Cell,
+  LabelList,
+  ScatterChart,
+  Scatter,
+  ZAxis,
+  ReferenceLine
+} from "recharts";
 
 // 🚨 Mets ta vraie clé Gemini ici :
 const API_KEY = "XXXXXXXXXXXX";
@@ -305,6 +325,51 @@ const parseNumericValue = (val) => {
   const num = parseFloat(str);
   return Number.isNaN(num) ? null : num;
 };
+const median = (arr) => {
+  const a = (arr || []).filter((x) => Number.isFinite(x)).sort((x, y) => x - y);
+  if (!a.length) return null;
+  const m = Math.floor(a.length / 2);
+  return a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2;
+};
+
+const bucketizeWeighted = (values, weights, bins) => {
+  const out = bins.map((b) => ({ name: b.label, units: 0 }));
+  for (let i = 0; i < values.length; i++) {
+    const v = values[i];
+    const w = weights[i];
+    if (!Number.isFinite(v) || !Number.isFinite(w) || w <= 0) continue;
+    const idx = bins.findIndex((b) => v >= b.min && v < b.max);
+    if (idx >= 0) out[idx].units += w;
+  }
+  return out;
+};
+
+const fmtEur = (n) => (Number.isFinite(n) ? `${Math.round(n).toLocaleString("fr-FR")} €` : "—");
+
+// Total d'un dataset sur une clé (ex: units)
+const sumKey = (arr, key) => (arr || []).reduce((s, x) => s + (Number(x?.[key]) || 0), 0);
+
+// % arrondi
+const pctOf = (value, total) => {
+  const v = Number(value) || 0;
+  const t = Number(total) || 0;
+  return t > 0 ? Math.round((v / t) * 100) : 0;
+};
+
+// Couleur par barre (plus c'est haut, plus c'est foncé)
+const barFillByValue = (value, min, max) => {
+  const v = Number(value) || 0;
+  const lo = Number(min) || 0;
+  const hi = Number(max) || 1;
+  const t = hi > lo ? (v - lo) / (hi - lo) : 0.5;
+  const clamped = Math.max(0, Math.min(1, t));
+  const k = 0.25 + 0.70 * clamped; // clair -> foncé
+  const r = Math.round(37 * k);
+  const g = Math.round(99 * k);
+  const b = Math.round(235 * k);
+  return `rgb(${r}, ${g}, ${b})`;
+};
+
 // Helper multi-select réutilisable (global)
 const applyMulti = (list, field, selected) => {
   if (!selected || selected.length === 0) return list;
@@ -365,12 +430,207 @@ const getVariantStockMap = (row) => {
   return map;
 };
 
+// Retire accents + normalise
+const normalizeKey = (s) =>
+  String(s ?? "")
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+    .toLowerCase()
+    .replace(/[\s._-]+/g, "");
+
+// Retire accents + normalise
+const stripDiacritics = (s) =>
+  String(s ?? "")
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "");
+
+const getVariantSerialsMap = (row) => {
+  const map = {};
+  if (!row || typeof row !== "object") return map;
+
+  for (const [key, val] of Object.entries(row)) {
+    // normalisation : minuscule, retire accents, supprime espaces/._-
+    const cleaned = stripDiacritics(String(key).toLowerCase()).replace(/[\s._-]+/g, "");
+
+    // ✅ accepte :
+    // "Numéro de série variant 1" -> "numerodeserievariant1"
+    // "Numéros de série variant 1" -> "numerosdeserievariant1"
+    // et tolère "var" / "variant"
+    const m = cleaned.match(/^numeros?deserievar(?:iant)?(\d+)$/);
+    if (!m) continue;
+
+    const idx = Number(m[1]);
+    const raw = String(val ?? "").trim();
+    if (!raw) continue;
+
+    const serials = raw
+      .split(/[|,;·]/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+
+    if (serials.length) map[idx] = serials;
+  }
+
+  return map;
+};
+const getFieldLoose = (row, wantedKey) => {
+  if (!row || typeof row !== "object") return "";
+
+  const target = stripDiacritics(String(wantedKey))
+    .toLowerCase()
+    .replace(/[\s._-]+/g, "");
+
+  for (const k of Object.keys(row)) {
+    const kk = stripDiacritics(String(k))
+      .toLowerCase()
+      .replace(/[\s._-]+/g, "");
+
+    if (kk === target) return row[k];
+  }
+  return "";
+};
+
+// =============================
+// 🔎 Helpers recherche (accents + mots dans le désordre + num de série)
+// =============================
+
+// Normalise un texte : minuscules, sans accents, ponctuation -> espaces
+const normalizeSearchText = (s) =>
+  stripDiacritics(String(s ?? ""))
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+
+// Découpe en tokens (mots) et enlève les tokens trop courts (sauf chiffres / MPE…)
+const tokenizeSearch = (query) => {
+  const raw = normalizeSearchText(query);
+  const tokens = raw.split(/\s+/).filter(Boolean);
+
+  return tokens.filter((t) => {
+    if (t.startsWith("mpe")) return true;     // ex: MPE123...
+    if (/^\d+$/.test(t)) return true;         // ex: 255684
+    return t.length >= 2;                     // évite "a", "e" qui match tout
+  });
+};
+
+// Récupère TOUS les numéros de série présents sur un vélo (variants + fallback)
+const getAllSerialsFromRow = (row) => {
+  const out = [];
+
+  // variants "Numéro de série variant X"
+  const serialsMap = getVariantSerialsMap(row); // {1:[...],2:[...]}
+  for (const k of Object.keys(serialsMap || {})) {
+    const arr = serialsMap[k] || [];
+    for (const sn of arr) {
+      const cleaned = String(sn ?? "").trim();
+      if (cleaned) out.push(cleaned);
+    }
+  }
+
+  // fallback éventuel (si un jour tu as une colonne simple)
+  const raw =
+    row?.["Numéro de série"] ||
+    row?.["Numero de serie"] ||
+    row?.["Serial Number"] ||
+    row?.["serial_number"];
+
+  if (raw) {
+    const parts = String(raw)
+      .split(/[|,;·]/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    out.push(...parts);
+  }
+
+  // unique
+  return [...new Set(out)];
+};
+
+// Construit un “gros texte” searchable (titre + champs + num de série)
+const buildSearchHaystack = (v) => {
+  const title = v?.Title ?? "";
+  const marque = v?.["Marque"] ?? v?.Marque ?? "";
+  const modele = v?.["Modèle"] ?? v?.Modele ?? "";
+  const cat = v?.["Catégorie"] ?? "";
+  const serials = getAllSerialsFromRow(v).join(" ");
+
+  return normalizeSearchText([title, marque, modele, cat, serials].join(" "));
+};
+
 const isVariantInStock = (stockMap, idx) => {
   // S’il n’y a AUCUNE info de stock, on n’exclut rien.
   if (!stockMap || Object.keys(stockMap).length === 0) return true;
   const s = stockMap[idx];
   // Exclure uniquement si on sait que c’est 0
   return !(Number.isFinite(s) && s <= 0);
+};
+// ✅ Stock total d'un vélo (même logique que le 📦 des fiches)
+const getRowTotalStock = (row) => {
+  const stockMap = getVariantStockMap(row);
+  const hasVariants = Object.keys(stockMap).length > 0;
+
+  if (hasVariants) {
+    return Object.values(stockMap).reduce((sum, v) => sum + (Number(v) || 0), 0);
+  }
+
+  // fallback colonne globale
+  return Number(row?.["Total Inventory Qty"]) || 0;
+};
+
+// ✅ Somme des stocks sur une liste de vélos (en ignorant ceux à 0)
+const sumTotalStock = (rows) => {
+  if (!Array.isArray(rows)) return 0;
+  return rows.reduce((acc, row) => {
+    const s = getRowTotalStock(row);
+    return acc + (s > 0 ? s : 0);
+  }, 0);
+};
+
+
+// ✅ Compte le nombre de vélos uniques dispo = nb de numéros de série uniques
+// qui appartiennent à au moins 1 variant avec stock > 0 (ou stock inconnu => on garde).
+const countUniqueInStockSerials = (rows) => {
+  const set = new Set();
+  if (!Array.isArray(rows)) return 0;
+
+  for (const row of rows) {
+    const serialsMap = getVariantSerialsMap(row); // { 1: ["SN1","SN2"], 2: [...] }
+    const stockMap = getVariantStockMap(row);     // { 1: 2, 2: 0, ... }
+
+    const variantIdxs = Object.keys(serialsMap).map(Number);
+
+    // Si on a des variants (cas normal)
+    if (variantIdxs.length > 0) {
+      for (const idx of variantIdxs) {
+        // inclut si stock inconnu, exclut uniquement si stock=0 (selon ta logique)
+        if (!isVariantInStock(stockMap, idx)) continue;
+
+        const sns = serialsMap[idx] || [];
+        for (const sn of sns) {
+          const cleaned = String(sn ?? "").trim();
+          if (cleaned) set.add(cleaned);
+        }
+      }
+    } else {
+      // Fallback si jamais tu as une colonne "Numéro de série" simple (au cas où)
+      const raw =
+        row?.["Numéro de série"] ||
+        row?.["Numero de serie"] ||
+        row?.["Serial Number"] ||
+        row?.["serial_number"];
+
+      if (raw) {
+        const parts = String(raw)
+          .split(/[|,;]+/)
+          .map((s) => s.trim())
+          .filter(Boolean);
+
+        for (const sn of parts) set.add(sn);
+      }
+    }
+  }
+
+  return set.size;
 };
 
 // --- LIBELLÉS (S/M/L…) PAR VARIANTE ---
@@ -478,41 +738,64 @@ const formatVariantSizeRanges = (row) => {
   return parts.length ? parts.join(" / ") : null;
 };
 // ====== Helpers numéros de série par variante ======
+const isPartnerSerial = (sn) =>
+  String(sn ?? "").trim().toUpperCase().startsWith("MPE");
 
-// Retire les accents pour matcher des noms de colonnes avec/ sans accents
-const stripDiacritics = (s) =>
-  String(s ?? "")
-    .normalize("NFD")
-    .replace(/\p{Diacritic}/gu, "");
+// Retourne une répartition UNITÉS (pondérée stock) : partenaire / sur place / inconnu
+const getRowLocationSplitUnits = (row) => {
+  const stockMap = getVariantStockMap(row);
+  const serialsMap = getVariantSerialsMap(row);
 
-// Map {index -> [serials]} depuis "Numéros de série variant N" (ou "... var N")
-const getVariantSerialsMap = (row) => {
-  const map = {};
-  if (!row || typeof row !== "object") return map;
+  let partner = 0;
+  let onsite = 0;
+  let unknown = 0;
 
-  for (const [key, val] of Object.entries(row)) {
-    // normalisation : minuscule, supprime espaces/._-, retire accents
-    const cleaned = stripDiacritics(String(key).toLowerCase()).replace(/[\s._-]+/g, "");
-    // ex acceptés : "numerosdeserievariant1", "numerosdeserievar1"
-    const m = cleaned.match(/^numerosdeserievar(?:iant)?(\d+)$/);
-    if (!m) continue;
+  const variantIdxs = Array.from(
+    new Set([...Object.keys(stockMap), ...Object.keys(serialsMap)].map(Number))
+  ).sort((a, b) => a - b);
 
-    const idx = Number(m[1]);
-    const raw = String(val ?? "").trim();
-    if (!raw) continue;
-
-    // Séparateurs possibles : "|" ou "," ; on nettoie et on garde non vides
-    const parts = raw
-      .split(/[|,]/)
-      .map((x) => x.trim())
-      .filter(Boolean);
-
-    if (parts.length) map[idx] = parts;
+  // Si aucune info de variantes, on retombe sur Total Inventory Qty (mais sans serial => inconnu)
+  if (variantIdxs.length === 0) {
+    const s = Number(row?.["Total Inventory Qty"]) || 0;
+    return { partner: 0, onsite: 0, unknown: s > 0 ? s : 0 };
   }
 
-  return map;
-};
+  for (const idx of variantIdxs) {
+    const qty = Number(stockMap?.[idx] ?? 0) || 0;
+    if (qty <= 0) continue;
 
+    const serials = (serialsMap?.[idx] || [])
+      .map((x) => String(x || "").trim())
+      .filter(Boolean);
+
+    if (serials.length === 0) {
+      unknown += qty;
+      continue;
+    }
+
+    const partnerCount = serials.filter(isPartnerSerial).length;
+    const onsiteCount = serials.length - partnerCount;
+
+    // Cas idéal : on a au moins autant de serials que d'unités en stock
+    if (serials.length >= qty) {
+      // on alloue au plus qty (si trop de serials listés)
+      // ex: qty=2, serials=5 => on prend juste 2, en priorité au "réel" => on répartit proportionnellement
+      const takePartner = Math.round((partnerCount / serials.length) * qty);
+      const takeOnsite = qty - takePartner;
+      partner += takePartner;
+      onsite += takeOnsite;
+    } else {
+      // Cas fréquent : stock > nb serials renseignés => une partie "inconnue"
+      partner += Math.min(partnerCount, qty);
+      onsite += Math.min(onsiteCount, Math.max(0, qty - Math.min(partnerCount, qty)));
+
+      const known = Math.min(serials.length, qty);
+      unknown += Math.max(0, qty - known);
+    }
+  }
+
+  return { partner, onsite, unknown };
+};
 
 /* ============ RECHERCHE PAR TAILLE (cm) ============ */
 
@@ -716,30 +999,7 @@ const _buildVariantStockMap = (row) => {
   return map;
 };
 
-// --- numéros de série {index -> [serials]} depuis "Numéros de série variant N"
-const _getVariantSerialsMap = (row) => {
-  const map = {};
-  if (!row || typeof row !== "object") return map;
 
-  for (const [key, val] of Object.entries(row)) {
-    const cleaned = _stripDiacritics(String(key).toLowerCase()).replace(/[\s._-]+/g, "");
-    // ex acceptés : "numerosdeserievariant1", "numerosdeserievar1"
-    const m = cleaned.match(/^numerosdeserievar(?:iant)?(\d+)$/);
-    if (!m) continue;
-
-    const idx = Number(m[1]);
-    const raw = _clean(val);
-    if (!raw) continue;
-
-    const parts = raw
-      .split(/[|,]/)
-      .map((x) => x.trim())
-      .filter(Boolean);
-
-    if (parts.length) map[idx] = parts;
-  }
-  return map;
-};
 
 // ===== Sortie texte (compat) : "S : 2 en stock\nM : 5 en stock"
 const formatVariantStockInline = (row) => {
@@ -769,7 +1029,7 @@ const formatVariantStockHTML = (row) => {
 
   const labels = _getVariantLabelsMap(row);
   const stocks = _buildVariantStockMap(row);
-  const serials = _getVariantSerialsMap(row);
+const serials = getVariantSerialsMap(row);
 
   const idxs = Object.keys(stocks)
     .map(Number)
@@ -831,6 +1091,16 @@ function App() {
   const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
   const [showPreview, setShowPreview] = useState(false);
   const [showCompare, setShowCompare] = useState(false);
+
+  // ===== MODE PRICING =====
+const [pricingMode, setPricingMode] = useState(false);
+const [pricingRow, setPricingRow] = useState(null);
+const [pricingLoading, setPricingLoading] = useState(false);
+const [pricingSaving, setPricingSaving] = useState(false);
+const [pricingError, setPricingError] = useState(null);
+const [pricingByUrl, setPricingByUrl] = useState({}); // { [mint_url]: row }
+const [pricingListLoading, setPricingListLoading] = useState(false);
+
 
   // Galerie
   const [currentImageIndex, setCurrentImageIndex] = useState(0);
@@ -1243,9 +1513,250 @@ function buildSmsFromSelection() {
   return sms;
 }
 
+// =======================
+// ✅ BULK PROMO (helpers)
+// =======================
+
+const promo_getSelectedVelos = () => {
+  const urls = Object.entries(selected).filter(([, v]) => v).map(([url]) => url);
+  const setUrls = new Set(urls);
+  return filteredAndSortedVelos.filter((v) => setUrls.has(v?.URL));
+};
+
+// ⚠️ Adapte ici si ton champ date est différent
+const promo_getPublishedAt = (v) => {
+  return (
+    v?.published_at ||
+    v?.PublishedAt ||
+    v?.["Published At"] ||
+    v?.created_at ||
+    v?.CreatedAt ||
+    v?.["Created At"] ||
+    null
+  );
+};
+
+const promo_ruleMatches = (rule, v) => {
+  if (!rule?.enabled) return false;
+
+  if (rule.type === "age_days") {
+    const d = promo_getPublishedAt(v);
+    const days = daysSince(d); // ✅ on réutilise TA fonction existante
+    if (!Number.isFinite(days)) return false;
+
+    if (rule.op === "between") return days >= Number(rule.v1) && days <= Number(rule.v2);
+    if (rule.op === ">=") return days >= Number(rule.v1);
+    if (rule.op === "<=") return days <= Number(rule.v1);
+    return false;
+  }
+
+  if (rule.type === "price") {
+    const priceRaw = v?.Price ?? v?.price ?? v?.["Prix"] ?? v?.["Price"];
+    const price = parseNumericValue(priceRaw);
+    if (!Number.isFinite(price)) return false;
+
+    if (rule.op === ">=") return price >= Number(rule.v1);
+    if (rule.op === "<=") return price <= Number(rule.v1);
+    if (rule.op === "between") return price >= Number(rule.v1) && price <= Number(rule.v2);
+    return false;
+  }
+
+  return false;
+};
+
+const promo_computePromoForVelo = (v, rules, strategy, defaultAmount) => {
+  const matching = (rules || []).filter((r) => promo_ruleMatches(r, v));
+  if (matching.length === 0) return Number(defaultAmount) || 0;
+
+  if (strategy === "max") {
+    return Math.max(...matching.map((r) => Number(r.amount) || 0));
+  }
+
+  // "first": première règle dans la liste
+  return Number(matching[0].amount) || 0;
+};
+
+const promo_addRule = () => {
+  setPromoRules((prev) => [
+    ...prev,
+    {
+      id: crypto.randomUUID?.() || String(Date.now()),
+      enabled: true,
+      type: "age_days",
+      op: "between",
+      v1: 15,
+      v2: 30,
+      amount: 100,
+    },
+  ]);
+};
+
+const promo_removeRule = (id) => setPromoRules((prev) => prev.filter((r) => r.id !== id));
+
+const promo_updateRule = (id, patch) =>
+  setPromoRules((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch } : r)));
+
+const promo_openModal = () => {
+  setPromoError("");
+  setPromoModalOpen(true);
+};
+
+// 🔥 APPLY : upsert mode_pricing.mint_promo_amount par mint_url
+const promo_applyToSupabase = async () => {
+  setPromoError("");
+
+  const velosSel = promo_getSelectedVelos();
+  if (velosSel.length === 0) {
+    setPromoError("Aucun vélo sélectionné.");
+    return;
+  }
+
+  const updates = velosSel
+    .filter((v) => v?.URL)
+    .map((v) => ({
+      mint_url: v.URL,
+      mint_promo_amount: promo_computePromoForVelo(v, promoRules, promoStrategy, promoDefaultAmount),
+    }))
+    .map((u) => ({
+      ...u,
+      mint_promo_amount:
+        Number.isFinite(u.mint_promo_amount) && u.mint_promo_amount >= 0 ? u.mint_promo_amount : 0,
+    }));
+
+  try {
+    setPromoSaving(true);
+
+    // ✅ table correcte: mode_pricing
+    const { error } = await supabase
+      .from("mode_pricing")
+      .upsert(updates, { onConflict: "mint_url" });
+
+    if (error) throw error;
+
+    // refresh cache locale utilisée par tes cards (si tu l'utilises)
+    setPricingByUrl((prev) => {
+      const next = { ...(prev || {}) };
+      for (const u of updates) {
+        next[u.mint_url] = { ...(next[u.mint_url] || {}), mint_promo_amount: u.mint_promo_amount };
+      }
+      return next;
+    });
+
+    setPromoModalOpen(false);
+  } catch (e) {
+    setPromoError(e?.message || "Erreur lors de l’application de la promo.");
+  } finally {
+    setPromoSaving(false);
+  }
+};
+
+// ===== EXPORT MODAL =====
+const [exportModalOpen, setExportModalOpen] = useState(false);
+const [exportBase, setExportBase] = useState("url"); // "url" | "serial" | "variant_id"
+
+const openExportModal = () => setExportModalOpen(true);
+const closeExportModal = () => setExportModalOpen(false);
+
+// CSV helper (échappe ; " \n)
+const csvEscape = (value) => {
+  const s = String(value ?? "");
+  // on force les guillemets si ; ou " ou retour ligne
+  if (/[;"\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+  return s;
+};
+
+const downloadCsv = (filename, rows) => {
+  const csv = rows.map((r) => r.map(csvEscape).join(";")).join("\n");
+  const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" }); // BOM Excel
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+};
+
+// Exporte (étape 1 seulement: choix base + colonnes fixes)
+const exportDbNow = () => {
+  const rows = [];
+
+  velos.forEach((v) => {
+    // promo depuis pricingByUrl
+    const promoAmount =
+      v?.URL && pricingByUrl?.[v.URL]?.mint_promo_amount != null
+        ? pricingByUrl[v.URL].mint_promo_amount
+        : "";
+
+    const prixReduit = v?.["Prix réduit"] ?? "";
+
+    // ===== CAS VARIANT ID : 1 ligne par variant =====
+    if (exportBase === "variant_id") {
+      Object.entries(v || {})
+        .filter(([key, val]) => /variant(e)?\s*id/i.test(key) && val)
+        .forEach(([key, variantId]) => {
+          // récupère le numéro X
+          const match = key.match(/(\d+)/);
+          if (!match) return;
+          const idx = match[1];
+
+          // cherche la colonne stock correspondante
+          const stockKey =
+            Object.keys(v).find(
+              (k) =>
+                new RegExp(`stock.*${idx}`, "i").test(k)
+            ) || null;
+
+          const stock = stockKey ? Number(v[stockKey]) : 0;
+          if (!stock || stock <= 0) return; // ❌ pas en stock → ignoré
+
+          rows.push([
+            String(variantId).trim(),
+            prixReduit,
+            promoAmount,
+          ]);
+        });
+
+      return;
+    }
+
+    // ===== AUTRES BASES (URL / SERIAL) → 1 ligne =====
+    let baseVal = "";
+    if (exportBase === "url") baseVal = v?.URL || "";
+    if (exportBase === "serial") {
+      const serials = getAllSerialsFromRow(v);
+      baseVal = serials.length ? serials.join(" | ") : "";
+    }
+
+    rows.push([baseVal, prixReduit, promoAmount]);
+  });
+
+  const header = [
+    exportBase === "variant_id"
+      ? "Variant ID"
+      : exportBase === "serial"
+      ? "Numéro de série"
+      : "URL",
+    "Prix réduit",
+    "mint_promo_amount",
+  ];
+
+  const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+  downloadCsv(`export_bdd_${exportBase}_${stamp}.csv`, [
+    header,
+    ...rows,
+  ]);
+
+  closeExportModal();
+};
+
+
+
 // (exemple d’ouverture de la modale SMS)
 // setSmsText(buildSmsFromSelection()); setShowSmsModal(true);
 
+  const [statsOpen, setStatsOpen] = useState(false);
 
   // Gemini
   const [showGeminiModal, setShowGeminiModal] = useState(false);
@@ -1260,6 +1771,7 @@ function buildSmsFromSelection() {
     setSession(null);
   };
   const userMenuRef = useRef(null);
+  const prevSortConfigRef = useRef({ key: null, direction: "asc" });
 
 useEffect(() => {
   const handleClickOutside = (e) => {
@@ -1283,6 +1795,24 @@ useEffect(() => {
 const [isFeedbackOpen, setIsFeedbackOpen] = useState(false);
 const [feedbackCategory, setFeedbackCategory] = useState("bug");
 const [feedbackMessage, setFeedbackMessage] = useState("");
+
+// ===== Bulk promo modal =====
+const [promoModalOpen, setPromoModalOpen] = useState(false);
+const [promoSaving, setPromoSaving] = useState(false);
+const [promoError, setPromoError] = useState("");
+
+// règles (ordre = priorité)
+const [promoRules, setPromoRules] = useState([
+  // exemple: âge 15-30j => -100€
+  { id: crypto.randomUUID?.() || String(Date.now()), enabled: true, type: "age_days", op: "between", v1: 15, v2: 30, amount: 100 },
+  // exemple: âge >= 30j => -200€
+  { id: crypto.randomUUID?.() || String(Date.now() + 1), enabled: true, type: "age_days", op: ">=", v1: 30, v2: null, amount: 200 },
+]);
+
+// comportement si plusieurs règles matchent
+const [promoStrategy, setPromoStrategy] = useState("first"); // "first" | "max"
+const [promoDefaultAmount, setPromoDefaultAmount] = useState(0); // si aucune règle ne match
+
 
 // --- États pour le feedback ---
 const [showFeedback, setShowFeedback] = useState(false);
@@ -1323,6 +1853,124 @@ const submitFeedback = async () => {
   const now = new Date();
   const diffTime = now - published;
   return Math.floor(diffTime / (1000 * 60 * 60 * 24)); // jours
+};
+// Clamp 0..1
+const clamp01 = (x) => Math.max(0, Math.min(1, x));
+
+// Interpolation linéaire
+const lerp = (a, b, t) => a + (b - a) * t;
+
+// Convertit HEX -> {r,g,b}
+const hexToRgb = (hex) => {
+  const h = hex.replace("#", "").trim();
+  const full = h.length === 3 ? h.split("").map((c) => c + c).join("") : h;
+  const n = parseInt(full, 16);
+  return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
+};
+
+// Convertit {r,g,b} -> HEX
+const rgbToHex = ({ r, g, b }) => {
+  const to2 = (v) => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, "0");
+  return `#${to2(r)}${to2(g)}${to2(b)}`;
+};
+
+// Dégradé multi-étapes: stops = [{t:0,color:"#..."}, {t:0.5,...}, {t:1,...}]
+const gradientColor = (t, stops) => {
+  const tt = clamp01(t);
+  const s = [...stops].sort((a, b) => a.t - b.t);
+  let i = 0;
+  while (i < s.length - 1 && tt > s[i + 1].t) i++;
+  const a = s[i];
+  const b = s[Math.min(i + 1, s.length - 1)];
+  const localT = a.t === b.t ? 0 : (tt - a.t) / (b.t - a.t);
+
+  const A = hexToRgb(a.color);
+  const B = hexToRgb(b.color);
+  return rgbToHex({
+    r: lerp(A.r, B.r, localT),
+    g: lerp(A.g, B.g, localT),
+    b: lerp(A.b, B.b, localT),
+  });
+};
+
+// Days since a date string (retourne NaN si invalide)
+const daysSince = (dateString) => {
+  const ms = parseDateFlexible(dateString);
+  if (Number.isNaN(ms)) return NaN;
+  const diff = Date.now() - ms;
+  return Math.floor(diff / (1000 * 60 * 60 * 24));
+};
+
+const getMarginColor = (benef) => {
+  if (benef == null || Number.isNaN(Number(benef))) return "#6b7280"; // gris
+
+  const b = Number(benef);
+
+  // < 0 => rouge (et plus c'est négatif, plus c'est rouge sombre)
+  if (b < 0) {
+    // de 0 à -500 => t 0..1
+    const t = clamp01(Math.abs(b) / 500);
+    return gradientColor(t, [
+      { t: 0, color: "#ef4444" }, // rouge
+      { t: 1, color: "#7f1d1d" }, // rouge sombre
+    ]);
+  }
+
+  // 0..500 => bof -> ça va (jaune -> orange)
+  if (b <= 500) {
+    const t = clamp01(b / 500);
+    return gradientColor(t, [
+      { t: 0, color: "#facc15" }, // jaune
+      { t: 1, color: "#f97316" }, // orange
+    ]);
+  }
+
+  // >500 => orange -> vert (plus c'est haut, plus c'est vert)
+  // 500..1000 => t 0..1 (au-delà reste vert)
+  const t = clamp01((b - 500) / 500);
+  return gradientColor(t, [
+    { t: 0, color: "#22c55e" }, // vert
+    { t: 1, color: "#15803d" }, // vert plus profond
+  ]);
+};
+const getAgeColor = (days) => {
+  if (!Number.isFinite(days)) return "#6b7280";
+
+  // 0 jour => vert, 60+ jours => rouge
+  const t = clamp01(days / 60);
+  return gradientColor(t, [
+    { t: 0, color: "#22c55e" }, // vert
+    { t: 0.5, color: "#f97316" }, // orange
+    { t: 1, color: "#ef4444" }, // rouge
+  ]);
+};
+const getPricingRecencyColor = (daysSincePricing) => {
+  if (!Number.isFinite(daysSincePricing)) return "#6b7280";
+
+  // <=10 => vert
+  if (daysSincePricing <= 10) {
+    const t = clamp01(daysSincePricing / 10); // léger dégradé vert
+    return gradientColor(t, [
+      { t: 0, color: "#15803d" },
+      { t: 1, color: "#22c55e" },
+    ]);
+  }
+
+  // 10..15 => orange (dégradé)
+  if (daysSincePricing <= 15) {
+    const t = clamp01((daysSincePricing - 10) / 5);
+    return gradientColor(t, [
+      { t: 0, color: "#f97316" }, // orange
+      { t: 1, color: "#fb923c" }, // orange clair
+    ]);
+  }
+
+  // >15 => rouge (plus c'est vieux, plus c'est sombre)
+  const t = clamp01((daysSincePricing - 15) / 15); // 15..30 => t 0..1
+  return gradientColor(t, [
+    { t: 0, color: "#ef4444" },
+    { t: 1, color: "#7f1d1d" },
+  ]);
 };
 
 
@@ -1485,6 +2133,350 @@ const saveNote = async (veloUrl, text) => {
   }
 };
 
+const PRICING_TABLE = "mode_pricing";
+
+const fetchPricingForUrls = async (urls = []) => {
+  const clean = (urls || []).filter(Boolean);
+  if (clean.length === 0) return;
+
+  setPricingListLoading(true);
+  try {
+    // Supabase a une limite de taille → on batch par 200
+    const batchSize = 200;
+    const nextMap = {};
+
+    for (let i = 0; i < clean.length; i += batchSize) {
+      const chunk = clean.slice(i, i + batchSize);
+
+      const { data, error } = await supabase
+        .from(PRICING_TABLE)
+        .select("mint_url, brand_category, commercial_margin_eur, updated_at")
+        .in("mint_url", chunk);
+
+      if (error) {
+        console.error("❌ fetchPricingForUrls error:", error);
+        continue;
+      }
+
+      (data || []).forEach((row) => {
+        nextMap[row.mint_url] = row;
+      });
+    }
+
+    // merge avec l’existant (au cas où)
+    setPricingByUrl((prev) => ({ ...prev, ...nextMap }));
+  } finally {
+    setPricingListLoading(false);
+  }
+};
+// ============================
+// MODE PRICING – helpers fiche
+// ============================
+useEffect(() => {
+  const loadAllPricing = async () => {
+    const { data, error } = await supabase
+      .from("mode_pricing")
+      .select("*"); // toutes colonnes
+
+    if (!error && data) {
+      const map = {};
+      data.forEach((r) => (map[r.mint_url] = r));
+      setPricingByUrl(map);
+    }
+  };
+
+  loadAllPricing();
+}, []);
+
+const openPricingSearchTabs = (v) => {
+  if (!v) return;
+
+  const brand = (v?.Marque || v?.["Marque"] || "").toString().trim();
+  const model =
+    (v?.["Modèle"] || v?.["Modele"] || v?.Modele || v?.Title || "").toString().trim();
+  const year = (v?.["Année"] || v?.["Annee"] || v?.Annee || "").toString().trim();
+  const category = (v?.["Catégorie"] || "").toString().toLowerCase();
+
+  const queryNoYear = [brand, model].filter(Boolean).join(" ").trim();
+  const queryWithYear = [brand, model, year].filter(Boolean).join(" ").trim();
+
+  const qNoYear = encodeURIComponent(queryNoYear);
+  const qWithYear = encodeURIComponent(queryWithYear);
+
+  const typeVeloRaw = getFieldLoose(v, "Type de vélo"); // match même si accents/espaces diffèrent
+const typeVelo = stripDiacritics(String(typeVeloRaw)).toLowerCase().trim();
+
+const isEbike = typeVelo.includes("electrique");
+const fallbackHay = stripDiacritics(`${v?.Title || ""} ${v?.["Catégorie"] || ""} ${v?.["Motorisation"] || ""}`)
+  .toLowerCase();
+
+const isEbikeFinal = isEbike || fallbackHay.includes("hybrid") || fallbackHay.includes("vae") || fallbackHay.includes("bosch");
+
+
+
+  const googleUrl = `https://www.google.com/search?q=${qWithYear}`;
+  const y = year || "0";
+  const buycycleUrl = `https://buycycle.com/fr-fr/shop/min-year/${encodeURIComponent(y)}/search/${qNoYear}/sort-by/lowest-price`;
+  const leboncoinUrl = `https://www.leboncoin.fr/recherche?category=55&text=${qWithYear}`;
+  const upwayUrl = `https://upway.fr/search?q=${qWithYear}`;
+
+  const links = [
+    { label: "Google", url: googleUrl },
+    { label: "Buycycle", url: buycycleUrl },
+    { label: "Leboncoin", url: leboncoinUrl },
+  ];
+  if (isEbikeFinal) links.push({ label: "Upway", url: upwayUrl });
+
+  // ✅ IMPORTANT : pas de noopener ici sinon tu ne peux pas écrire dans la fenêtre
+  const w = window.open("about:blank", "_blank");
+  if (!w) {
+    alert("Pop-up bloquée : autorise les pop-ups pour localhost:3000 puis réessaie.");
+    return;
+  }
+
+  // ✅ sécurité : on coupe l'opener après coup
+  try { w.opener = null; } catch (e) {}
+
+  w.document.title = "Recherches concurrence";
+  w.document.body.innerHTML = `
+    <div style="font-family:Arial,sans-serif;padding:18px;">
+      <h1 style="font-size:18px;margin:0 0 10px;">Recherches concurrence</h1>
+      <p style="margin:0 0 16px;color:#555;">
+        ${escapeHtml(queryWithYear)} ${isEbike ? "(électrique → Upway inclus)" : ""}
+      </p>
+      <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;">
+        ${links
+          .map(
+            (l) => `
+            <a href="${l.url}" target="_blank" rel="noopener noreferrer"
+               style="display:block;padding:12px 14px;border:1px solid #ddd;border-radius:12px;
+                      text-decoration:none;color:#111;font-weight:700;background:#fff;">
+              🔎 ${l.label}
+            </a>`
+          )
+          .join("")}
+      </div>
+      <div style="margin-top:14px;font-size:12px;color:#666;">
+        Clique sur chaque bouton pour ouvrir les onglets.
+      </div>
+    </div>
+  `;
+};
+
+const escapeHtml = (str) =>
+  String(str ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+
+
+const ensurePricingRow = async (mintUrl) => {
+  if (!mintUrl) return null;
+
+  // Déjà en cache → on l’utilise
+  if (pricingByUrl[mintUrl]) {
+    return pricingByUrl[mintUrl];
+  }
+
+  // Sinon on tente un fetch unitaire
+  const { data, error } = await supabase
+    .from("mode_pricing")
+    .select("*")
+    .eq("mint_url", mintUrl)
+    .maybeSingle();
+
+  if (!error && data) {
+    setPricingByUrl((prev) => ({ ...prev, [mintUrl]: data }));
+    return data;
+  }
+
+  // Toujours rien → on crée la ligne
+  const { data: inserted, error: insertError } = await supabase
+    .from("mode_pricing")
+    .insert({ mint_url: mintUrl })
+    .select("*")
+    .single();
+
+  if (insertError) {
+    console.error("❌ ensurePricingRow:", insertError);
+    return null;
+  }
+
+  setPricingByUrl((prev) => ({ ...prev, [mintUrl]: inserted }));
+  return inserted;
+};
+
+const n = (v) => {
+  const x = Number(v);
+  return Number.isFinite(x) ? x : null;
+};
+
+const computePricing = (row, velo = null) => {
+  if (!row) return row;
+
+  // ✅ Prix de vente = prix réel du site Mint
+  const sale = parseNumericValue(velo?.["Prix réduit"]);
+
+  const buy =
+    parseNumericValue(row.negotiated_buy_price) ??
+    parseNumericValue(row.optimized_buy_price);
+
+  const parts =
+    parseNumericValue(row.parts_cost_actual) ??
+    parseNumericValue(row.parts_cost_estimated);
+
+  const logistics = parseNumericValue(row.logistics_cost);
+
+  let commercialEur = null;
+  let commercialPct = null;
+
+  if (sale != null && buy != null) {
+    commercialEur = sale - buy;
+    commercialPct = sale !== 0 ? (commercialEur / sale) * 100 : null;
+  }
+
+  let grossEur = null;
+  let grossPct = null;
+
+  if (sale != null && buy != null) {
+    const totalCosts = (buy ?? 0) + (parts ?? 0) + (logistics ?? 0);
+    grossEur = sale - totalCosts;
+    grossPct = sale !== 0 ? (grossEur / sale) * 100 : null;
+  }
+
+  const round2 = (x) => (x == null ? null : Math.round(x * 100) / 100);
+
+  return {
+    ...row,
+    commercial_margin_eur: round2(commercialEur),
+    commercial_margin_pct: round2(commercialPct),
+    gross_margin_eur: round2(grossEur),
+    gross_margin_pct: round2(grossPct),
+  };
+};
+
+const computeCardBenefit = (velo, pricingRow) => {
+  const sale = parseNumericValue(velo?.["Prix réduit"]);
+  const buy =
+    parseNumericValue(pricingRow?.negotiated_buy_price) ??
+    parseNumericValue(pricingRow?.optimized_buy_price);
+
+  const parts =
+    parseNumericValue(pricingRow?.parts_cost_actual) ??
+    parseNumericValue(pricingRow?.parts_cost_estimated);
+
+  const logistics = parseNumericValue(pricingRow?.logistics_cost);
+
+  if (sale == null || buy == null) return null;
+
+  const benefit = sale - (buy ?? 0) - (parts ?? 0) - (logistics ?? 0);
+  return Math.round(benefit * 100) / 100;
+};
+
+const getSaleBreakdownFromModePricing = (velo, pricingRow) => {
+  const sale = parseNumericValue(velo?.["Prix réduit"]); // prix de vente Mint
+
+  const buy =
+    parseNumericValue(pricingRow?.negotiated_buy_price) ??
+    parseNumericValue(pricingRow?.optimized_buy_price);
+
+  const parts =
+    parseNumericValue(pricingRow?.parts_cost_actual) ??
+    parseNumericValue(pricingRow?.parts_cost_estimated);
+
+  const logistics = parseNumericValue(pricingRow?.logistics_cost);
+
+  if (!Number.isFinite(sale) || sale <= 0) return null;
+
+  const buySafe = Number.isFinite(buy) ? buy : 0;
+  const partsSafe = Number.isFinite(parts) ? parts : 0;
+  const logisticsSafe = Number.isFinite(logistics) ? logistics : 0;
+
+  const costs = buySafe + partsSafe + logisticsSafe;
+  const margin = sale - costs;
+
+  return {
+    sale,
+    buy: buySafe,
+    parts: partsSafe,
+    logistics: logisticsSafe,
+    margin, // peut être négative
+  };
+};
+
+
+const savePricingRow = async (row) => {
+  if (!row?.mint_url) return;
+
+  setPricingSaving(true);
+  try {
+    const { data, error } = await supabase
+      .from("mode_pricing")
+      .upsert(row, { onConflict: "mint_url" })
+      .select("*")
+      .single();
+
+    if (error) {
+      console.error("❌ savePricingRow:", error);
+      setPricingError(error.message);
+      return;
+    }
+
+    setPricingByUrl((prev) => ({ ...prev, [data.mint_url]: data }));
+    setPricingRow(data); // <- important: reflète ce qui est en base
+  } finally {
+    setPricingSaving(false);
+  }
+};
+
+useEffect(() => {
+  if (pricingMode) {
+    // on sauvegarde le tri actuel pour le restaurer ensuite
+    prevSortConfigRef.current = sortConfig;
+
+    // on bascule sur "date du dernier scraping" par défaut
+    setSortConfig({ key: "Updated At", direction: "desc" });
+  } else {
+    // on restaure le tri d'avant
+    setSortConfig(prevSortConfigRef.current || { key: null, direction: "asc" });
+  }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, [pricingMode]);
+
+
+useEffect(() => {
+  const run = async () => {
+    if (!pricingMode) {
+      setPricingRow(null);
+      setPricingError(null);
+      return;
+    }
+    if (!selectedVelo?.URL) {
+      setPricingRow(null);
+      return;
+    }
+
+    setPricingLoading(true);
+    setPricingError(null);
+
+    try {
+      const row = await ensurePricingRow(selectedVelo.URL);
+      setPricingRow(row ? computePricing(row, selectedVelo) : null);
+    } catch (e) {
+      setPricingError(String(e?.message || e));
+      setPricingRow(null);
+    } finally {
+      setPricingLoading(false);
+    }
+  };
+
+  run();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, [pricingMode, selectedVelo?.URL]);
+
+
 
 // 👉 Très important : recharger les intérêts quand on ouvre un vélo
 useEffect(() => {
@@ -1565,9 +2557,15 @@ const applyAllFilters = (sourceVelos, f = {}) => {
 
   // 1) Filtres de base
   if (f.title) {
-    const term = String(f.title).toLowerCase();
-    items = items.filter((v) => (v.Title || "").toLowerCase().includes(term));
+  const tokens = tokenizeSearch(f.title);
+
+  if (tokens.length) {
+    items = items.filter((v) => {
+      const hay = buildSearchHaystack(v);
+      return tokens.every((t) => hay.includes(t));
+    });
   }
+}
   if (f.categorie) items = items.filter((v) => v["Catégorie"] === f.categorie);
   if (f.typeVelo) items = items.filter((v) => v["Type de vélo"] === f.typeVelo);
 
@@ -1685,6 +2683,7 @@ const applyAllFilters = (sourceVelos, f = {}) => {
   /* -------- Filtrer + Trier (PIPELINE UNIQUE) -------- */
   const filteredAndSortedVelos = useMemo(() => {
   let items = applyAllFilters(velos, filters); // ← filtrage réutilisable
+  
 
   // Tri (on garde ta logique)
   if (sortConfig.key) {
@@ -1694,6 +2693,40 @@ const applyAllFilters = (sourceVelos, f = {}) => {
     items.sort((a, b) => {
       let aVal = a[key];
       let bVal = b[key];
+// ----- Champs virtuels Pricing -----
+if (key === "PRICING_BRAND_CATEGORY") {
+  aVal = pricingByUrl?.[a?.URL]?.brand_category ?? null;
+  bVal = pricingByUrl?.[b?.URL]?.brand_category ?? null;
+}
+
+if (key === "PRICING_BENEFICE") {
+  const pa = pricingByUrl?.[a?.URL];
+  const pb = pricingByUrl?.[b?.URL];
+  aVal = computeCardBenefit(a, pa);
+  bVal = computeCardBenefit(b, pb);
+}
+
+if (key === "PRICING_BUY_PRICE") {
+  const pa = pricingByUrl?.[a?.URL];
+  const pb = pricingByUrl?.[b?.URL];
+  // prix d'achat = négocié si dispo, sinon optimisé
+  aVal = pa?.negotiated_buy_price ?? pa?.optimized_buy_price ?? null;
+  bVal = pb?.negotiated_buy_price ?? pb?.optimized_buy_price ?? null;
+}
+
+if (key === "PRICING_UPDATED_AT") {
+  aVal = pricingByUrl?.[a?.URL]?.updated_at ?? null;
+  bVal = pricingByUrl?.[b?.URL]?.updated_at ?? null;
+
+  const at = parseDateFlexible(aVal);
+  const bt = parseDateFlexible(bVal);
+
+  if (Number.isNaN(at) && Number.isNaN(bt)) return 0;
+  if (Number.isNaN(at)) return 1 * dir;
+  if (Number.isNaN(bt)) return -1 * dir;
+  return (at - bt) * dir;
+}
+
 
       const aEmpty = aVal == null || aVal === "";
       const bEmpty = bVal == null || bVal === "";
@@ -1721,11 +2754,359 @@ const applyAllFilters = (sourceVelos, f = {}) => {
   return items;
 }, [velos, filters, sortConfig]);
 
+const pricingDisplayedStockUnits = useMemo(() => {
+  return sumTotalStock(filteredAndSortedVelos);
+}, [filteredAndSortedVelos]);
+
+const pricingTotalStockUnits = useMemo(() => {
+  return sumTotalStock(velos);
+}, [velos]);
+
+const statsData = useMemo(() => {
+  const list = filteredAndSortedVelos || [];
+// =====================
+// ✅ NOUVELLES MÉTRIQUES (base = unités 📦)
+// =====================
+let stockValueEur = 0;            // Valeur stock € = (prix de vente Mint) * unités
+let benefitTotalEur = 0;          // Somme bénéfices pondérés unités (pour "moy marge totale")
+let benefitTotalUnits = 0;        // Unités avec bénéfice calculable
+// ✅ KPIs promo (pondérés unités)
+let promoUnits = 0;
+let promoTotalEur = 0;
+let promoMaxEur = 0;
+
+const listingAges = [];           // jours depuis Published At (VelosMint)
+const listingAgeUnits = [];       // pondération unités
+
+const stockAges = [];             // jours depuis purchase_date (mode_pricing)
+const stockAgeUnits = [];         // pondération unités
+
+// Mix typologie (unités)
+const typologyUnits = {};         // { "VTT": 12, "VTT AE": 8, ... }
+
+// Elec/Muscu (unités)
+let elecUnits = 0;
+let muscuUnits = 0;
+let unknownPowerUnits = 0;
+
+  // On construit des tableaux parallèles : prix[], bénéfice[], daysPricing[], et weightUnits[]
+  const prices = [];
+  const priceUnits = [];
+
+  const benefits = [];
+  const benefitUnits = [];
+
+  const pricingAges = [];
+  const pricingAgeUnits = [];
+  const weightedAvg = (values, weights) => {
+  let s = 0;
+  let w = 0;
+  for (let i = 0; i < values.length; i++) {
+    const val = values[i];
+    const wt = weights[i];
+    if (!Number.isFinite(val) || !Number.isFinite(wt) || wt <= 0) continue;
+    s += val * wt;
+    w += wt;
+  }
+  return w > 0 ? s / w : null;
+};
+
+// Normalise tes catégories vers la liste demandée
+const normalizeTypology = (catRaw, typeVeloRaw) => {
+  const cat = String(catRaw ?? "").toUpperCase();
+  const typeVelo = String(typeVeloRaw ?? "").toUpperCase(); // "ELECTRIQUE" / "MUSCULAIRE"
+
+  const isElec = typeVelo.includes("ELECT");
+
+  // Tu peux ajuster si tes libellés diffèrent
+  if (cat.includes("VILLE")) return "VILLE";
+  if (cat.includes("VTT")) return isElec ? "VTT AE" : "VTT";
+  if (cat.includes("GRAVEL") || cat.includes("GRVL")) return isElec ? "GRVL AE" : "GRVL";
+  if (cat.includes("ROUTE") || cat.includes("RT") || cat.includes("VR")) return isElec ? "VR AE" : "VR";
+
+  return "Autre";
+};
+
+  for (const v of list) {
+    const units = getRowTotalStock(v); // ✅ pondération = stock du vélo
+    if (!Number.isFinite(units) || units <= 0) continue;
+    const pr = pricingByUrl?.[v?.URL];
+
+    // ✅ Valeur stock € = prix réduit Mint * unités
+const salePrice = parseNumericValue(v?.["Prix réduit"]);
+if (Number.isFinite(salePrice)) {
+  stockValueEur += salePrice * units;
+}
+
+// ✅ Durée mise en ligne (Published At dans VelosMint)
+const dListing = daysSince(v?.["Published At"]);
+if (Number.isFinite(dListing)) {
+  listingAges.push(dListing);
+  listingAgeUnits.push(units);
+}
+
+// ✅ Moy marge totale (bénéfice moyen par unité)
+const bUnit = computeCardBenefit(v, pr);
+if (Number.isFinite(bUnit)) {
+  benefitTotalEur += bUnit * units;
+  benefitTotalUnits += units;
+}
+
+// ✅ Mix typologie (unités)
+const typ = normalizeTypology(v?.["Catégorie"], v?.["Type de vélo"]);
+typologyUnits[typ] = (typologyUnits[typ] ?? 0) + units;
+
+// ✅ Elec / Muscu (unités) via "Type de vélo" (VelosMint)
+const power = String(v?.["Type de vélo"] ?? "").toUpperCase();
+if (power.includes("ELECT")) elecUnits += units;
+else if (power.includes("MUSC")) muscuUnits += units;
+else unknownPowerUnits += units;
+
+    const price = parseNumericValue(v?.["Prix réduit"]);
+    if (Number.isFinite(price)) {
+      prices.push(price);
+      priceUnits.push(units);
+    }
+
+    const p = pricingByUrl?.[v?.URL];
+    const b = computeCardBenefit(v, p);
+    if (Number.isFinite(b)) {
+      benefits.push(b);
+      benefitUnits.push(units);
+    }
+
+    const d = daysSince(p?.updated_at);
+    if (Number.isFinite(d)) {
+      pricingAges.push(d);
+      pricingAgeUnits.push(units);
+    }
+  }
+
+  // BINS
+  const priceBins = [
+    { label: "< 1k", min: 0, max: 1000 },
+    { label: "1k–1.5k", min: 1000, max: 1500 },
+    { label: "1.5k–2k", min: 1500, max: 2000 },
+    { label: "2k–2.5k", min: 2000, max: 2500 },
+    { label: "2.5k–3k", min: 2500, max: 3000 },
+    { label: "3k+", min: 3000, max: Infinity },
+  ];
+
+  const benefitBins = [
+  { label: "< -500", min: -999999, max: -500 },
+
+  { label: "-500 – -300", min: -500, max: -300 },
+  { label: "-300 – -100", min: -300, max: -100 },
+  { label: "-100 – 0", min: -100, max: 0 },
+
+  { label: "0 – 200", min: 0, max: 200 },
+  { label: "200 – 400", min: 200, max: 400 },
+  { label: "400 – 600", min: 400, max: 600 },
+  { label: "600 – 800", min: 600, max: 800 },
+  { label: "800 – 1000", min: 800, max: 1000 },
+  { label: "1000 – 1200", min: 1000, max: 1200 },
+  { label: "1200 – 1400", min: 1200, max: 1400 },
+  { label: "1400 – 1500", min: 1400, max: 1500 },
+
+  { label: "≥ 1500", min: 1500, max: Infinity },
+];
+
+
+  // =====================
+// ✅ BINS DURÉES (jours)
+// =====================
+const ageBins = [
+  { label: "≤21j", min: 0, max: 21 },
+  { label: "22–42j", min: 21, max: 42 },
+  { label: "43–63j", min: 42, max: 63 },
+  { label: "64–84j", min: 63, max: 84 },
+  { label: ">84j", min: 84, max: Infinity },
+];
+
+const listingAgeDist = bucketizeWeighted(listingAges, listingAgeUnits, ageBins);
+
+// =====================
+// ✅ MIX TYPOLOGIE / ELEC-MUSCU (unités)
+// =====================
+const mixTypology = Object.entries(typologyUnits)
+  .map(([name, units]) => ({ name, units }))
+  .filter((x) => x.units > 0);
+
+const elecMuscu = [
+  { name: "Électrique", units: elecUnits },
+  { name: "Musculaire", units: muscuUnits },
+  { name: "Inconnu", units: unknownPowerUnits },
+].filter((x) => x.units > 0);
+
+// =====================
+// ✅ KPIs moyens (pondérés unités)
+// =====================
+// KPI base = unités
+const totalUnits = sumTotalStock(list);
+
+const avgListingDays = weightedAvg(listingAges, listingAgeUnits);
+
+
+const avgBenefitPerUnit = benefitTotalUnits > 0 ? (benefitTotalEur / benefitTotalUnits) : null;
+
+  // HISTOS (en unités)
+  const priceHisto = bucketizeWeighted(prices, priceUnits, priceBins);
+  const benefitHisto = bucketizeWeighted(benefits, benefitUnits, benefitBins);
+
+
+  // % marge négative (pondéré unités) :
+  // base = unités des vélos où on a un bénéfice calculable
+  const totalUnitsWithBenefit = benefitUnits.reduce((s, u) => s + u, 0);
+  const negUnits = benefits.reduce((acc, b, i) => acc + (b < 0 ? benefitUnits[i] : 0), 0);
+  const negPctUnits = totalUnitsWithBenefit > 0 ? Math.round((negUnits / totalUnitsWithBenefit) * 100) : 0;
+
+  // % à repricer >15j (pondéré unités)
+  const totalUnitsWithPricingDate = pricingAgeUnits.reduce((s, u) => s + u, 0);
+  const repricingUnits = pricingAges.reduce((acc, d, i) => acc + (d > 15 ? pricingAgeUnits[i] : 0), 0);
+  const repricingPctUnits = totalUnitsWithPricingDate > 0 ? Math.round((repricingUnits / totalUnitsWithPricingDate) * 100) : 0;
+
+  // “médiane bénéfice” pondérée unités = plus complexe.
+  // V1 simple : on garde la médiane simple (par vélo). (Si tu veux, je te fais la weighted median après.)
+  const medBenefit = median(benefits);
+  let partnerUnits = 0;
+let onsiteUnits = 0;
+let unknownUnits = 0;
+
+
+for (const v of list) {
+  const split = getRowLocationSplitUnits(v); // {partner, onsite, unknown}
+  partnerUnits += split.partner;
+  onsiteUnits += split.onsite;
+  unknownUnits += split.unknown;
+}
+
+let saleTot = 0;
+let buyTot = 0;
+let partsTot = 0;
+let logisticsTot = 0;
+let marginTot = 0;
+
+const marginAgeScatter = []; // points scatter (1 point = 1 annonce)
+
+// list = ta liste filtrée (celle qui sert déjà à tes stats)
+for (const v of list) {
+  const units = getRowTotalStock(v); // 📦 unités dispo
+  if (!Number.isFinite(units) || units <= 0) continue;
+
+  // mode_pricing est indexé par mint_url (chez toi = v.URL)
+  const pr = pricingByUrl?.[v?.URL];
+// ✅ Promo = mint_promo_amount > 0
+const promo = Number(pr?.mint_promo_amount ?? 0);
+if (Number.isFinite(promo) && promo > 0) {
+  promoUnits += units;
+  promoTotalEur += promo * units;
+  promoMaxEur = Math.max(promoMaxEur, promo);
+}
+
+  const b = getSaleBreakdownFromModePricing(v, pr);
+  if (!b) continue;
+// ✅ Scatter: X = jours depuis mise en ligne, Y = marge €/unité
+const dListing = daysSince(v?.["Published At"]);
+const mUnit = Number(b?.margin); // marge €/unité (ton breakdown est déjà par unité)
+
+if (Number.isFinite(dListing) && Number.isFinite(mUnit)) {
+  marginAgeScatter.push({
+    days: dListing,
+    margin: mUnit,
+    units,
+    title: v?.Title || v?.["Title"] || "",
+    url: v?.URL || "",
+    price: Number(v?.["Prix réduit"] ?? NaN),
+    promo: Number(pr?.mint_promo_amount ?? 0),
+  });
+}
+
+  saleTot += b.sale * units;
+  buyTot += b.buy * units;
+  partsTot += b.parts * units;
+  logisticsTot += b.logistics * units;
+  marginTot += b.margin * units;
+}
+// ✅ KPI promo (à faire après avoir rempli promoUnits)
+const promoPctUnits = totalUnits > 0 ? Math.round((promoUnits / totalUnits) * 100) : 0;
+const promoAvgEur = promoUnits > 0 ? (promoTotalEur / promoUnits) : 0;
+
+
+// Camembert ne supporte pas les valeurs négatives.
+// Donc si la marge est négative, on met une part "Dépassement coûts"
+const overCostTot = Math.max(0, -marginTot);
+const marginNonNegTot = Math.max(0, marginTot);
+
+const saleBreakdownPie = saleTot > 0 ? [
+  { name: "Prix d'achat", value: buyTot },
+  { name: "Pièces", value: partsTot },
+  { name: "Logistique", value: logisticsTot },
+  ...(overCostTot > 0 ? [{ name: "Dépassement coûts", value: overCostTot }] : []),
+  ...(marginNonNegTot > 0 ? [{ name: "Marge", value: marginNonNegTot }] : []),
+] : [];
+
+
+const locationPie = [
+  { name: "Fleeta (MPE)", units: partnerUnits },
+  { name: "Mint Bikes", units: onsiteUnits },
+  { name: "Inconnu", units: unknownUnits },
+].filter((x) => x.units > 0);
+
+
+  return {
+  priceHisto,
+  benefitHisto,
+  locationPie, // ✅ AJOUT : sinon le graph est toujours vide
+  kpi: {
+    totalUnits,
+    negPctUnits,
+    medBenefit,
+    repricingPctUnits,
+    nRows: list.length,
+    partnerUnits,
+    onsiteUnits,
+    unknownUnits,
+    promoPctUnits,
+promoUnits,
+promoTotalEur,
+promoAvgEur,
+promoMaxEur,
+  },
+  saleBreakdownPie,
+saleTotals: { saleTot, buyTot, partsTot, logisticsTot, marginTot },
+stockValueEur,
+  avgListingDays,
+  avgBenefitPerUnit,
+
+  listingAgeDist,
+  mixTypology,
+  elecMuscu,
+  marginAgeScatter,
+};
+}, [filteredAndSortedVelos, pricingByUrl]);
 
   /* -------- Utilitaires sélection -------- */
   const toggleSelect = (url) => setSelected((prev) => ({ ...prev, [url]: !prev[url] }));
   const resetSelection = () => setSelected({});
   const selectedCount = Object.values(selected).filter(Boolean).length;
+  const selectAllDisplayed = () => {
+  setSelected((prev) => {
+    const next = { ...prev };
+    for (const v of filteredAndSortedVelos) {
+      if (v?.URL) next[v.URL] = true;
+    }
+    return next;
+  });
+};
+
+// placeholders (tu complèteras après)
+const bulkCreatePromo = () => {
+  promo_openModal();
+};
+
+const bulkLinkBikes = () => {
+  alert("🟠 Lier les vélos : à brancher ensuite");
+};
 
   /* -------- Prix -------- */
   const renderPriceBox = (v) => {
@@ -2036,7 +3417,7 @@ ${Object.entries(v)
       <div className="header-fixed">
         <div className="header-bar">
           <div
-  className="header-left"
+          className="header-left"
   style={{ display: "flex", alignItems: "center", gap: "10px", position: "relative" }}
 >
   <img src={logoMint} alt="Logo" className="header-logo" />
@@ -2306,15 +3687,39 @@ ${Object.entries(v)
   </>
 )}
           <div className="header-center">
-            <h1>
-  Portail Vendeur Mint-Bikes{" "}
-  {lastUpdate && (
-    <span className="last-update">
-      (mis à jour {timeAgoFr(lastUpdate)})
+  <div
+    onClick={() => setPricingMode((v) => !v)}
+    title="Basculer entre Portail vendeur et Portail pricing"
+    style={{
+      display: "flex",
+      alignItems: "center",
+      gap: 10,
+      cursor: "pointer",
+      userSelect: "none",
+    }}
+  >
+    <h1 style={{ margin: 0 }}>
+      {pricingMode ? "Portail Pricing Mint-Bikes" : "Portail Vendeur Mint-Bikes"}{" "}
+      {lastUpdate && (
+        <span className="last-update">
+          (mis à jour {timeAgoFr(lastUpdate)})
+        </span>
+      )}
+    </h1>
+
+    {/* Indicateur visuel cliquable */}
+    <span
+      style={{
+        fontSize: 16,
+        opacity: 0.75,
+        transform: pricingMode ? "rotate(180deg)" : "none",
+        transition: "transform 0.2s ease",
+      }}
+    >
+      🔁
     </span>
-  )}
-</h1>
-          </div>
+  </div>
+</div>
           {/* ...dans .header-bar */}
 <div className="header-right">
   <button
@@ -2351,7 +3756,7 @@ ${Object.entries(v)
         value={filters.title}
         onChange={(e) => setFilters({ ...filters, title: e.target.value })}
         list="titles"
-        placeholder="Commence à taper…"
+        placeholder="Titre / marque / modèle / n° de série…"
       />
       <datalist id="titles">
         {allTitles.map((t) => (
@@ -2471,6 +3876,8 @@ ${Object.entries(v)
     <span>
       <strong>{selectedCount}</strong> vélo(s) sélectionné(s)
     </span>
+
+    {/* Reset sélection (toujours visible) */}
     <button
       onClick={resetSelection}
       className="icon-btn"
@@ -2479,46 +3886,133 @@ ${Object.entries(v)
     >
       <FaSyncAlt />
     </button>
-    <button
-      onClick={() => setShowPreview(true)}
-      className="icon-btn"
-      title="Prévisualiser le mail"
-      disabled={selectedCount === 0}
-    >
-      <FaEnvelope />
-    </button>
-    <button
-  onClick={() => {
-    const txt = buildSmsFromSelection();
-    if (!txt || Object.values(selected).every((v) => !v)) {
-      alert("⚠️ Sélectionne au moins 1 vélo pour préparer le SMS !");
-      return;
-    }
-    setSmsText(txt);
-    setShowSmsModal(true);
-  }}
-  className="icon-btn"
-  title="Prévisualiser le SMS"
-  disabled={selectedCount === 0}
->
-  <FaSms />
-</button>
-    <button
-      onClick={() => setShowCompare(true)}
-      className="icon-btn"
-      title="Comparer"
-      disabled={selectedCount < 2}
-    >
-      <FaBalanceScale />
-    </button>
+
+    {/* ===== MODE NORMAL ===== */}
+    {!pricingMode && (
+      <>
+        <button
+          onClick={() => setShowPreview(true)}
+          className="icon-btn"
+          title="Prévisualiser le mail"
+          disabled={selectedCount === 0}
+        >
+          <FaEnvelope />
+        </button>
+
+        <button
+          onClick={() => {
+            const txt = buildSmsFromSelection();
+            if (!txt || Object.values(selected).every((v) => !v)) {
+              alert("⚠️ Sélectionne au moins 1 vélo pour préparer le SMS !");
+              return;
+            }
+            setSmsText(txt);
+            setShowSmsModal(true);
+          }}
+          className="icon-btn"
+          title="Prévisualiser le SMS"
+          disabled={selectedCount === 0}
+        >
+          <FaSms />
+        </button>
+
+        <button
+          onClick={() => setShowCompare(true)}
+          className="icon-btn"
+          title="Comparer"
+          disabled={selectedCount < 2}
+        >
+          <FaBalanceScale />
+        </button>
+      </>
+    )}
+
+    {/* ===== MODE PRICING ===== */}
+    {pricingMode && (
+      <>
+        <button
+          onClick={selectAllDisplayed}
+          className="icon-btn"
+          title="Sélectionner tous les vélos affichés"
+          disabled={filteredAndSortedVelos.length === 0}
+        >
+          <FaCheckSquare />
+        </button>
+
+        <button
+          onClick={bulkCreatePromo}
+          className="icon-btn"
+          title="Créer une promo (bulk)"
+          disabled={selectedCount === 0}
+        >
+          <FaPercent />
+        </button>
+
+        <button
+       onClick={openExportModal}
+       className="icon-btn"
+       title="Exporter"
+        >
+      <FaFileExport />
+      </button>
+      </>
+    )}
   </div>
 
   {/* Compteur au centre */}
-  <div className="velo-counter">
-  <span className="velo-count">{filteredAndSortedVelos.length}</span>
-  <span className="velo-separator"> / </span>
-  <span className="velo-total">{velos.length}</span>
-  <span className="velo-label">  Vélos</span>
+  <div
+  style={{
+    display: "flex",
+    alignItems: "center",
+    gap: 6,
+  }}
+>
+  {/* Compteur */}
+  <div
+    className="velo-counter"
+    onClick={() => setStatsOpen(true)}
+    style={{
+      cursor: "pointer",
+      userSelect: "none",
+      padding: "6px 10px",
+      borderRadius: 10,
+    }}
+    title="Ouvrir les statistiques"
+  >
+    <span className="velo-count">
+      {pricingMode ? pricingDisplayedStockUnits : filteredAndSortedVelos.length}
+    </span>
+
+    <span className="velo-separator"> / </span>
+
+    <span className="velo-total">
+      {pricingMode ? pricingTotalStockUnits : velos.length}
+    </span>
+
+    <span className="velo-label">
+      {pricingMode ? "  Unités dispo" : "  Vélos"}
+    </span>
+  </div>
+
+  {/* Icône stats */}
+  <button
+    type="button"
+    onClick={() => setStatsOpen(true)}
+    title="Voir les statistiques"
+    style={{
+      border: "1px solid #e5e7eb",
+      background: "#fff",
+      borderRadius: 8,
+      padding: "6px 8px",
+      cursor: "pointer",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      fontSize: 14,
+    }}
+  >
+    📊
+  </button>
 </div>
 
   {/* Vue + Tri */}
@@ -2558,10 +4052,24 @@ ${Object.entries(v)
         }}
       >
         <option value="">Trier par</option>
-        <option value="Title">Titre</option>
-        <option value="Année">Année</option>
-        <option value="Prix réduit">Prix</option>
-        <option value="Published At">Date de publication</option>
+
+{!pricingMode ? (
+  <>
+    <option value="Title">Titre</option>
+    <option value="Année">Année</option>
+    <option value="Prix réduit">Prix</option>
+    <option value="Published At">Date de publication</option>
+  </>
+) : (
+  <>
+    <option value="PRICING_UPDATED_AT">Date du dernier pricing</option>
+    <option value="PRICING_BENEFICE">Bénéfice</option>
+    <option value="Published At">Date de publication</option>
+    <option value="PRICING_BUY_PRICE">Prix d&apos;achat</option>
+    <option value="Prix réduit">Prix</option>
+  </>
+)}
+
       </select>
       <button
         type="button"
@@ -2592,32 +4100,160 @@ ${Object.entries(v)
               {filteredAndSortedVelos.map((v) => (
                 <div key={v.URL} className={`velo-card ${selected[v.URL] ? "selected" : ""}`} onClick={() => setSelectedVelo(v)}>
                   <div className="image-wrapper">
-                    {v["Image 1"] && <img src={v["Image 1"]} alt="Vélo" className="velo-image" />}
-                    <div
-                      className={`wishlist-icon ${selected[v.URL] ? "selected" : ""}`}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        toggleSelect(v.URL);
-                      }}
-                    >
-                      <FaHeart />
-                    </div>
-                  </div>
+  {v["Image 1"] && <img src={v["Image 1"]} alt="Vélo" className="velo-image" />}
+
+  {/* ✅ BADGE PROMO (mode pricing) */}
+  {pricingMode && (() => {
+    const promoRaw =
+      pricingByUrl?.[v.URL]?.mint_promo_amount ??
+      v?.mint_promo_amount ??
+      v?.["mint_promo_amount"];
+
+    const promo = parseNumericValue(promoRaw);
+    if (!Number.isFinite(promo) || promo <= 0) return null;
+
+    return (
+      <div
+        className="promo-badge"
+        title={`Promo en cours : -${promo.toLocaleString("fr-FR")} €`}
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          position: "absolute",
+          top: 8,
+          left: 8,
+          zIndex: 3,
+          padding: "6px 8px",
+          borderRadius: 10,
+          fontSize: 12,
+          fontWeight: 900,
+          background: "#ef4444",
+          color: "#fff",
+          boxShadow: "0 6px 16px rgba(0,0,0,0.18)",
+          lineHeight: 1,
+        }}
+      >
+        -{promo.toLocaleString("fr-FR")}€
+      </div>
+    );
+  })()}
+
+  {!pricingMode ? (
+  <div
+    className={`wishlist-icon ${selected[v.URL] ? "selected" : ""}`}
+    onClick={(e) => {
+      e.stopPropagation();
+      toggleSelect(v.URL);
+    }}
+    title="Ajouter à la sélection"
+  >
+    <FaHeart />
+  </div>
+) : (
+  <div
+    className={`wishlist-icon ${selected[v.URL] ? "selected" : ""}`}
+    onClick={(e) => {
+      e.stopPropagation();
+      toggleSelect(v.URL);
+    }}
+    title="Sélectionner pour promo"
+  >
+    <FaPercent />
+  </div>
+)}
+</div>
                   <div className="title">
                     <strong>{v.Title}</strong>
                   </div>
                   {renderPriceBox(v)}
-                  <div className="infos-secondaires">
-                    <strong>Année:</strong> {v.Année || "N/A"}
-                    <br />
-                    <strong>Tailles :</strong> {formatSizeVariants(v)}
-                    {v["Type de vélo"] === "Électrique" && (
-                      <>
-                        <br />
-                        <strong>Kilométrage:</strong> {formatKm(v.Kilométrage)}
-                      </>
-                    )}
-                  </div>
+                  {(() => {
+  const p = pricingByUrl?.[v.URL]; // row pricing si dispo
+  
+  return (
+    <div
+      className="infos-secondaires"
+      style={pricingMode ? { display: "flex", justifyContent: "space-between", gap: 10 } : {}}
+    >
+      {/* GAUCHE : infos compactes */}
+      <div style={pricingMode ? { flex: 1, minWidth: 0 } : {}}>
+        <div>
+          <strong>Année:</strong> {v.Année || "N/A"}
+        </div>
+        <div>
+          <strong>Tailles :</strong> {formatSizeVariants(v)}
+        </div>
+        {v["Type de vélo"] === "Électrique" && (
+          <div>
+            <strong>Km:</strong> {formatKm(v.Kilométrage)}
+          </div>
+        )}
+      </div>
+
+      {/* DROITE : infos pricing (uniquement en mode pricing) */}
+{pricingMode && (
+  <div
+    style={{
+      width: 155,
+      paddingLeft: 10,
+      borderLeft: "1px solid rgba(0,0,0,0.08)",
+      fontSize: 12,
+      lineHeight: 1.35,
+    }}
+  >
+    {(() => {
+      const ben = computeCardBenefit(v, p);
+      const daysOnline = getDaysSincePublication(v["Published At"]);
+      const pricingDays = daysSince(p?.updated_at);
+
+      return (
+        <>
+          <div
+            style={{
+              fontSize: 20,
+              fontWeight: 800,
+              lineHeight: 1.1,
+              color: getMarginColor(ben),
+            }}
+          >
+            {ben != null ? `${Number(ben).toLocaleString("fr-FR")} €` : "—"}
+          </div>
+          <div style={{ fontSize: 11, opacity: 0.7, marginBottom: 10 }}>
+            Bénéfice (estimé)
+          </div>
+
+          <div style={{ marginTop: 6, opacity: 0.75 }}>
+            En ligne :{" "}
+            <span
+              style={{
+                fontWeight: 800,
+                color: getAgeColor(daysOnline),
+              }}
+            >
+              {Number.isFinite(daysOnline) ? `${daysOnline} j` : "—"}
+            </span>
+          </div>
+
+          <div style={{ marginTop: 6, opacity: 0.75 }}>
+            Dernier pricing :{" "}
+            <span
+              style={{
+                fontWeight: 800,
+                color: getPricingRecencyColor(pricingDays),
+              }}
+            >
+              {Number.isFinite(pricingDays) ? `${pricingDays} j` : "—"}
+            </span>
+          </div>
+        </>
+      );
+    })()}
+  </div>
+)}
+
+
+    </div>
+  );
+})()}
+
                 </div>
               ))}
             </div>
@@ -2661,6 +4297,9 @@ ${Object.entries(v)
               X
             </button>
             <h2>{selectedVelo.Title}</h2>
+            <div style={{ display: "flex", gap: 8, margin: "8px 0 14px 0" }}>
+</div>
+
 
             {/* Galerie avancée */}
             {(() => {
@@ -2848,8 +4487,416 @@ ${Object.entries(v)
     </div>
   </>
 )}
+{pricingMode && (
+  <div
+    style={{
+      marginTop: 14,
+      padding: 12,
+      border: "1px solid #e5e7eb",
+      borderRadius: 10,
+      background: "var(--bg-card, #fff)",
+    }}
+  >
+    {/* HEADER */}
+    <div
+      style={{
+        display: "flex",
+        justifyContent: "space-between",
+        alignItems: "center",
+        gap: 12,
+        marginBottom: 8,
+      }}
+    >
+      <h3 style={{ margin: 0 }}>Pricing</h3>
 
-        
+      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+        <button
+          type="button"
+          onClick={() => openPricingSearchTabs(selectedVelo)}
+          disabled={!selectedVelo}
+          title="Ouvrir des recherches (Google, Buycycle, Leboncoin, Upway si électrique)"
+          style={{
+            padding: "8px 10px",
+            borderRadius: 10,
+            border: "1px solid #e5e7eb",
+            background: "#fff",
+            cursor: "pointer",
+            fontWeight: 700,
+          }}
+        >
+          🔎 Annonces Concurrence
+        </button>
+
+        <button
+          type="button"
+          className="save-btn"
+          onClick={() => savePricingRow(pricingRow)}
+          disabled={pricingSaving || pricingLoading || !pricingRow?.mint_url}
+        >
+          {pricingSaving ? "Enregistrement..." : "Enregistrer"}
+        </button>
+      </div>
+    </div>
+
+    {pricingLoading && <p style={{ marginTop: 10 }}>Chargement…</p>}
+
+    {pricingError && (
+      <p style={{ marginTop: 10, color: "#b91c1c" }}>❌ {pricingError}</p>
+    )}
+
+    {!pricingLoading && pricingRow && (() => {
+      // =====================================================
+      // Helpers (local)
+      // =====================================================
+      const setField = (key, type) => (e) => {
+        const raw = e.target.value;
+
+        setPricingRow((prev) => {
+          const next = {
+            ...prev,
+            [key]:
+              type === "number"
+                ? raw === ""
+                  ? null
+                  : parseNumericValue(raw)
+                : raw,
+          };
+          return computePricing(next, selectedVelo);
+        });
+      };
+
+      const n = (val) => {
+        const x = parseNumericValue(val);
+        return Number.isFinite(x) ? x : null;
+      };
+
+      const fmt = (x) =>
+        Number.isFinite(x) ? `${Number(x).toLocaleString("fr-FR")} €` : "—";
+
+      const fmtPct = (x) =>
+        Number.isFinite(x) ? `${Number(x).toLocaleString("fr-FR")} %` : "—";
+
+      // =====================================================
+      // 1) PRICING MINT
+      // Prix original = premier prix Mint (estimated_sale_price)
+      // =====================================================
+      const mintOriginal = n(pricingRow?.estimated_sale_price);
+      const mintDepreciation = n(pricingRow?.mint_depreciation_price) ?? 0;
+      const mintPromo = n(pricingRow?.mint_promo_amount) ?? 0;
+
+      const mintNoPromo =
+        mintOriginal != null ? Math.max(0, mintOriginal - mintDepreciation) : null;
+
+      const mintFinal =
+        mintNoPromo != null ? Math.max(0, mintNoPromo - mintPromo) : null;
+
+      // =====================================================
+      // 2) PRICING MARCHÉ
+      // Neuf déstock = new_price / new_bike_url
+      // Occaz = best_used_price / best_used_url
+      // =====================================================
+      const marketNewUrl = pricingRow?.new_bike_url ?? "";
+      const marketUsedUrl = pricingRow?.best_used_url ?? "";
+
+      // =====================================================
+      // 3) INFO ACHAT
+      // =====================================================
+      const buyPrice = n(pricingRow?.negotiated_buy_price);
+      const partsCost = n(pricingRow?.parts_cost_actual);
+      const logisticsCost = n(pricingRow?.logistics_cost);
+      const marketingCost = n(pricingRow?.marketing_cost);
+
+      const totalCosts =
+        (buyPrice ?? 0) + (partsCost ?? 0) + (logisticsCost ?? 0) + (marketingCost ?? 0);
+
+      // =====================================================
+      // Styles
+      // =====================================================
+      const sectionStyle = {
+        padding: 10,
+        border: "1px solid rgba(0,0,0,0.08)",
+        borderRadius: 10,
+        background: "#fff",
+      };
+
+      const titleStyle = { fontWeight: 800, marginBottom: 8 };
+
+      const grid2 = {
+        display: "grid",
+        gridTemplateColumns: "1fr 1fr",
+        gap: 10,
+      };
+
+      const fieldWrap = { display: "grid", gap: 6 };
+
+      const labelStyle = { fontSize: 12, color: "#6b7280" };
+
+      const inputStyle = {
+        height: 36,
+        border: "1px solid #d1d5db",
+        borderRadius: 8,
+        padding: "6px 10px",
+      };
+
+      const roStyle = {
+        height: 36,
+        border: "1px solid #d1d5db",
+        borderRadius: 8,
+        padding: "6px 10px",
+        background: "#f9fafb",
+        color: "#374151",
+        display: "flex",
+        alignItems: "center",
+        fontWeight: 700,
+      };
+
+      const marginRowStyle = {
+        display: "grid",
+        gridTemplateColumns: "1fr 1fr",
+        gap: 10,
+      };
+
+      const roInline = {
+        height: 36,
+        border: "1px solid #d1d5db",
+        borderRadius: 8,
+        padding: "6px 10px",
+        background: "#f9fafb",
+        color: "#374151",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        fontWeight: 800,
+      };
+
+      return (
+        <div style={{ marginTop: 10, display: "grid", gap: 10 }}>
+          {/* =========================
+              1) PRICING MINT
+             ========================= */}
+          <div style={sectionStyle}>
+            <div style={titleStyle}>1) Pricing Mint</div>
+
+            <div style={{ display: "grid", gap: 10 }}>
+              <div style={fieldWrap}>
+                <label style={labelStyle}>Prix original (premier prix Mint)</label>
+                <input
+                  type="number"
+                  value={pricingRow?.estimated_sale_price ?? ""}
+                  onChange={setField("estimated_sale_price", "number")}
+                  style={inputStyle}
+                />
+              </div>
+
+              <div style={fieldWrap}>
+                <label style={labelStyle}>Dévaluation prix</label>
+                <input
+                  type="number"
+                  value={pricingRow?.mint_depreciation_price ?? ""}
+                  onChange={setField("mint_depreciation_price", "number")}
+                  style={inputStyle}
+                  placeholder="(auto plus tard) ex: 120"
+                />
+              </div>
+
+              <div style={fieldWrap}>
+                <label style={labelStyle}>Prix actuel hors promo (calculé)</label>
+                <div style={roStyle}>{fmt(mintNoPromo)}</div>
+              </div>
+
+              <div style={fieldWrap}>
+                <label style={labelStyle}>Montant promo</label>
+                <input
+                  type="number"
+                  value={pricingRow?.mint_promo_amount ?? ""}
+                  onChange={setField("mint_promo_amount", "number")}
+                  style={inputStyle}
+                />
+              </div>
+
+              <div style={fieldWrap}>
+                <label style={labelStyle}>Prix final (indicatif)</label>
+                <div style={roStyle}>{fmt(mintFinal)}</div>
+              </div>
+            </div>
+          </div>
+
+          {/* =========================
+              2) PRICING MARCHÉ
+             ========================= */}
+          <div style={sectionStyle}>
+            <div style={titleStyle}>2) Pricing marché</div>
+
+            <div style={{ display: "grid", gap: 12 }}>
+              <div style={grid2}>
+                <div style={fieldWrap}>
+                  <label style={labelStyle}>Meilleur prix neuf déstock</label>
+                  <input
+                    type="number"
+                    value={pricingRow?.new_price ?? ""}
+                    onChange={setField("new_price", "number")}
+                    style={inputStyle}
+                  />
+                </div>
+
+                <div style={fieldWrap}>
+                  <label style={labelStyle}>URL neuf déstock</label>
+                  <input
+                    type="text"
+                    value={marketNewUrl}
+                    onChange={setField("new_bike_url", "text")}
+                    style={inputStyle}
+                  />
+                </div>
+              </div>
+
+              <div style={grid2}>
+                <div style={fieldWrap}>
+                  <label style={labelStyle}>Meilleur prix occasion</label>
+                  <input
+                    type="number"
+                    value={pricingRow?.best_used_price ?? ""}
+                    onChange={setField("best_used_price", "number")}
+                    style={inputStyle}
+                  />
+                </div>
+
+                <div style={fieldWrap}>
+                  <label style={labelStyle}>URL occasion</label>
+                  <input
+                    type="text"
+                    value={marketUsedUrl}
+                    onChange={setField("best_used_url", "text")}
+                    style={inputStyle}
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* =========================
+              3) INFO ACHAT
+             ========================= */}
+          <div style={sectionStyle}>
+            <div style={titleStyle}>3) Info achat</div>
+
+            <div style={{ display: "grid", gap: 10 }}>
+              <div style={grid2}>
+                <div style={fieldWrap}>
+                  <label style={labelStyle}>Prix d'achat</label>
+                  <input
+                    type="number"
+                    value={pricingRow?.negotiated_buy_price ?? ""}
+                    onChange={setField("negotiated_buy_price", "number")}
+                    style={inputStyle}
+                  />
+                </div>
+
+                <div style={fieldWrap}>
+                  <label style={labelStyle}>Prix des pièces</label>
+                  <input
+                    type="number"
+                    value={pricingRow?.parts_cost_actual ?? ""}
+                    onChange={setField("parts_cost_actual", "number")}
+                    style={inputStyle}
+                  />
+                </div>
+              </div>
+
+              <div style={grid2}>
+                <div style={fieldWrap}>
+                  <label style={labelStyle}>Frais logistiques</label>
+                  <input
+                    type="number"
+                    value={pricingRow?.logistics_cost ?? ""}
+                    onChange={setField("logistics_cost", "number")}
+                    style={inputStyle}
+                  />
+                </div>
+
+                <div style={fieldWrap}>
+                  <label style={labelStyle}>Frais marketing</label>
+                  <input
+                    type="number"
+                    value={pricingRow?.marketing_cost ?? ""}
+                    onChange={setField("marketing_cost", "number")}
+                    style={inputStyle}
+                  />
+                </div>
+              </div>
+
+              <div style={fieldWrap}>
+                <label style={labelStyle}>Total coûts (indicatif)</label>
+                <div style={roStyle}>{fmt(totalCosts)}</div>
+              </div>
+            </div>
+          </div>
+
+          {/* =========================
+              CALCULÉ (marges en une ligne)
+             ========================= */}
+          <div
+            style={{
+              marginTop: 2,
+              paddingTop: 10,
+              borderTop: "1px solid rgba(0,0,0,0.08)",
+            }}
+          >
+            <div style={{ fontWeight: 700, marginBottom: 8, fontSize: 13 }}>
+              Marges (calculé)
+            </div>
+
+            {/* Marge commerciale : € + % sur la même ligne */}
+            <div style={{ ...marginRowStyle, marginBottom: 10 }}>
+              <div style={fieldWrap}>
+                <label style={labelStyle}>Marge commerciale</label>
+                <div style={roInline}>
+                  <span>{fmt(pricingRow?.commercial_margin_eur)}</span>
+                  <span style={{ opacity: 0.75 }}>{fmtPct(pricingRow?.commercial_margin_pct)}</span>
+                </div>
+              </div>
+
+              {/* Marge brute : € + % sur la même ligne */}
+              <div style={fieldWrap}>
+                <label style={labelStyle}>Marge brute</label>
+                <div style={roInline}>
+                  <span>{fmt(pricingRow?.gross_margin_eur)}</span>
+                  <span style={{ opacity: 0.75 }}>{fmtPct(pricingRow?.gross_margin_pct)}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* COMMENTAIRE */}
+          <div style={{ display: "grid", gap: 6 }}>
+            <label style={{ fontSize: 12, color: "#6b7280" }}>Commentaire</label>
+            <textarea
+              value={pricingRow?.comment ?? ""}
+              onChange={(e) =>
+                setPricingRow((prev) =>
+                  computePricing(
+                    {
+                      ...prev,
+                      comment: e.target.value,
+                    },
+                    selectedVelo
+                  )
+                )
+              }
+              style={{
+                minHeight: 80,
+                border: "1px solid #d1d5db",
+                borderRadius: 8,
+                padding: 10,
+                resize: "vertical",
+              }}
+            />
+          </div>
+        </div>
+      );
+    })()}
+  </div>
+)}        
    <div className="details-grid">
   {Object.entries(fieldGroups).map(([groupName, fields]) => {
     const isInfos = groupName === "Infos générales";
@@ -2903,40 +4950,396 @@ ${Object.entries(v)
         <>
           <div className="overlay" onClick={() => setShowPreview(false)}></div>
           <div className="modal-preview" style={{ maxWidth: "900px", width: "90%", textAlign: "center", display: "flex", flexDirection: "column" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px" }}>
-              <h2 style={{ margin: 0 }}>Prévisualisation du mail</h2>
-              <div style={{ display: "flex", gap: "10px" }}>
-                <button
-                  onClick={() => {
-                    const iframe = document.getElementById("email-preview-iframe");
-                    if (iframe && iframe.contentWindow) {
-                      const iframeDoc = iframe.contentWindow.document;
-                      const range = iframeDoc.createRange();
-                      range.selectNodeContents(iframeDoc.body);
-                      const selection = iframeDoc.getSelection();
-                      selection.removeAllRanges();
-                      selection.addRange(range);
-                      try {
-                        const success = iframeDoc.execCommand("copy");
-                        alert(success ? "✅ Contenu copié !" : "❌ Impossible de copier automatiquement. Fais Ctrl+C.");
-                      } catch {
-                        alert("❌ Erreur de copie. Sélectionne et copie manuellement.");
-                      }
-                      selection.removeAllRanges();
-                    }
-                  }}
-                  style={{ padding: "6px 10px", background: "#2ca76a", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer" }}
-                >
-                  📋 Copier
-                </button>
-                <button
-                  onClick={() => setShowPreview(false)}
-                  style={{ padding: "6px 10px", background: "#e74c3c", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer" }}
-                >
-                  ✖ Fermer
-                </button>
-              </div>
-            </div>
+            {/* Header de la prévisualisation (remplace la div des boutons existante) */}
+<div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px" }}>
+  <h2 style={{ margin: 0 }}>Prévisualisation du mail</h2>
+  <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
+    {/* Copier le rendu (comportement existant) */}
+    <button
+      onClick={() => {
+        const iframe = document.getElementById("email-preview-iframe");
+        if (iframe && iframe.contentWindow) {
+          const iframeDoc = iframe.contentWindow.document;
+          const range = iframeDoc.createRange();
+          range.selectNodeContents(iframeDoc.body);
+          const selection = iframeDoc.getSelection();
+          selection.removeAllRanges();
+          selection.addRange(range);
+          try {
+            const success = iframeDoc.execCommand("copy");
+            alert(success ? "✅ Contenu copié !" : "❌ Impossible de copier automatiquement. Fais Ctrl+C.");
+          } catch {
+            alert("❌ Erreur de copie. Sélectionne et copie manuellement.");
+          }
+          selection.removeAllRanges();
+        }
+      }}
+      style={{ padding: "6px 10px", background: "#2ca76a", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer" }}
+    >
+      📋 Copier
+    </button>
+
+    {/* Copier version HubSpot — centré + logo maîtrisé + CTA centrés */}
+<button
+  onClick={async () => {
+    const iframe = document.getElementById("email-preview-iframe");
+    if (!iframe || !iframe.contentWindow) {
+      alert("Prévisualisation introuvable.");
+      return;
+    }
+    const win = iframe.contentWindow;
+    const srcDoc = win.document;
+
+    // ---------------- helpers ----------------
+    const ABS = (url) => { try { return new URL(url, srcDoc.baseURI).toString(); } catch { return url; } };
+    const BASE_FONT = 'Arial, Helvetica, sans-serif';
+
+    const SPACER = (h=12) =>
+      `<table role="presentation" width="100%" border="0" cellpadding="0" cellspacing="0">
+        <tr><td height="${h}" style="line-height:${h}px;font-size:${h}px">&nbsp;</td></tr>
+      </table>`;
+
+    const isEl = (n) => n && n.nodeType === 1;
+
+    function mergeInline(current, add) {
+      const map = {};
+      (current || "").split(";").map(s=>s.trim()).filter(Boolean).forEach(decl=>{
+        const [p,...r]=decl.split(":"); if(!p||!r.length) return; map[p.trim()]=r.join(":").trim();
+      });
+      (add || "").split(";").map(s=>s.trim()).filter(Boolean).forEach(decl=>{
+        const [p,...r]=decl.split(":"); if(!p||!r.length) return; map[p.trim()]=r.join(":").trim();
+      });
+      return Object.entries(map).map(([p,v])=>`${p}:${v}`).join(";") + (Object.keys(map).length?";":"");
+    }
+
+    const KEEP = new Set([
+      "color","background-color",
+      "font-family","font-size","font-weight","font-style","line-height","letter-spacing","text-align","text-decoration","text-transform",
+      "padding","padding-top","padding-right","padding-bottom","padding-left",
+      "border","border-top","border-right","border-bottom","border-left","border-color","border-style","border-width","border-radius",
+      "width","max-width","min-width","height","max-height","min-height",
+      "vertical-align","white-space","word-break","overflow-wrap","box-shadow"
+    ]);
+
+    function inlineMinimal(el) {
+      if (!isEl(el)) return;
+      const cs = win.getComputedStyle(el);
+      const decls = [];
+      let ff = cs.getPropertyValue("font-family");
+      if (ff) ff = `${BASE_FONT}, ${ff}`;
+      for (const p of KEEP) {
+        let v = cs.getPropertyValue(p);
+        if (!v) continue;
+        if (p==="font-family") v = ff || BASE_FONT;
+        decls.push(`${p}:${v}`);
+      }
+      el.setAttribute("style", mergeInline(el.getAttribute("style"), decls.join(";")));
+    }
+
+    // ******** 1) Clone + nettoyage soft (on garde la structure) ********
+    const root = srcDoc.body.cloneNode(true);
+    root.querySelectorAll("script, style, link, meta, noscript").forEach(n => n.remove());
+    root.querySelectorAll("*").forEach(n=>{
+      // onEvents
+      [...n.getAttributeNames()].forEach(a => { if (a.startsWith("on")) n.removeAttribute(a); });
+      // classes/ids → HubSpot les ignore et ça allège
+      n.removeAttribute("class");
+      n.removeAttribute("id");
+      // remove comments
+      [...n.childNodes].forEach(c=>{ if (c.nodeType === 8) c.remove(); });
+    });
+
+    // ******** 2) Images & liens ********
+    root.querySelectorAll("img").forEach(img => {
+      if (img.getAttribute("src")) img.setAttribute("src", ABS(img.getAttribute("src")));
+      // centre et limite la taille par défaut
+      let extra = "display:block;margin:0 auto;max-width:100%;height:auto;";
+      // si "logo" détecté → limite plus strict
+      const alt = (img.getAttribute("alt") || "").toLowerCase();
+      const src = (img.getAttribute("src") || "").toLowerCase();
+      const isLogo = alt.includes("logo") || /logo\.(png|jpe?g|svg)/.test(src) || (img.naturalWidth && img.naturalWidth>300);
+      if (isLogo) extra = "display:block;margin:0 auto;max-width:160px;height:auto;";
+      img.setAttribute("style", mergeInline(img.getAttribute("style"), `border:0;outline:0;text-decoration:none;${extra}`));
+    });
+
+    root.querySelectorAll("a").forEach(a => {
+      const href = a.getAttribute("href");
+      if (href) a.setAttribute("href", ABS(href));
+      a.setAttribute("target","_blank"); a.setAttribute("rel","noopener noreferrer");
+      a.setAttribute("style", mergeInline(a.getAttribute("style"), "text-decoration:none;"));
+    });
+
+    // ******** 3) Flex / Grid → tables ciblées (pour conserver le centrage) ********
+    function flexToTable(container) {
+      const cs = win.getComputedStyle(container);
+      if (cs.display !== "flex") return false;
+
+      const dir = cs.flexDirection.includes("column") ? "column" : "row";
+      const gap = parseInt(cs.gap) || parseInt(cs.columnGap) || parseInt(cs.rowGap) || 0;
+      const align = cs.alignItems;     // cross-axis
+      const justify = cs.justifyContent; // main-axis
+      const toAlign = (val) => val.includes("center") ? "center" : (val.includes("end") ? "right" : "left");
+      const valign = align.includes("center") ? "middle" : (align.includes("end")?"bottom":"top");
+
+      const table = srcDoc.createElement("table");
+      table.setAttribute("role","presentation");
+      table.setAttribute("border","0"); table.setAttribute("cellpadding","0"); table.setAttribute("cellspacing","0");
+      table.setAttribute("width","100%");
+      inlineMinimal(container);
+      // si le conteneur ou un parent est centré → on centre
+      const parentTextAlign = cs.textAlign || win.getComputedStyle(container.parentElement || container).textAlign || "left";
+      const wantCenter = justify.includes("center") || parentTextAlign === "center";
+      table.setAttribute("style", mergeInline(container.getAttribute("style"), wantCenter ? "margin:0 auto;" : ""));
+
+      const kids = [...container.childNodes].filter(isEl);
+      if (dir === "row") {
+        const tr = srcDoc.createElement("tr");
+        kids.forEach((child, idx) => {
+          inlineMinimal(child);
+          const td = srcDoc.createElement("td");
+          td.setAttribute("valign", valign);
+          if (wantCenter) td.setAttribute("align","center");
+          td.appendChild(child);
+          tr.appendChild(td);
+          if (gap && idx<kids.length-1) {
+            const spacer = srcDoc.createElement("td");
+            spacer.setAttribute("style", `width:${gap}px;`);
+            spacer.innerHTML = "&nbsp;";
+            tr.appendChild(spacer);
+          }
+        });
+        table.appendChild(tr);
+      } else {
+        kids.forEach((child, idx) => {
+          inlineMinimal(child);
+          const tr = srcDoc.createElement("tr");
+          const td = srcDoc.createElement("td");
+          if (wantCenter) td.setAttribute("align","center");
+          td.appendChild(child);
+          tr.appendChild(td);
+          table.appendChild(tr);
+          if (gap && idx<kids.length-1) {
+            const trGap = srcDoc.createElement("tr");
+            const tdGap = srcDoc.createElement("td");
+            tdGap.innerHTML = SPACER(gap);
+            trGap.appendChild(tdGap);
+            table.appendChild(trGap);
+          }
+        });
+      }
+
+      container.replaceWith(table);
+      return true;
+    }
+
+    function gridToTable(container) {
+      const cs = win.getComputedStyle(container);
+      if (cs.display !== "grid") return false;
+
+      const cols = (cs.gridTemplateColumns || "").split(" ").filter(Boolean);
+      const colCount = cols.length || 1;
+      const gapX = parseInt(cs.columnGap)||0, gapY = parseInt(cs.rowGap)||0;
+
+      const table = srcDoc.createElement("table");
+      table.setAttribute("role","presentation");
+      table.setAttribute("border","0"); table.setAttribute("cellpadding","0"); table.setAttribute("cellspacing","0");
+      table.setAttribute("width","100%");
+      inlineMinimal(container);
+
+      const parentTextAlign = cs.textAlign || win.getComputedStyle(container.parentElement || container).textAlign || "left";
+      const wantCenter = parentTextAlign === "center";
+      if (wantCenter) table.setAttribute("style", mergeInline(table.getAttribute("style"), "margin:0 auto;"));
+
+      const kids = [...container.childNodes].filter(isEl);
+      for (let i=0; i<kids.length; i+=colCount) {
+        const tr = srcDoc.createElement("tr");
+        for (let c=0; c<colCount; c++) {
+          if (c>0 && gapX) {
+            const g = srcDoc.createElement("td"); g.setAttribute("style", `width:${gapX}px;`); g.innerHTML="&nbsp;"; tr.appendChild(g);
+          }
+          const td = srcDoc.createElement("td");
+          if (wantCenter) td.setAttribute("align","center");
+          if (kids[i+c]) { inlineMinimal(kids[i+c]); td.appendChild(kids[i+c]); }
+          tr.appendChild(td);
+        }
+        table.appendChild(tr);
+        if (gapY && i+colCount<kids.length) {
+          const trGap = srcDoc.createElement("tr");
+          const tdGap = srcDoc.createElement("td");
+          tdGap.setAttribute("colspan", String(colCount*2-1));
+          tdGap.innerHTML = SPACER(gapY);
+          trGap.appendChild(tdGap);
+          table.appendChild(trGap);
+        }
+      }
+      container.replaceWith(table);
+      return true;
+    }
+
+    // ******** 4) Centrage des CTA : transforme tout lien qui ressemble à un bouton ********
+    function isLikelyButton(el) {
+      if (!isEl(el) || el.tagName !== "A") return false;
+      const cs = win.getComputedStyle(el);
+      const padX = parseInt(cs.paddingLeft) + parseInt(cs.paddingRight);
+      const bg = cs.backgroundColor || "rgba(0,0,0,0)";
+      const br = parseInt(cs.borderRadius) || 0;
+      const text = (el.textContent || "").toLowerCase();
+      const looksLikeCta = padX >= 20 || br >= 4 || bg !== "rgba(0, 0, 0, 0)" || /voir le vélo|voir le velo|voir les vélos|voir les velos|voir/i.test(text);
+      return looksLikeCta;
+    }
+
+    function wrapAsCenteredButton(a) {
+      inlineMinimal(a);
+      a.setAttribute("style", mergeInline(a.getAttribute("style"),
+        "display:inline-block;padding:12px 18px;background-color:#2ca76a;color:#ffffff;border-radius:6px;text-align:center;"
+      ));
+      const href = a.getAttribute("href") || "#";
+      a.setAttribute("href", href);
+
+      const wrap = srcDoc.createElement("div");
+      wrap.innerHTML =
+        `<table role="presentation" border="0" cellpadding="0" cellspacing="0" align="center">
+          <tr><td align="center">${a.outerHTML}</td></tr>
+        </table>`;
+      a.replaceWith(wrap.firstElementChild);
+    }
+
+    // ******** 5) Marges verticales → spacers + padding ; centrage global ********
+    function fixBlockSpacing(parent) {
+      const kids = [...parent.childNodes];
+      for (let i=0; i<kids.length; i++) {
+        const n = kids[i];
+        if (!isEl(n)) continue;
+
+        // CTA ?
+        if (n.tagName === "A" && isLikelyButton(n)) {
+          wrapAsCenteredButton(n);
+          continue;
+        }
+
+        // convert flex/grid si besoin
+        const cs = win.getComputedStyle(n);
+        if (cs.display === "flex") { flexToTable(n); continue; }
+        if (cs.display === "grid") { gridToTable(n); continue; }
+
+        // inline utile
+        inlineMinimal(n);
+
+        // centrage si parent centré
+        const parentAlign = win.getComputedStyle(n.parentElement || n).textAlign;
+        if (parentAlign === "center" && !/^(TD|TH)$/.test(n.tagName)) {
+          n.setAttribute("style", mergeInline(n.getAttribute("style"), "margin-left:auto;margin-right:auto;text-align:center;"));
+        }
+
+        // images non prises plus haut → centre
+        if (n.tagName === "IMG") {
+          n.setAttribute("style", mergeInline(n.getAttribute("style"), "display:block;margin:0 auto;"));
+        }
+
+        // margins verticaux -> spacers
+        const mt = parseInt(cs.marginTop) || 0;
+        const mb = parseInt(cs.marginBottom) || 0;
+        if (mt>0 && n.previousElementSibling) {
+          const wrap = srcDoc.createElement("div"); wrap.innerHTML = SPACER(mt);
+          n.parentNode.insertBefore(wrap.firstElementChild, n);
+        }
+        if (mb>0 && n.nextElementSibling) {
+          const wrap = srcDoc.createElement("div"); wrap.innerHTML = SPACER(mb);
+          n.parentNode.insertBefore(wrap.firstElementChild, n.nextSibling);
+        }
+        if (mt>0 || mb>0) {
+          n.setAttribute("style", mergeInline(n.getAttribute("style"), "margin-top:0;margin-bottom:0;"));
+        }
+
+        // enfants
+        fixBlockSpacing(n);
+      }
+    }
+
+    fixBlockSpacing(root);
+
+    // ******** 6) Footer forcé centré ********
+    // Essaie de détecter un footer par son texte ou sa position dernière
+    const footerCandidates = [...root.querySelectorAll("footer, [data-footer], .footer")];
+    let footer = footerCandidates[0];
+    if (!footer) {
+      // heuristique : dernier grand conteneur
+      const blocks = [...root.querySelectorAll("div, section, table")];
+      footer = blocks.reverse().find(b => (b.textContent||"").toLowerCase().includes("mint-bikes") || (b.textContent||"").toLowerCase().includes("se désabonner"));
+    }
+    if (footer) {
+      inlineMinimal(footer);
+      footer.setAttribute("style", mergeInline(footer.getAttribute("style"), "text-align:center;margin-left:auto;margin-right:auto;"));
+      // centre les liens dans le footer
+      footer.querySelectorAll("a").forEach(a=>{
+        a.setAttribute("style", mergeInline(a.getAttribute("style"), "text-align:center;display:inline-block;"));
+      });
+    }
+
+    // ******** 7) Enveloppe 600px centrée (garantie de centrage global) ********
+    const wrapped = `
+      <table role="presentation" width="100%" border="0" cellspacing="0" cellpadding="0">
+        <tr>
+          <td align="center">
+            <table role="presentation" width="600" border="0" cellspacing="0" cellpadding="0" style="width:600px;max-width:100%;margin:0 auto;">
+              <tr><td align="center" style="text-align:center;">
+                ${root.innerHTML}
+              </td></tr>
+            </table>
+          </td>
+        </tr>
+      </table>`;
+
+    // ******** 8) Copier en HTML riche (ClipboardItem), fallback contenteditable ********
+    const copyHTML = async (html) => {
+      if (navigator.clipboard && window.ClipboardItem) {
+        try {
+          await navigator.clipboard.write([
+            new ClipboardItem({
+              "text/html": new Blob([html], { type: "text/html" }),
+              "text/plain": new Blob([srcDoc.body.textContent || ""], { type: "text/plain" })
+            })
+          ]);
+          alert("✅ Version HubSpot centrée & fidèle copiée !");
+          return true;
+        } catch (e) { console.warn(e); }
+      }
+      try {
+        const div = document.createElement("div");
+        div.contentEditable = "true";
+        div.style.position = "fixed";
+        div.style.opacity = "0";
+        div.innerHTML = html;
+        document.body.appendChild(div);
+        const range = document.createRange();
+        range.selectNodeContents(div);
+        const sel = window.getSelection();
+        sel.removeAllRanges(); sel.addRange(range);
+        const ok = document.execCommand("copy");
+        sel.removeAllRanges(); document.body.removeChild(div);
+        if (ok) { alert("✅ Copié (fallback) !"); return true; }
+      } catch (e) { console.error(e); }
+      alert("❌ Impossible de copier automatiquement.");
+      return false;
+    };
+
+    await copyHTML(wrapped);
+  }}
+  style={{ padding: "6px 10px", background: "#4a5568", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer" }}
+>
+  🧩 Copier version HubSpot
+</button>
+
+    {/* Fermer */}
+    <button
+      onClick={() => setShowPreview(false)}
+      style={{ padding: "6px 10px", background: "#e74c3c", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer" }}
+    >
+      ✖ Fermer
+    </button>
+  </div>
+</div>
+
             <p style={{ fontStyle: "italic", color: "#d35400" }}>⚠️ Contenu généré automatiquement — vérifie avant envoi</p>
             <div style={{ display: "flex", justifyContent: "center", flex: 1 }}>
               <iframe
@@ -3897,6 +6300,375 @@ ${Object.entries(v)
   </>
 )}
 
+{promoModalOpen && (
+  <div
+    onClick={() => !promoSaving && setPromoModalOpen(false)}
+    style={{
+      position: "fixed",
+      inset: 0,
+      background: "rgba(0,0,0,0.45)",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      zIndex: 10000,
+      padding: 16,
+    }}
+  >
+    <div
+      onClick={(e) => e.stopPropagation()}
+      style={{
+        width: "min(980px, 96vw)",
+        maxHeight: "90vh",
+        overflow: "auto",
+        background: "#fff",
+        borderRadius: 14,
+        padding: 16,
+        boxShadow: "0 14px 40px rgba(0,0,0,0.25)",
+      }}
+    >
+      {/* Header */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+        <h2 style={{ margin: 0 }}>Créer une promo (bulk)</h2>
+
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <button
+            type="button"
+            className="icon-btn"
+            onClick={promo_addRule}
+            disabled={promoSaving}
+            title="Ajouter une règle"
+          >
+            + Règle
+          </button>
+
+          <button
+            type="button"
+            className="icon-btn"
+            onClick={() => !promoSaving && setPromoModalOpen(false)}
+            title="Fermer"
+          >
+            ✕
+          </button>
+        </div>
+      </div>
+
+      {/* Settings */}
+      <div style={{ marginTop: 10, display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
+        <div style={{ fontWeight: 700 }}>Cible : {promo_getSelectedVelos().length} vélo(x)</div>
+
+        <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          Stratégie :
+          <select
+            value={promoStrategy}
+            onChange={(e) => setPromoStrategy(e.target.value)}
+            disabled={promoSaving}
+          >
+            <option value="first">Première règle qui match (priorité par ordre)</option>
+            <option value="max">Plus grosse promo parmi les règles matchées</option>
+          </select>
+        </label>
+
+        <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          Promo par défaut (si aucune règle) :
+          <input
+            type="number"
+            value={promoDefaultAmount}
+            onChange={(e) => setPromoDefaultAmount(parseNumericValue(e.target.value) || 0)}
+            disabled={promoSaving}
+            style={{ width: 110 }}
+          />
+          €
+        </label>
+      </div>
+
+      {promoError && (
+        <div style={{ marginTop: 10, padding: 10, borderRadius: 10, background: "#fee2e2", color: "#991b1b" }}>
+          ❌ {promoError}
+        </div>
+      )}
+
+      {/* Rules */}
+      <div style={{ marginTop: 14 }}>
+        <div style={{ fontSize: 13, color: "#6b7280", marginBottom: 10 }}>
+          Règles appliquées sur les vélos sélectionnés. Tu peux combiner “Âge (jours depuis publication)” et “Prix”.
+        </div>
+
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {promoRules.map((r, idx) => (
+            <div
+              key={r.id}
+              style={{
+                border: "1px solid #e5e7eb",
+                borderRadius: 12,
+                padding: 10,
+                display: "grid",
+                gridTemplateColumns: "34px 1.1fr 1fr 110px 110px 120px 44px",
+                gap: 8,
+                alignItems: "center",
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={!!r.enabled}
+                onChange={(e) => promo_updateRule(r.id, { enabled: e.target.checked })}
+                disabled={promoSaving}
+                title="Activer/désactiver"
+              />
+
+              <div style={{ fontWeight: 800 }}>Règle {idx + 1}</div>
+
+              <select
+                value={r.type}
+                onChange={(e) => {
+                  const type = e.target.value;
+                  if (type === "age_days") promo_updateRule(r.id, { type, op: "between", v1: 15, v2: 30 });
+                  else promo_updateRule(r.id, { type, op: ">=", v1: 2500, v2: null });
+                }}
+                disabled={promoSaving}
+              >
+                <option value="age_days">Âge (jours depuis publication)</option>
+                <option value="price">Prix</option>
+              </select>
+
+              <select
+                value={r.op}
+                onChange={(e) => promo_updateRule(r.id, { op: e.target.value })}
+                disabled={promoSaving}
+              >
+                <option value="between">entre</option>
+                <option value=">=">≥</option>
+                <option value="<=">≤</option>
+              </select>
+
+              <input
+                type="number"
+                value={r.v1 ?? ""}
+                onChange={(e) => promo_updateRule(r.id, { v1: parseNumericValue(e.target.value) })}
+                disabled={promoSaving}
+                style={{ width: "100%" }}
+              />
+
+              <input
+                type="number"
+                value={r.op === "between" ? (r.v2 ?? "") : ""}
+                onChange={(e) => promo_updateRule(r.id, { v2: parseNumericValue(e.target.value) })}
+                disabled={promoSaving || r.op !== "between"}
+                style={{ width: "100%", opacity: r.op === "between" ? 1 : 0.5 }}
+                placeholder={r.op === "between" ? "max" : "—"}
+              />
+
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <input
+                  type="number"
+                  value={r.amount ?? 0}
+                  onChange={(e) =>
+                    promo_updateRule(r.id, { amount: parseNumericValue(e.target.value) || 0 })
+                  }
+                  disabled={promoSaving}
+                  style={{ width: 90 }}
+                />
+                <span style={{ fontWeight: 900 }}>€</span>
+              </div>
+
+              <button
+                type="button"
+                className="icon-btn"
+                onClick={() => promo_removeRule(r.id)}
+                disabled={promoSaving || promoRules.length <= 1}
+                title="Supprimer"
+              >
+                🗑️
+              </button>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Preview */}
+      <div style={{ marginTop: 16, borderTop: "1px solid #eee", paddingTop: 12 }}>
+        <h3 style={{ margin: "0 0 8px 0" }}>Aperçu</h3>
+
+        {(() => {
+          const velosSel = promo_getSelectedVelos();
+          if (velosSel.length === 0) return <div style={{ color: "#6b7280" }}>Aucun vélo sélectionné.</div>;
+
+          const preview = velosSel.slice(0, 12).map((v) => {
+            const promo = promo_computePromoForVelo(v, promoRules, promoStrategy, promoDefaultAmount);
+            const days = daysSince(promo_getPublishedAt(v)); // ✅ ta daysSince existante
+            const price = parseNumericValue(v?.Price ?? v?.price ?? v?.["Prix"] ?? v?.["Price"]);
+
+            return {
+              url: v.URL,
+              title: v?.Title || v?.title || v?.Nom || "Vélo",
+              days,
+              price,
+              promo,
+            };
+          });
+
+          return (
+            <>
+              <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 8 }}>
+                Affiche les 12 premiers vélos sélectionnés (sur {velosSel.length}).
+              </div>
+
+              <div style={{ overflowX: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                  <thead>
+                    <tr style={{ textAlign: "left" }}>
+                      <th style={{ padding: 8, borderBottom: "1px solid #eee" }}>Vélo</th>
+                      <th style={{ padding: 8, borderBottom: "1px solid #eee" }}>Âge (j)</th>
+                      <th style={{ padding: 8, borderBottom: "1px solid #eee" }}>Prix (€)</th>
+                      <th style={{ padding: 8, borderBottom: "1px solid #eee" }}>Promo appliquée (€)</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {preview.map((p) => (
+                      <tr key={p.url}>
+                        <td style={{ padding: 8, borderBottom: "1px solid #f3f4f6" }}>
+                          <div style={{ fontWeight: 700 }}>{p.title}</div>
+                          <div style={{ fontSize: 12, color: "#6b7280" }}>{p.url}</div>
+                        </td>
+                        <td style={{ padding: 8, borderBottom: "1px solid #f3f4f6" }}>
+                          {Number.isFinite(p.days) ? p.days : "—"}
+                        </td>
+                        <td style={{ padding: 8, borderBottom: "1px solid #f3f4f6" }}>
+                          {Number.isFinite(p.price) ? p.price.toLocaleString("fr-FR") : "—"}
+                        </td>
+                        <td style={{ padding: 8, borderBottom: "1px solid #f3f4f6", fontWeight: 900 }}>
+                          -{(p.promo || 0).toLocaleString("fr-FR")} €
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          );
+        })()}
+      </div>
+
+      {/* Footer actions */}
+      <div style={{ marginTop: 16, display: "flex", justifyContent: "flex-end", gap: 10 }}>
+        <button
+          type="button"
+          className="icon-btn"
+          onClick={() => !promoSaving && setPromoModalOpen(false)}
+          disabled={promoSaving}
+        >
+          Annuler
+        </button>
+
+        <button
+          type="button"
+          className="save-btn"
+          onClick={promo_applyToSupabase}
+          disabled={promoSaving || promo_getSelectedVelos().length === 0}
+        >
+          {promoSaving ? "Application..." : "Appliquer la promo (Supabase)"}
+        </button>
+      </div>
+    </div>
+  </div>
+)}
+
+{exportModalOpen && (
+  <div
+    onClick={closeExportModal}
+    style={{
+      position: "fixed",
+      inset: 0,
+      background: "rgba(0,0,0,0.45)",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      zIndex: 10000,
+      padding: 16,
+    }}
+  >
+    <div
+      onClick={(e) => e.stopPropagation()}
+      style={{
+        width: "min(720px, 96vw)",
+        maxHeight: "90vh",
+        overflow: "auto",
+        background: "#fff",
+        borderRadius: 14,
+        padding: 16,
+        boxShadow: "0 14px 40px rgba(0,0,0,0.25)",
+      }}
+    >
+      {/* Header */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+        <h2 style={{ margin: 0, display: "flex", alignItems: "center", gap: 10 }}>
+          <FaFileExport /> Exporter la BDD
+        </h2>
+
+        <button
+          type="button"
+          className="icon-btn"
+          onClick={closeExportModal}
+          title="Fermer"
+        >
+          ✕
+        </button>
+      </div>
+
+      {/* Étape 1 */}
+      <div style={{ marginTop: 12, padding: 12, border: "1px solid #e5e7eb", borderRadius: 12 }}>
+        <div style={{ fontWeight: 800, marginBottom: 8 }}>1) Choisir la base d’export</div>
+
+        <div style={{ display: "grid", gap: 8 }}>
+          <label style={{ display: "flex", gap: 10, alignItems: "center" }}>
+            <input
+              type="radio"
+              name="exportBase"
+              checked={exportBase === "url"}
+              onChange={() => setExportBase("url")}
+            />
+            <span><b>URL</b> (colonne `URL`)</span>
+          </label>
+
+          <label style={{ display: "flex", gap: 10, alignItems: "center" }}>
+            <input
+              type="radio"
+              name="exportBase"
+              checked={exportBase === "serial"}
+              onChange={() => setExportBase("serial")}
+            />
+            <span><b>Numéro de série</b> (tous les numéros détectés)</span>
+          </label>
+
+          <label style={{ display: "flex", gap: 10, alignItems: "center" }}>
+            <input
+              type="radio"
+              name="exportBase"
+              checked={exportBase === "variant_id"}
+              onChange={() => setExportBase("variant_id")}
+            />
+            <span><b>Variant ID</b> (colonne `Variant ID` si présente)</span>
+          </label>
+        </div>
+
+        <div style={{ marginTop: 10, fontSize: 12, color: "#6b7280" }}>
+          Pour l’instant, l’export contient : <b>Prix réduit</b> (velosmint) + <b>mint_promo_amount</b> (mode_pricing).
+          L’étape “choix des champs” viendra ensuite.
+        </div>
+      </div>
+
+      {/* Actions */}
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 12 }}>
+        <button type="button" onClick={closeExportModal}>
+          Annuler
+        </button>
+        <button type="button" className="save-btn" onClick={exportDbNow}>
+          Exporter CSV
+        </button>
+      </div>
+    </div>
+  </div>
+)}
+
 
 {isFeedbackOpen && (
   <>
@@ -3931,9 +6703,781 @@ ${Object.entries(v)
     </div>
   </>
 )} 
+{statsOpen && (() => {
+  // =========================
+  // 🎨 Styles & couleurs
+  // =========================
+  const cardStyle = {
+    padding: 12,
+    border: "1px solid #e5e7eb",
+    borderRadius: 12,
+    background: "var(--bg-card, #fff)",
+  };
+
+  const sectionTitleStyle = {
+    fontWeight: 900,
+    fontSize: 13,
+    letterSpacing: 0.2,
+    margin: "12px 0 8px",
+    color: "var(--text, #111827)",
+  };
+
+  const hintStyle = { opacity: 0.65, fontSize: 12, marginTop: 6 };
+
+  const COLORS = {
+    primary: "#2563eb",
+    good: "#16a34a",
+    warn: "#f59e0b",
+    bad: "#dc2626",
+    gray: "#6b7280",
+    purple: "#7c3aed",
+    teal: "#0d9488",
+    pink: "#db2777",
+  };
+
+  // Palette pie (catégories)
+  const piePalette = [COLORS.primary, COLORS.teal, COLORS.purple, COLORS.warn, COLORS.pink, COLORS.gray];
+
+  // Safe datasets
+  const locationPieSafe   = statsData?.locationPie ?? [];
+  const listingAgeDistSafe = statsData?.listingAgeDist ?? [];
+  const stockAgeDistSafe   = statsData?.stockAgeDist ?? [];
+  const priceHistoSafe     = statsData?.priceHisto ?? [];
+  const benefitHistoSafe   = statsData?.benefitHisto ?? [];
+  const mixTypologySafe    = statsData?.mixTypology ?? [];
+  const elecMuscuSafe      = statsData?.elecMuscu ?? [];
+  const saleBreakdownSafe  = statsData?.saleBreakdownPie ?? [];
+
+  // =========================
+  // 🔢 Helpers % + labels
+  // =========================
+  const formatUnits = (v) => {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return "—";
+    return `${Math.round(n)}`;
+  };
+
+  const getTotal = (arr, key) => (arr || []).reduce((s, x) => s + (Number(x?.[key]) || 0), 0);
+
+  const pctLabelFrom = (value, total) => {
+    const v = Number(value) || 0;
+    const t = Number(total) || 0;
+    if (t <= 0) return "0%";
+    return `${Math.round((v / t) * 100)}%`;
+  };
+
+  // Ajoute une clé pctLabel (= "12%") pour les BarCharts
+  const withPctLabel = (arr, key = "units") => {
+    const total = getTotal(arr, key);
+    return (arr || []).map((x) => ({
+      ...x,
+      __pctLabel: pctLabelFrom(x?.[key], total),
+      __total: total,
+    }));
+  };
+
+  // Couleur par barre (dégradé “clair -> foncé” selon la valeur, base couleur différente par chart)
+  const hexToRgb = (hex) => {
+    const h = String(hex || "").replace("#", "").trim();
+    const full = h.length === 3 ? h.split("").map((c) => c + c).join("") : h;
+    const n = parseInt(full || "000000", 16);
+    return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
+  };
+  const rgbToHex = ({ r, g, b }) => {
+    const to2 = (v) => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, "0");
+    return `#${to2(r)}${to2(g)}${to2(b)}`;
+  };
+  const lerp = (a, b, t) => a + (b - a) * t;
+  const clamp01 = (x) => Math.max(0, Math.min(1, x));
+
+  const blend = (fromHex, toHex, t) => {
+    const A = hexToRgb(fromHex);
+    const B = hexToRgb(toHex);
+    const tt = clamp01(t);
+    return rgbToHex({
+      r: lerp(A.r, B.r, tt),
+      g: lerp(A.g, B.g, tt),
+      b: lerp(A.b, B.b, tt),
+    });
+  };
+
+  const barColorByValue = (v, min, max, baseHex = COLORS.primary) => {
+    const lo = Number(min) || 0;
+    const hi = Number(max) || 1;
+    const x = Number(v) || 0;
+    const t = hi > lo ? (x - lo) / (hi - lo) : 0.5;
+    // clair => foncé
+    return blend("#e5e7eb", baseHex, 0.35 + 0.65 * clamp01(t));
+  };
+
+  // Pie label : affiche % du total sur les parts (et évite le bruit si très petit)
+  const renderPiePercentLabel = ({ percent }) => {
+    const p = Math.round((percent || 0) * 100);
+    if (!Number.isFinite(p) || p <= 0) return "";
+    if (p < 4) return ""; // évite l'encombrement
+    return `${p}%`;
+  };
+
+  // =========================
+  // 🧠 Tooltips
+  // =========================
+  const CustomBarTooltip = ({ active, payload, label, valueFormatter }) => {
+    if (!active || !payload || !payload.length) return null;
+    const v = payload[0]?.value;
+    const pct = payload[0]?.payload?.__pctLabel;
+    return (
+      <div style={{
+        background: "var(--bg-card, #fff)",
+        border: "1px solid #e5e7eb",
+        borderRadius: 10,
+        padding: "8px 10px",
+        boxShadow: "0 10px 30px rgba(0,0,0,0.10)",
+        fontSize: 12,
+      }}>
+        <div style={{ fontWeight: 800, marginBottom: 4 }}>{label}</div>
+        <div style={{ opacity: 0.9 }}>
+          {valueFormatter ? valueFormatter(v) : formatUnits(v)} unités {pct ? `· ${pct}` : ""}
+        </div>
+      </div>
+    );
+  };
+
+  const CustomPieTooltip = ({ active, payload }) => {
+    if (!active || !payload || !payload.length) return null;
+    const p = payload[0];
+    const value = p?.value;
+    const total = getTotal(p?.payload?.__srcArr || [], "__valueKey"); // fallback
+    const pct = p?.payload?.__pct || null;
+    return (
+      <div style={{
+        background: "var(--bg-card, #fff)",
+        border: "1px solid #e5e7eb",
+        borderRadius: 10,
+        padding: "8px 10px",
+        boxShadow: "0 10px 30px rgba(0,0,0,0.10)",
+        fontSize: 12,
+      }}>
+        <div style={{ fontWeight: 800, marginBottom: 4 }}>{p?.name}</div>
+        <div style={{ opacity: 0.9 }}>
+          {formatUnits(value)} unités {pct ? `· ${pct}` : ""}
+        </div>
+      </div>
+    );
+  };
+
+  // =========================
+  // ✅ Prépare datasets (avec %)
+  // =========================
+  const listingAgeDist = withPctLabel(listingAgeDistSafe, "units");
+  const stockAgeDist   = withPctLabel(stockAgeDistSafe, "units");
+  const priceHisto     = withPctLabel(priceHistoSafe, "units");
+  const benefitHisto   = withPctLabel(benefitHistoSafe, "units");
+  const mixTypology    = withPctLabel(mixTypologySafe, "units");
+
+  const attachPiePct = (arr, key = "units") => {
+    const total = getTotal(arr, key);
+    return (arr || []).map((x) => ({
+      ...x,
+      __pct: pctLabelFrom(x?.[key], total),
+    }));
+  };
+
+  const locationPie  = attachPiePct(locationPieSafe, "units");
+  const elecMuscu    = attachPiePct(elecMuscuSafe, "units");
+  const saleBreakdown = attachPiePct(saleBreakdownSafe, "value");
+
+  // =========================
+  // 🪟 Modal
+  // =========================
+  return (
+    <div
+      onClick={() => setStatsOpen(false)}
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(0,0,0,0.45)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        zIndex: 9999,
+        padding: 16,
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          width: "min(1100px, 96vw)",
+          maxHeight: "90vh",
+          overflow: "auto",
+          background: "var(--bg-card, #fff)",
+          borderRadius: 14,
+          padding: 18,
+          boxShadow: "0 20px 60px rgba(0,0,0,0.35)",
+          border: "1px solid rgba(0,0,0,0.08)",
+        }}
+      >
+        {/* Header sticky */}
+        <div
+          style={{
+            position: "sticky",
+            top: 0,
+            zIndex: 2,
+            background: "var(--bg-card, #fff)",
+            paddingBottom: 10,
+            borderBottom: "1px solid #eef2f7",
+            marginBottom: 10,
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              gap: 10,
+            }}
+          >
+            <div>
+              <h2 style={{ margin: 0 }}>Stats parc (selon filtres)</h2>
+              <div style={{ opacity: 0.7, marginTop: 4, fontSize: 13 }}>
+                Base analysée : <b>{filteredAndSortedVelos.length}</b> fiches ·{" "}
+                <b>{statsData?.kpi?.totalUnits ?? 0}</b> unités dispo 📦
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setStatsOpen(false)}
+              style={{
+                border: "1px solid #e5e7eb",
+                background: "var(--bg-card, #fff)",
+                borderRadius: 10,
+                padding: "8px 10px",
+                cursor: "pointer",
+                fontWeight: 800,
+              }}
+              title="Fermer"
+            >
+              ✕
+            </button>
+          </div>
+
+          <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap" }}>
+            <div style={{
+              padding: "6px 10px",
+              borderRadius: 999,
+              border: "1px solid #e5e7eb",
+              background: "var(--bg-card, #fff)",
+              fontSize: 12,
+              color: "var(--text, #111827)",
+            }}>
+              🧮 <b>Tout est pondéré unités</b> (📦)
+            </div>
+
+            <div style={{
+              padding: "6px 10px",
+              borderRadius: 999,
+              border: "1px solid #e5e7eb",
+              background: "var(--bg-card, #fff)",
+              fontSize: 12,
+              color: "var(--text, #111827)",
+            }}>
+              💡 % affichés sur les barres / parts
+            </div>
+          </div>
+        </div>
+
+        {/* Content grid */}
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+            gap: 12,
+          }}
+        >
+          {/* =========================
+              📌 SECTION: KPIs
+             ========================= */}
+          <div style={{ gridColumn: "1 / -1" }}>
+            <div style={sectionTitleStyle}>KPIs</div>
+          </div>
+
+          {/* KPI bloc 1 */}
+          <div style={cardStyle}>
+  <div style={{ fontWeight: 900, marginBottom: 10 }}>KPIs (pondérés unités 📦)</div>
+
+  <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0,1fr))", gap: 10 }}>
+    {/* Base */}
+    <div>
+      <div style={{ opacity: 0.7, fontSize: 12 }}>Base (unités dispo)</div>
+      <div style={{ fontWeight: 900, fontSize: 18 }}>{statsData?.kpi?.totalUnits ?? 0}</div>
+      <div style={{ opacity: 0.6, fontSize: 12, marginTop: 4 }}>
+        {statsData?.kpi?.nRows ?? 0} fiches (info)
+      </div>
+    </div>
+
+    {/* Valeur stock */}
+    <div>
+      <div style={{ opacity: 0.7, fontSize: 12 }}>Valeur stock (€)</div>
+      <div style={{ fontWeight: 900, fontSize: 18 }}>{fmtEur(statsData?.stockValueEur ?? 0)}</div>
+      <div style={hintStyle}>prix réduit × unités</div>
+    </div>
+
+    {/* Marge */}
+    <div>
+      <div style={{ opacity: 0.7, fontSize: 12 }}>Moy marge (€/unité)</div>
+      <div
+        style={{
+          fontWeight: 900,
+          fontSize: 18,
+          color: (statsData?.avgBenefitPerUnit ?? 0) < 0 ? COLORS.bad : COLORS.good,
+        }}
+      >
+        {statsData?.avgBenefitPerUnit == null ? "—" : fmtEur(statsData.avgBenefitPerUnit)}
+      </div>
+      <div style={hintStyle}>computeCardBenefit × unités</div>
+    </div>
+
+    {/* Risque / repricing */}
+    <div>
+      <div style={{ opacity: 0.7, fontSize: 12 }}>% marge négative (unités)</div>
+      <div style={{ fontWeight: 900, fontSize: 18, color: COLORS.bad }}>
+        {statsData?.kpi?.negPctUnits ?? 0}%
+      </div>
+      <div style={{ opacity: 0.6, fontSize: 12, marginTop: 4 }}>
+        base = unités avec bénéfice calculable
+      </div>
+    </div>
+
+    <div>
+      <div style={{ opacity: 0.7, fontSize: 12 }}>% à repricer (&gt;15j) (unités)</div>
+      <div style={{ fontWeight: 900, fontSize: 18, color: COLORS.warn }}>
+        {statsData?.kpi?.repricingPctUnits ?? 0}%
+      </div>
+      <div style={{ opacity: 0.6, fontSize: 12, marginTop: 4 }}>
+        base = unités avec date pricing
+      </div>
+    </div>
+
+    <div>
+      <div style={{ opacity: 0.7, fontSize: 12 }}>Médiane bénéfice (par fiche)</div>
+      <div style={{ fontWeight: 900, fontSize: 18 }}>{fmtEur(statsData?.kpi?.medBenefit ?? 0)}</div>
+      <div style={{ opacity: 0.6, fontSize: 12, marginTop: 4 }}>
+        (médiane par fiche, pas pondérée)
+      </div>
+    </div>
+
+    {/* Âge mise en ligne */}
+    <div>
+      <div style={{ opacity: 0.7, fontSize: 12 }}>Moy durée mise en ligne</div>
+      <div style={{ fontWeight: 900, fontSize: 18 }}>
+        {statsData?.avgListingDays == null ? "—" : `${Math.round(statsData.avgListingDays)} j`}
+      </div>
+      <div style={hintStyle}>depuis “Published At”</div>
+    </div>
+
+    {/* KPI PROMO */}
+    <div style={{ gridColumn: "1 / -1", marginTop: 6, paddingTop: 10, borderTop: "1px solid #eef2f7" }}>
+      <div style={{ fontWeight: 900, marginBottom: 8 }}>KPIs promo</div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0,1fr))", gap: 10 }}>
+        <div>
+          <div style={{ opacity: 0.7, fontSize: 12 }}>Part en promo (unités)</div>
+          <div style={{ fontWeight: 900, fontSize: 18 }}>
+            {statsData?.kpi?.promoPctUnits ?? 0}%
+          </div>
+          <div style={hintStyle}>{statsData?.kpi?.promoUnits ?? 0} unités</div>
+        </div>
+
+        <div>
+          <div style={{ opacity: 0.7, fontSize: 12 }}>Montant total promos (€)</div>
+          <div style={{ fontWeight: 900, fontSize: 18 }}>
+            {fmtEur(statsData?.kpi?.promoTotalEur ?? 0)}
+          </div>
+          <div style={hintStyle}>mint_promo_amount × unités</div>
+        </div>
+
+        <div>
+          <div style={{ opacity: 0.7, fontSize: 12 }}>Réduc moyenne (€/unité en promo)</div>
+          <div style={{ fontWeight: 900, fontSize: 18 }}>
+            {fmtEur(statsData?.kpi?.promoAvgEur ?? 0)}
+          </div>
+          <div style={hintStyle}>max: {fmtEur(statsData?.kpi?.promoMaxEur ?? 0)}</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+
+          {/* =========================
+              📌 SECTION: Stock & structure
+             ========================= */}
+          <div style={{ gridColumn: "1 / -1" }}>
+            <div style={sectionTitleStyle}>Stock & structure</div>
+          </div>
+
+          {/* Pie partenaire vs sur place */}
+          <div style={cardStyle}>
+            <div style={{ fontWeight: 900, marginBottom: 10 }}>
+              Répartition du stock (unités) — Fleeta vs Mint Bikes
+            </div>
+
+            {locationPie.length === 0 ? (
+              <div style={{ opacity: 0.7 }}>
+                Aucune donnée de série exploitable pour l’instant.
+                <div style={hintStyle}>Tip : vérifie que les colonnes “Numéro de série variant X” sont remplies.</div>
+              </div>
+            ) : (
+              <>
+                <div style={{ width: "100%", height: 240 }}>
+                  <ResponsiveContainer>
+                    <PieChart>
+                      <Tooltip content={<CustomPieTooltip />} />
+                      <Pie
+                        data={locationPie}
+                        dataKey="units"
+                        nameKey="name"
+                        innerRadius={55}
+                        outerRadius={90}
+                        paddingAngle={2}
+                        labelLine={false}
+                        label={(props) => renderPiePercentLabel(props)}
+                      >
+                        {locationPie.map((entry, idx) => (
+                          <Cell key={`loc-${idx}`} fill={piePalette[idx % piePalette.length]} />
+                        ))}
+                      </Pie>
+                    </PieChart>
+                  </ResponsiveContainer>
+                </div>
+
+                <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginTop: 8, fontSize: 12, opacity: 0.9 }}>
+                  {locationPie.map((x, idx) => (
+                    <div key={x.name} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <span style={{ width: 10, height: 10, borderRadius: 3, background: piePalette[idx % piePalette.length], display: "inline-block" }} />
+                      <div>
+                        <b>{x.units}</b> unités — {x.name} <span style={{ opacity: 0.75 }}>({x.__pct})</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+
+          {/* Elec / muscu */}
+          <div style={cardStyle}>
+            <div style={{ fontWeight: 900, marginBottom: 10 }}>
+              Répartition Électrique / Musculaire — en unités
+            </div>
+
+            {elecMuscu.length === 0 ? (
+              <div style={{ opacity: 0.7 }}>Données indisponibles.</div>
+            ) : (
+              <>
+                <div style={{ width: "100%", height: 240 }}>
+                  <ResponsiveContainer>
+                    <PieChart>
+                      <Tooltip content={<CustomPieTooltip />} />
+                      <Pie
+                        data={elecMuscu}
+                        dataKey="units"
+                        nameKey="name"
+                        innerRadius={55}
+                        outerRadius={90}
+                        paddingAngle={2}
+                        labelLine={false}
+                        label={(props) => renderPiePercentLabel(props)}
+                      >
+                        {elecMuscu.map((_, idx) => (
+                          <Cell key={`pow-${idx}`} fill={piePalette[idx % piePalette.length]} />
+                        ))}
+                      </Pie>
+                    </PieChart>
+                  </ResponsiveContainer>
+                </div>
+
+                <div style={hintStyle}>
+                  Utile pour comparer ensuite la marge et la durée stock entre électriques et musculaires.
+                </div>
+              </>
+            )}
+          </div>
+
+          {/* =========================
+              📌 SECTION: Âges / rotation
+             ========================= */}
+          <div style={{ gridColumn: "1 / -1" }}>
+            <div style={sectionTitleStyle}>Âges & rotation</div>
+          </div>
+
+          {/* Distribution mise en ligne */}
+          <div style={cardStyle}>
+            <div style={{ fontWeight: 900, marginBottom: 10 }}>
+              Durée de mise en ligne — en unités
+            </div>
+
+            <div style={{ width: "100%", height: 250 }}>
+              <ResponsiveContainer>
+                <BarChart data={listingAgeDist}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="name" />
+                  <YAxis allowDecimals={false} />
+                  <Tooltip content={<CustomBarTooltip />} />
+                  <Bar dataKey="units">
+                    {(() => {
+                      const vals = listingAgeDist.map((d) => Number(d.units) || 0);
+                      const min = Math.min(...vals, 0);
+                      const max = Math.max(...vals, 1);
+                      return listingAgeDist.map((d, idx) => (
+                        <Cell key={`c1-${idx}`} fill={barColorByValue(d.units, min, max, COLORS.primary)} />
+                      ));
+                    })()}
+                    {/* % du total sur chaque barre */}
+                    <LabelList dataKey="__pctLabel" position="top" />
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+
+            <div style={hintStyle}>Bins : ≤21j, 22–42j, 43–63j, 64–84j, &gt;84j</div>
+          </div>
+          {/* Scatter marge vs âge */}
+<div style={cardStyle}>
+  <div style={{ fontWeight: 900, marginBottom: 10 }}>
+    Marge (€/unité) vs Âge annonce (jours) — objectif diagonale
+  </div>
+
+  {((statsData?.marginAgeScatter ?? []).length === 0) ? (
+    <div style={{ opacity: 0.7 }}>Pas assez de données (Published At + breakdown marge).</div>
+  ) : (
+    <>
+      <div style={{ width: "100%", height: 320 }}>
+        <ResponsiveContainer>
+          <ScatterChart margin={{ top: 10, right: 10, bottom: 10, left: 10 }}>
+            <CartesianGrid strokeDasharray="3 3" />
+
+            <XAxis
+              type="number"
+              dataKey="days"
+              name="Jours en ligne"
+              label={{ value: "Jours depuis mise en ligne", position: "insideBottom", offset: -5 }}
+            />
+            <YAxis
+              type="number"
+              dataKey="margin"
+              name="Marge €/unité"
+              label={{ value: "Marge €/unité", angle: -90, position: "insideLeft" }}
+            />
+
+            {/* Taille du point = unités stock */}
+            <ZAxis type="number" dataKey="units" range={[40, 180]} name="Stock" />
+
+            {/* Diagonale cible (à ajuster) */}
+            {(() => {
+              const x1 = 0,   y1 = 600;   // marge cible à J0
+              const x2 = 180, y2 = 0;     // marge cible à 180 jours
+              const band = 150;           // tolérance +/-
+
+              return (
+                <>
+                  <ReferenceLine
+                    segment={[{ x: x1, y: y1 }, { x: x2, y: y2 }]}
+                    strokeDasharray="6 6"
+                  />
+                  <ReferenceLine
+                    segment={[{ x: x1, y: y1 + band }, { x: x2, y: y2 + band }]}
+                    strokeDasharray="2 6"
+                  />
+                  <ReferenceLine
+                    segment={[{ x: x1, y: y1 - band }, { x: x2, y: y2 - band }]}
+                    strokeDasharray="2 6"
+                  />
+                </>
+              );
+            })()}
+
+            <Tooltip
+              cursor={{ strokeDasharray: "3 3" }}
+              formatter={(value, name, props) => {
+                // gère affichage par défaut
+                return [value, name];
+              }}
+              content={({ active, payload }) => {
+                if (!active || !payload?.length) return null;
+                const p = payload[0]?.payload;
+                if (!p) return null;
+                return (
+                  <div style={{
+                    background: "#fff",
+                    border: "1px solid #e5e7eb",
+                    borderRadius: 10,
+                    padding: 10,
+                    boxShadow: "0 12px 30px rgba(0,0,0,0.12)",
+                    maxWidth: 320
+                  }}>
+                    <div style={{ fontWeight: 900, marginBottom: 6, fontSize: 13 }}>
+                      {p.title || "Annonce"}
+                    </div>
+                    <div style={{ fontSize: 12, opacity: 0.9 }}>
+                      <div><b>Jours en ligne :</b> {Math.round(p.days)}</div>
+                      <div><b>Marge €/unité :</b> {fmtEur(p.margin)}</div>
+                      <div><b>Stock :</b> {Math.round(p.units)} u</div>
+                      {Number.isFinite(p.price) && <div><b>Prix :</b> {fmtEur(p.price)}</div>}
+                      {p.promo > 0 && <div><b>Promo :</b> {fmtEur(p.promo)}</div>}
+                      {p.url && (
+                        <div style={{ marginTop: 6 }}>
+                          <a href={p.url} target="_blank" rel="noreferrer">Ouvrir la fiche</a>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              }}
+            />
+
+            <Scatter
+              data={statsData.marginAgeScatter}
+              fill={COLORS.purple}
+            />
+          </ScatterChart>
+        </ResponsiveContainer>
+      </div>
+
+      <div style={hintStyle}>
+        Objectif : plus une annonce vieillit, plus la marge doit baisser (ligne pointillée).  
+        Les 2 lignes fines = bande de tolérance.
+      </div>
+    </>
+  )}
+</div>
+
+
+          {/* =========================
+              📌 SECTION: Prix & marge
+             ========================= */}
+          <div style={{ gridColumn: "1 / -1" }}>
+            <div style={sectionTitleStyle}>Prix & marge</div>
+          </div>
+
+          {/* Histogramme prix */}
+          <div style={cardStyle}>
+            <div style={{ fontWeight: 900, marginBottom: 10 }}>
+              Répartition des prix (Prix réduit) — en unités
+            </div>
+
+            <div style={{ width: "100%", height: 250 }}>
+              <ResponsiveContainer>
+                <BarChart data={priceHisto}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="name" />
+                  <YAxis allowDecimals={false} />
+                  <Tooltip content={<CustomBarTooltip valueFormatter={(v) => `${formatUnits(v)}`} />} />
+                  <Bar dataKey="units">
+                    {(() => {
+                      const vals = priceHisto.map((d) => Number(d.units) || 0);
+                      const min = Math.min(...vals, 0);
+                      const max = Math.max(...vals, 1);
+                      return priceHisto.map((d, idx) => (
+                        <Cell key={`c3-${idx}`} fill={barColorByValue(d.units, min, max, COLORS.teal)} />
+                      ));
+                    })()}
+                    <LabelList dataKey="__pctLabel" position="top" />
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+
+            <div style={hintStyle}>Bins = ceux que tu as définis dans statsData</div>
+          </div>
+
+          {/* Histogramme bénéfice */}
+          <div style={cardStyle}>
+            <div style={{ fontWeight: 900, marginBottom: 10 }}>
+              Répartition des bénéfices — en unités
+            </div>
+
+            <div style={{ width: "100%", height: 250 }}>
+              <ResponsiveContainer>
+                <BarChart data={benefitHisto}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="name" />
+                  <YAxis allowDecimals={false} />
+                  <Tooltip content={<CustomBarTooltip />} />
+                  <Bar dataKey="units">
+                    {(() => {
+                      const vals = benefitHisto.map((d) => Number(d.units) || 0);
+                      const min = Math.min(...vals, 0);
+                      const max = Math.max(...vals, 1);
+                      return benefitHisto.map((d, idx) => (
+                        <Cell key={`c4-${idx}`} fill={barColorByValue(d.units, min, max, COLORS.good)} />
+                      ));
+                    })()}
+                    <LabelList dataKey="__pctLabel" position="top" />
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+
+            <div style={hintStyle}>
+              Le bénéfice vient de <code>computeCardBenefit</code> (achat / pièces / logistique).
+            </div>
+          </div>
+
+          {/* =========================
+              📌 SECTION: Mix
+             ========================= */}
+          <div style={{ gridColumn: "1 / -1" }}>
+            <div style={sectionTitleStyle}>Mix vélo</div>
+          </div>
+
+          {/* Mix typologie */}
+          <div style={cardStyle}>
+            <div style={{ fontWeight: 900, marginBottom: 10 }}>
+              Répartition mix vélo (typologie) — en unités
+            </div>
+
+            <div style={{ width: "100%", height: 270 }}>
+              <ResponsiveContainer>
+                <BarChart data={mixTypology}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="name" interval={0} />
+                  <YAxis allowDecimals={false} />
+                  <Tooltip content={<CustomBarTooltip />} />
+                  <Bar dataKey="units">
+                    {(() => {
+                      const vals = mixTypology.map((d) => Number(d.units) || 0);
+                      const min = Math.min(...vals, 0);
+                      const max = Math.max(...vals, 1);
+                      return mixTypology.map((d, idx) => (
+                        <Cell key={`c5-${idx}`} fill={barColorByValue(d.units, min, max, COLORS.purple)} />
+                      ));
+                    })()}
+                    <LabelList dataKey="__pctLabel" position="top" />
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+
+            <div style={hintStyle}>VTT, VTT AE, VR, VR AE, GRVL, GRVL AE, VILLE…</div>
+          </div>
+
+          {/* Spacer / note */}
+          <div style={{ ...cardStyle, opacity: 0.85 }}>
+            <div style={{ fontWeight: 900, marginBottom: 8 }}>Notes</div>
+            <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12, color: "var(--text, #374151)" }}>
+              <li>Tout est recalculé selon tes filtres + tri en cours.</li>
+              <li>Base = unités dispo 📦 (pas le nombre de fiches).</li>
+              <li>Les % affichés = part du total du graph (barres/pies).</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+})()}
   </div>
   );
 }
- 
-  
+   
 export default App;

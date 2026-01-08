@@ -65,9 +65,9 @@
 
 /* Valeurs affichées */
 .range-values {
-  margin-top: 100px; /* plus proche mais pas collé */
+  margin-top: 10px; /* plus proche mais pas collé */
   padding: 4px 8px;
-  border-radius: 10px;
+  border-radius: 6px;
   background: #f9fafb;
   font-size: 0.85rem;
   color: #374151;
