@@ -4606,9 +4606,18 @@ ${Object.entries(v)
       const logisticsCost = n(pricingRow?.logistics_cost);
       const marketingCost = n(pricingRow?.marketing_cost);
 
+      const BUYERS = [
+  "",               // permet "vide"
+  "Thibault",
+  "François",
+  "Pierre",
+  "Tom",
+  "Victor",
+  "Hugo",
+  "Autre",
+];
       const totalCosts =
         (buyPrice ?? 0) + (partsCost ?? 0) + (logisticsCost ?? 0) + (marketingCost ?? 0);
-
       // =====================================================
       // Styles
       // =====================================================
@@ -4779,6 +4788,34 @@ ${Object.entries(v)
              ========================= */}
           <div style={sectionStyle}>
             <div style={titleStyle}>3) Info achat</div>
+
+            <div style={grid2}>
+  <div style={fieldWrap}>
+    <label style={labelStyle}>Vendeur</label>
+    <input
+      type="text"
+      value={pricingRow?.seller ?? ""}
+      onChange={setField("seller", "text")}
+      style={inputStyle}
+      placeholder="ex: Particulier / Pro / Nom vendeur…"
+    />
+  </div>
+
+  <div style={fieldWrap}>
+    <label style={labelStyle}>Acheteur</label>
+    <select
+      value={pricingRow?.buyer ?? ""}
+      onChange={setField("buyer", "text")}
+      style={inputStyle}
+    >
+      {BUYERS.map((name) => (
+        <option key={name || "__empty__"} value={name}>
+          {name ? name : "— Choisir —"}
+        </option>
+      ))}
+    </select>
+  </div>
+</div>
 
             <div style={{ display: "grid", gap: 10 }}>
               <div style={grid2}>
