@@ -27,6 +27,12 @@ import {
   ZAxis,
   ReferenceLine
 } from "recharts";
+import { DndContext, PointerSensor, useSensor, useSensors, closestCenter } from "@dnd-kit/core";
+import { SortableContext, useSortable, arrayMove, verticalListSortingStrategy } from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
+import { useDroppable } from "@dnd-kit/core";
+import { pointerWithin } from "@dnd-kit/core";
+import { rectSortingStrategy } from "@dnd-kit/sortable";
 
 // 🚨 Mets ta vraie clé Gemini ici :
 const API_KEY = "XXXXXXXXXXXX";
@@ -1069,6 +1075,539 @@ const formatKm = (val) => {
   return `${rounded.toLocaleString("fr-FR")} km`;
 };
 
+const TIERS = ["A", "B", "C", "D"];
+const DEFAULT_BUCKETS = ["UNASSIGNED", ...TIERS];
+
+function normBrand(s) {
+  return (s || "").toString().trim();
+}
+
+function uniq(arr) {
+  return Array.from(new Set(arr));
+}
+
+function Pill({ brand }) {
+  return (
+    <div
+      style={{
+        padding: "8px 10px",
+        border: "1px solid #e5e7eb",
+        borderRadius: 999,
+        background: "#fff",
+        fontSize: 13,
+        cursor: "grab",
+        userSelect: "none",
+        boxShadow: "0 1px 2px rgba(0,0,0,0.04)",
+      }}
+    >
+      {brand}
+    </div>
+  );
+}
+
+function SortableBrand({ id }) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id });
+
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.6 : 1,
+  };
+
+  return (
+    <div ref={setNodeRef} style={style} {...attributes} {...listeners}>
+      <Pill brand={id} />
+    </div>
+  );
+}
+
+function Column({ title, subtitle, items, bucketKey }) {
+  return (
+    <div
+      style={{
+        width: "80%",
+        maxWidth: 260,          // ✅ LA : encadrement moins large
+        margin: "0 auto",       // ✅ centre la carte
+        border: "1px solid #e5e7eb",
+        borderRadius: 14,
+        background: "#fafafa",
+        padding: 12,
+        display: "flex",
+        flexDirection: "column",
+        gap: 10,
+      }}
+    >
+      <div style={{ display: "flex", flexDirection: "column", gap: 1, minWidth: 0 }}>
+        <div style={{ fontWeight: 800, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {title}
+        </div>
+        {subtitle ? (
+          <div style={{ fontSize: 12, color: "#6b7280", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {subtitle}
+          </div>
+        ) : null}
+      </div>
+
+      <div
+        style={{
+          flex: 1,
+          marginTop: 6,
+          minHeight: 180,
+          padding: 8,
+          borderRadius: 8,
+          background: "#fff",
+          border: "1px dashed #e5e7eb",
+          minWidth: 0,          // ✅ idem : évite de pousser la carte
+        }}
+      >
+        <SortableContext items={items} strategy={verticalListSortingStrategy}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {items.map((brand) => (
+              <SortableBrand key={`${bucketKey}:${brand}`} id={brand} />
+            ))}
+          </div>
+        </SortableContext>
+
+        {items.length === 0 ? (
+          <div style={{ marginTop: 10, fontSize: 12, color: "#9ca3af" }}>Dépose ici</div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function BrandTierBoard() {
+  const TIERS = ["A", "B", "C", "D"];
+  const BANK = "BANK";
+
+  // ✅ Catégories EXACTES dans velosmint."Catégorie"
+  const CATEGORY_OPTIONS = ["Vélo de ville", "Vélo De Route", "Gravel", "Cargo", "VTC", "VTT"];
+  const BIKE_TYPE_OPTIONS = ["Électrique", "Musculaire"];
+
+  const [bikeCategory, setBikeCategory] = useState(CATEGORY_OPTIONS[0]);
+  const [bikeType, setBikeType] = useState("Tous"); // ✅ nouveau
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  const [search, setSearch] = useState("");
+  const [newBrand, setNewBrand] = useState("");
+
+  const [buckets, setBuckets] = useState(() => ({
+    [BANK]: [],
+    A: [],
+    B: [],
+    C: [],
+    D: [],
+  }));
+
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
+
+  const normBrand = (s) => String(s ?? "").trim();
+  const uniq = (arr) => Array.from(new Set((arr || []).map((x) => normBrand(x)).filter(Boolean)));
+
+  const filteredBank = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return buckets[BANK] || [];
+    return (buckets[BANK] || []).filter((b) => b.toLowerCase().includes(q));
+  }, [buckets, search]);
+
+  function findBucketOfBrand(brand) {
+    for (const k of [BANK, ...TIERS]) {
+      if ((buckets[k] || []).includes(brand)) return k;
+    }
+    return null;
+  }
+
+  async function fetchData() {
+    setLoading(true);
+    setError("");
+
+    try {
+      // 1) Marques du stock pour la catégorie choisie (+ type si choisi)
+let stockQuery = supabase
+  .from("velosmint")
+  .select('Marque, "Catégorie", "Type de vélo"')
+  .eq("Catégorie", bikeCategory);
+
+if (bikeType !== "Tous") {
+  stockQuery = stockQuery.eq("Type de vélo", bikeType);
+}
+
+const { data: stockRows, error: e1 } = await stockQuery;
+if (e1) throw e1;
+
+const brandsFromStock = uniq((stockRows || []).map((r) => normBrand(r.Marque)));
+
+      // 2) Marques ajoutées à la main (catalog)
+      const { data: catRows, error: eCat } = await supabase.from("brand_catalog").select("brand");
+      if (eCat) throw eCat;
+
+      const brandsFromCatalog = uniq((catRows || []).map((r) => normBrand(r.brand)));
+
+      // Base = stock + catalog
+      const baseBrands = uniq([...brandsFromStock, ...brandsFromCatalog]).sort((a, b) => a.localeCompare(b, "fr"));
+
+      // 3) Règles existantes (brand_tiers) pour cette catégorie
+      const { data: rules, error: e2 } = await supabase
+        .from("brand_tiers")
+        .select("brand,tier")
+        .eq("bike_category", bikeCategory)
+        .eq("bike_type", bikeType);
+
+      if (e2) throw e2;
+
+      const tierMap = new Map(); // brand -> tier
+      (rules || []).forEach((r) => {
+        const b = normBrand(r.brand);
+        const t = String(r.tier || "").trim().toUpperCase();
+        if (b && TIERS.includes(t)) tierMap.set(b, t);
+      });
+
+      const next = { [BANK]: [], A: [], B: [], C: [], D: [] };
+      for (const b of baseBrands) {
+        const t = tierMap.get(b);
+        if (t && TIERS.includes(t)) next[t].push(b);
+        else next[BANK].push(b);
+      }
+
+      // tri pour UX
+      next[BANK].sort((a, b) => a.localeCompare(b, "fr"));
+      next.A.sort((a, b) => a.localeCompare(b, "fr"));
+      next.B.sort((a, b) => a.localeCompare(b, "fr"));
+      next.C.sort((a, b) => a.localeCompare(b, "fr"));
+      next.D.sort((a, b) => a.localeCompare(b, "fr"));
+
+      setBuckets(next);
+    } catch (err) {
+      setError(err?.message || "Erreur chargement");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+  fetchData();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, [bikeCategory, bikeType]);
+
+  async function persistTierChange(brand, toBucket) {
+    setSaving(true);
+    setError("");
+
+    try {
+      if (toBucket === BANK) {
+        // déclasser = supprimer la règle
+        const { error: delErr } = await supabase
+        .from("brand_tiers")
+        .delete()
+        .eq("bike_category", bikeCategory)
+        .eq("bike_type", bikeType)
+        .eq("brand", brand);
+
+        if (delErr) throw delErr;
+      } else {
+        const payload = {
+        bike_category: bikeCategory,
+        bike_type: bikeType,      // ✅ nouveau
+        brand,
+        tier: toBucket,
+        updated_at: new Date().toISOString(),
+        };
+
+        const { error: upErr } = await supabase
+          .from("brand_tiers")
+          .upsert(payload, { onConflict: "bike_category,bike_type,brand" });
+
+        if (upErr) throw upErr;
+      }
+    } catch (err) {
+      setError(err?.message || "Erreur sauvegarde");
+      await fetchData(); // resync
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function addBrandManual() {
+    const b = normBrand(newBrand);
+    if (!b) return;
+
+    setSaving(true);
+    setError("");
+
+    try {
+      // persiste dans le catalog (si existe déjà => ok)
+      const { error: insErr } = await supabase.from("brand_catalog").upsert({ brand: b }, { onConflict: "brand" });
+      if (insErr) throw insErr;
+
+      // ajoute dans la banque en UI si absent
+      setBuckets((prev) => {
+        const exists = [BANK, ...TIERS].some((k) => (prev[k] || []).includes(b));
+        if (exists) return prev;
+
+        const next = { ...prev };
+        next[BANK] = uniq([...(next[BANK] || []), b]).sort((x, y) => x.localeCompare(y, "fr"));
+        return next;
+      });
+
+      setNewBrand("");
+    } catch (err) {
+      setError(err?.message || "Erreur ajout marque");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function onDragEnd(event) {
+    const { active, over } = event;
+    if (!over) return;
+
+    const brand = active.id;
+    const toBucket = over.id;
+    const fromBucket = findBucketOfBrand(brand);
+
+    if (!toBucket || !fromBucket || toBucket === fromBucket) return;
+    if (![BANK, ...TIERS].includes(toBucket)) return;
+
+    // optimistic UI
+    setBuckets((prev) => {
+      const next = { ...prev };
+      next[fromBucket] = (next[fromBucket] || []).filter((x) => x !== brand);
+      next[toBucket] = uniq([...(next[toBucket] || []), brand]).sort((a, b) => a.localeCompare(b, "fr"));
+      return next;
+    });
+
+    await persistTierChange(brand, toBucket);
+  }
+
+  return (
+    <div style={{ width: "100%", minWidth: 0 }}>
+      {/* Header */}
+      <div
+        style={{
+          display: "flex",
+          alignItems: "flex-end",
+          justifyContent: "space-between",
+          gap: 12,
+          flexWrap: "wrap",
+        }}
+      >
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          <div style={{ fontWeight: 900, fontSize: 14 }}>Catégorisation Marques</div>
+          <div style={{ fontSize: 12, color: "#6b7280" }}>
+            Choisis une marque et classe en A/B/C/D afin de mettre à jour les paramètres du parking virtuel.
+          </div>
+        </div>
+
+        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            <div style={{ fontSize: 12, color: "#6b7280" }}>Catégorie</div>
+            <select
+              value={bikeCategory}
+              onChange={(e) => setBikeCategory(e.target.value)}
+              style={{
+                height: 36,
+                borderRadius: 10,
+                border: "1px solid #e5e7eb",
+                padding: "0 10px",
+                background: "#fff",
+              }}
+            >
+              {CATEGORY_OPTIONS.map((c) => (
+                <option key={c} value={c}>
+                  {c}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+  <div style={{ fontSize: 12, color: "#6b7280" }}>Type de vélo</div>
+  <select
+    value={bikeType}
+    onChange={(e) => setBikeType(e.target.value)}
+    style={{
+      height: 36,
+      borderRadius: 10,
+      border: "1px solid #e5e7eb",
+      padding: "0 10px",
+      background: "#fff",
+    }}
+  >
+    {BIKE_TYPE_OPTIONS.map((t) => (
+      <option key={t} value={t}>{t}</option>
+    ))}
+  </select>
+</div>
+        </div>
+      </div>
+
+      {error ? <div style={{ marginTop: 10, color: "#b91c1c", fontSize: 13 }}>❌ {error}</div> : null}
+      {saving ? <div style={{ marginTop: 8, color: "#6b7280", fontSize: 12 }}>Sauvegarde…</div> : null}
+
+      <DndContext sensors={sensors} collisionDetection={pointerWithin} onDragEnd={onDragEnd}>
+  {/* Haut : Tiers A/B/C/D */}
+<div
+  style={{
+    marginTop: 12,
+    display: "grid",
+    gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
+    gap: 10,
+    justifyItems: "center", // ✅ clé : centre les cartes dans chaque colonne
+    alignItems: "start",
+  }}
+>
+  {TIERS.map((t) => (
+    <DroppableColumn
+      key={t}
+      droppableId={t}
+      title={`Tier ${t}`}
+      subtitle={`${(buckets[t] || []).length} marque(s)`}
+      items={buckets[t] || []}
+      bucketKey={t}
+      maxWidth={260} // ✅ largeur visuelle max des cartes
+    />
+  ))}
+</div>
+
+  {/* Bas : Banque (plein largeur) */}
+  <div style={{ marginTop: 10 }}>
+    <div
+      style={{
+        border: "1px solid #e5e7eb",
+        borderRadius: 14,
+        background: "#fafafa",
+        padding: 12,
+        display: "flex",
+        flexDirection: "column",
+        gap: 10,
+      }}
+    >
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "baseline" }}>
+        <div style={{ fontWeight: 900 }}>Banque de marques (Non classées)</div>
+        <div style={{ fontSize: 12, color: "#6b7280" }}>{(buckets[BANK] || []).length} marque(s)</div>
+      </div>
+
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+        <input
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Rechercher une marque…"
+          style={{
+            flex: 1,
+            minWidth: 220,
+            height: 36,
+            borderRadius: 10,
+            border: "1px solid #e5e7eb",
+            padding: "0 10px",
+            background: "#fff",
+          }}
+        />
+
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <input
+            value={newBrand}
+            onChange={(e) => setNewBrand(e.target.value)}
+            placeholder="Ajouter une marque…"
+            style={{
+              width: 240,
+              height: 36,
+              borderRadius: 10,
+              border: "1px solid #e5e7eb",
+              padding: "0 10px",
+              background: "#fff",
+            }}
+          />
+          <button
+            type="button"
+            onClick={addBrandManual}
+            disabled={saving || !newBrand.trim()}
+            style={{
+              height: 36,
+              borderRadius: 10,
+              border: "1px solid #e5e7eb",
+              padding: "0 12px",
+              background: "#fff",
+              cursor: "pointer",
+              fontWeight: 800,
+            }}
+          >
+            Ajouter
+          </button>
+        </div>
+      </div>
+
+      <DroppableBank droppableId={BANK} items={filteredBank} bucketKey={BANK} />
+
+      <div style={{ fontSize: 12, color: "#6b7280" }}>
+        Pour “déclasser” une marque, glisse-la depuis A/B/C/D vers la banque. Si nécessaire, ajoute une marque en
+        MAJUSCULES et sans espace.
+      </div>
+    </div>
+  </div>
+</DndContext>
+    </div>
+  );
+}
+
+/** Banque droppable (liste à la suite) */
+function DroppableBank({ droppableId, items, bucketKey }) {
+  const { setNodeRef, isOver } = useDroppable({ id: droppableId });
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={{
+        minHeight: 180,
+        borderRadius: 12,
+        background: "#fff",
+        border: isOver ? "2px solid #111827" : "1px dashed #e5e7eb",
+        padding: 8,
+        overflow: "auto",
+      }}
+    >
+      {/* ✅ stratégie grille */}
+      <SortableContext items={items} strategy={rectSortingStrategy}>
+        {/* ✅ affichage “pills” à la suite */}
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "flex-start" }}>
+          {items.map((brand) => (
+            <SortableBrand key={`${bucketKey}:${brand}`} id={brand} />
+          ))}
+        </div>
+      </SortableContext>
+
+      {items.length === 0 ? (
+        <div style={{ marginTop: 10, fontSize: 12, color: "#9ca3af" }}>
+          Aucune marque (ou filtre actif)
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+
+// --- Droppable wrapper minimal (carte centrée + largeur max)
+function DroppableColumn({ droppableId, title, subtitle, items, bucketKey, maxWidth = 260 }) {
+  const { setNodeRef, isOver } = useDroppable({ id: droppableId });
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={{
+        width: "100%",        // prend la largeur de la cellule si besoin
+        maxWidth,             // ✅ limite la largeur de la CARTE
+        minWidth: 0,
+        borderRadius: 16,
+        outline: isOver ? "2px solid #111827" : "none",
+        outlineOffset: 2,
+      }}
+    >
+      <Column title={title} subtitle={subtitle} items={items} bucketKey={bucketKey} />
+    </div>
+  );
+}
+
+
 
 
 /* =============================
@@ -1513,6 +2052,385 @@ function buildSmsFromSelection() {
   return sms;
 }
 
+
+// =======================
+// ✅ Parking Virtuel (helpers)
+// =======================
+
+const clamp01 = (x) => {
+  const n = Number(x);
+  if (!Number.isFinite(n)) return 0;
+  return Math.max(0, Math.min(1, n));
+};
+
+// ===== Helpers Parking Virtuel =====
+const normalizeStr = (s) =>
+  String(s || "")
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, " ");
+
+const isElectricRow = (row) => {
+  const raw = row?.["Type de vélo"] ?? row?.["Type de velo"] ?? row?.["type_de_velo"] ?? "";
+  const t = normalizeStr(raw);
+
+  // Cas les plus fréquents : "Electrique" / "Électrique" / "VAE" / "AE"
+  if (t === "ELECTRIQUE" || t === "ÉLECTRIQUE") return true;
+  if (t.includes("Électrique") || t.includes("Électrique")) return true;
+  if (t.includes("VAE")) return true;
+  if (t === "AE") return true;
+
+  // Si tu as des valeurs style "Musculaire" => false
+  return false;
+};
+
+
+const getCategoryFromRow = (row) => {
+  const catRaw = normalizeStr(row?.["Catégorie"] ?? row?.["Categorie"] ?? "");
+
+  // Base catégorie
+  let base = "";
+  if (catRaw.includes("VTT")) base = "VTT";
+  else if (catRaw.includes("GRAVEL")) base = "GRAVEL";
+  else if (catRaw.includes("ROUTE") || catRaw.includes("ROAD")) base = "ROUTE";
+  else if (catRaw.includes("VTC")) base = "VTC";
+  else if (catRaw.includes("VILLE") || catRaw.includes("CITY") || catRaw.includes("URBAN")) base = "VILLE";
+  else if (catRaw.includes("CARGO")) base = "CARGO";
+  else base = catRaw || "";
+
+  const electric = isElectricRow(row);
+
+  // ⚡️Électrique : on bascule dans les catégories AE attendues
+  if (electric) {
+    if (base === "ROUTE" || base === "GRAVEL") return "RT/ GRVL AE";
+    if (base === "VTT") return "VTT AE";
+    if (base === "VTC") return "VTC AE";
+    if (base === "VILLE") return "VILLE AE";
+    if (base === "CARGO") return "CARGO"; // si cargo AE un jour, adapte
+    return base;
+  }
+
+  // 💪 Musculaire : pas de VTC/Ville musculaire chez vous
+  if (base === "VTT" || base === "ROUTE" || base === "GRAVEL" || base === "CARGO") return base;
+
+  return "";
+};
+
+const getCatMarFromRow = (row) => {
+  const category = norm(row?.["Catégorie"]);
+  const bikeType = norm(row?.["Type de vélo"]); // "Electrique" | "Musculaire"
+  const brand = norm(row?.["Marque"]);
+
+  if (!category || !bikeType || !brand) return "";
+
+  // 1) règle spécifique (Catégorie + Type + Marque)
+  const k1 = makeTierKey(category, bikeType, brand);
+  const t1 = brandTiersIndex.get(k1);
+  if (t1) return t1;
+
+  // 2) fallback si tu utilises "Tous" côté brand_tiers (optionnel)
+  const k2 = makeTierKey(category, "Tous", brand);
+  const t2 = brandTiersIndex.get(k2);
+  if (t2) return t2;
+
+  return "";
+};
+
+
+const getSizeFromRow = (row) =>
+  String(row?.["Taille"] ?? row?.["Taille cadre"] ?? row?.["size"] ?? "").trim();
+
+const parsePriceNumber = (v) => {
+  if (v == null) return NaN;
+  if (typeof v === "number") return v;
+  const s = String(v)
+    .replace(/\s/g, "")
+    .replace("€", "")
+    .replace(",", ".")
+    .replace(/[^0-9.]/g, "");
+  const n = Number(s);
+  return Number.isFinite(n) ? n : NaN;
+};
+
+const getPriceFromRow = (row) => {
+  const v = row?.["Prix réduit"];
+
+  if (v == null) return NaN;
+  if (typeof v === "number") return Number.isFinite(v) ? v : NaN;
+
+  const s = String(v)
+    .replace(/\s/g, "")
+    .replace("€", "")
+    .replace(",", ".")
+    .replace(/[^0-9.]/g, "");
+
+  const n = Number(s);
+  return Number.isFinite(n) ? n : NaN;
+};
+
+const getPriceBand = (price) => {
+  if (!Number.isFinite(price)) return "";
+  if (price < 1500) return "0-1500";
+  if (price < 2500) return "1500-2500";
+  if (price < 3500) return "2500-3500";
+  return "3500+";
+};
+
+const computeDistribution = (rows, getKeyFn) => {
+  const out = {};
+  let totalUnits = 0;
+
+  for (const r of rows || []) {
+    const units = Number(getRowTotalStock(r) || 0);
+    if (!Number.isFinite(units) || units <= 0) continue;
+
+    const key = String(getKeyFn(r) || "").trim();
+    if (!key) continue;
+
+    totalUnits += units;
+    out[key] = (out[key] || 0) + units;
+  }
+
+  return { out, totalUnits };
+};
+
+const norm = (v) => String(v ?? "").trim();
+
+const makeTierKey = (category, bikeType, brand) =>
+  `${norm(category)}||${norm(bikeType)}||${norm(brand)}`.toLowerCase();
+
+const loadBrandTiersIndex = async () => {
+  setBrandTiersLoading(true);
+  setBrandTiersError("");
+  try {
+    const { data, error } = await supabase
+      .from("brand_tiers")
+      .select("bike_category,bike_type,brand,tier");
+
+    if (error) throw error;
+
+    const m = new Map();
+    (data || []).forEach((r) => {
+      const k = makeTierKey(r.bike_category, r.bike_type, r.brand);
+      const t = norm(r.tier).toUpperCase();
+      if (k && ["A", "B", "C", "D"].includes(t)) m.set(k, t);
+    });
+
+    setBrandTiersIndex(m);
+  } catch (e) {
+    setBrandTiersError(e?.message || "Erreur chargement brand_tiers");
+    setBrandTiersIndex(new Map());
+  } finally {
+    setBrandTiersLoading(false);
+  }
+};
+
+
+const buildGapRows = (actualMap, actualTotal, targetPctMap, objectiveTotal) => {
+  const keys = Array.from(
+    new Set([...Object.keys(targetPctMap || {}), ...Object.keys(actualMap || {})])
+  );
+
+  const rows = keys.map((k) => {
+    const actualUnits = Number(actualMap?.[k] || 0);
+    const actualPct = actualTotal > 0 ? actualUnits / actualTotal : 0;
+
+    const targetPct = clamp01(targetPctMap?.[k] ?? 0);
+    const targetUnits = Math.round(targetPct * Number(objectiveTotal || 0));
+
+    const gapUnits = actualUnits - targetUnits; // + = trop, - = manque
+    const gapPct = actualPct - targetPct;
+
+    return {
+      key: k,
+      actualUnits,
+      actualPct,
+      targetUnits,
+      targetPct,
+      gapUnits,
+      gapPct,
+    };
+  });
+
+  // tri: plus gros écart en unités
+  rows.sort((a, b) => Math.abs(b.gapUnits) - Math.abs(a.gapUnits));
+  return rows;
+};
+
+const sizeToBucket = (raw) => {
+  if (raw == null) return "";
+
+  const s = String(raw).trim().toUpperCase();
+  if (!s) return "";
+
+  // Déjà une lettre ?
+  if (["XXS", "XS", "S", "M", "L", "XL", "XXL"].includes(s)) {
+    if (s === "XXS") return "XS";
+    if (s === "XXL") return "XL";
+    return s;
+  }
+
+  // Taille numérique (ex: 54, 61)
+  const n = Number(String(raw).replace(",", ".").replace(/[^0-9.]/g, ""));
+  if (Number.isFinite(n)) {
+    if (n < 49) return "XS";
+    if (n < 52) return "S";
+    if (n < 54) return "M";
+    if (n < 56) return "L";
+    return "XL";
+  }
+
+  // Formats type "54 cm" "Size 54"
+  const m = s.match(/(\d{2})/);
+  if (m) {
+    const nn = Number(m[1]);
+    if (Number.isFinite(nn)) {
+      if (nn < 49) return "XS";
+      if (nn < 52) return "S";
+      if (nn < 54) return "M";
+      if (nn < 56) return "L";
+      return "XL";
+    }
+  }
+
+  return "";
+};
+
+const getVariantSizeBucketsFromRow = (row) => {
+  const buckets = [];
+
+  for (const [k, v] of Object.entries(row || {})) {
+    const key = String(k || "").toLowerCase();
+    if (key.startsWith("taille cadre variant")) {
+      const b = sizeToBucket(v);
+      if (b) buckets.push(b);
+    }
+  }
+
+  // unique + ordre stable
+  return Array.from(new Set(buckets));
+};
+
+// ===== Parking Virtuel : Cross-filter (niveau 1) =====
+const [parkingSelection, setParkingSelection] = useState({
+  category: null,
+  priceBand: null,
+  catMar: null,
+  size: null,
+});
+
+const normStr = (v) => String(v ?? "").trim().toLowerCase();
+
+const toggleParkingFilter = (key, value) => {
+  setParkingSelection((prev) => {
+    const same = normStr(prev[key]) === normStr(value);
+    return { ...prev, [key]: same ? null : value };
+  });
+};
+
+const clearParkingFilters = () => {
+  setParkingSelection({ category: null, priceBand: null, catMar: null, size: null });
+};
+
+const applyParkingSelection = (rows, sel) => {
+  const s = sel || {};
+  return (rows || []).filter((r) => {
+    if (s.category && normStr(getCategoryFromRow(r)) !== normStr(s.category)) return false;
+
+    if (s.priceBand) {
+      const b = getPriceBand(getPriceFromRow(r));
+      if (normStr(b) !== normStr(s.priceBand)) return false;
+    }
+
+    if (s.catMar) {
+      const cm = normStr(getCatMarFromRow(r));
+      if (cm !== normStr(s.catMar)) return false;
+    }
+
+    if (s.size) {
+      const buckets = (getVariantSizeBucketsFromRow(r) || []).map((x) => String(x).trim().toUpperCase());
+      const wanted = String(s.size).trim().toUpperCase();
+      if (!buckets.includes(wanted)) return false;
+    }
+
+    return true;
+  });
+};
+
+function getSizeStocksFromRow(r) {
+  // ✅ Cas 1 : tu as déjà un champ objet/JSON (si tu en as un dans ton modèle)
+  // ex: r.size_stocks = { XS: 1, S: 0, M: 2, L: 1 }
+  const maybeObj =
+    r?.size_stocks ||
+    r?.sizeStocks ||
+    r?.["Stocks par taille"] ||
+    r?.["stocks_par_taille"];
+
+  if (maybeObj && typeof maybeObj === "object" && !Array.isArray(maybeObj)) {
+    const out = {};
+    for (const [k, v] of Object.entries(maybeObj)) {
+      const size = String(k || "").trim().toUpperCase();
+      const units = Number(v || 0);
+      if (!size) continue;
+      if (!Number.isFinite(units) || units <= 0) continue;
+      out[size] = (out[size] || 0) + units;
+    }
+    return out;
+  }
+
+  // ✅ Cas 2 : colonnes “stock_xs / stock_s / …” (on tente plusieurs variantes)
+  const sizeKeys = [
+    ["XS", ["stock_xs", "Stock_XS", "Stock XS", "XS_stock", "stockXS"]],
+    ["S", ["stock_s", "Stock_S", "Stock S", "S_stock", "stockS"]],
+    ["M", ["stock_m", "Stock_M", "Stock M", "M_stock", "stockM"]],
+    ["L", ["stock_l", "Stock_L", "Stock L", "L_stock", "stockL"]],
+    ["XL", ["stock_xl", "Stock_XL", "Stock XL", "XL_stock", "stockXL"]],
+  ];
+
+  const out = {};
+  for (const [size, keys] of sizeKeys) {
+    for (const k of keys) {
+      if (r && Object.prototype.hasOwnProperty.call(r, k)) {
+        const units = Number(r[k] || 0);
+        if (Number.isFinite(units) && units > 0) out[size] = (out[size] || 0) + units;
+      }
+    }
+  }
+  if (Object.keys(out).length > 0) return out;
+
+  // ❌ Pas de détail variant -> null (on fera un fallback)
+  return null;
+}
+
+function buildBrandRecapByTier(rows) {
+  const tiers = ["A", "B", "C", "D"];
+  const map = { A: new Set(), B: new Set(), C: new Set(), D: new Set() };
+
+  for (const r of rows || []) {
+    const brand = String(r?.["Marque"] ?? "").trim();
+    if (!brand) continue;
+
+    const t = String(getCatMarFromRow(r) || "").trim().toUpperCase();
+
+    // ✅ On ne garde QUE A/B/C/D. Sinon on ignore.
+    if (!tiers.includes(t)) continue;
+
+    map[t].add(brand);
+  }
+
+  const toSorted = (set) => Array.from(set).sort((a, b) => a.localeCompare(b, "fr"));
+
+  return {
+    A: toSorted(map.A),
+    B: toSorted(map.B),
+    C: toSorted(map.C),
+    D: toSorted(map.D),
+  };
+}
+
+
+
+
 // =======================
 // ✅ BULK PROMO (helpers)
 // =======================
@@ -1854,8 +2772,6 @@ const submitFeedback = async () => {
   const diffTime = now - published;
   return Math.floor(diffTime / (1000 * 60 * 60 * 24)); // jours
 };
-// Clamp 0..1
-const clamp01 = (x) => Math.max(0, Math.min(1, x));
 
 // Interpolation linéaire
 const lerp = (a, b, t) => a + (b - a) * t;
@@ -2064,6 +2980,51 @@ const removeInterest = async (veloUrl) => {
     console.error("❌ removeInterest exception:", e);
   }
 };
+
+// ===== PARKING VIRTUEL (modal) =====
+const [parkingOpen, setParkingOpen] = useState(false);
+const [parkingTab, setParkingTab] = useState("vue"); // "vue" | "params"
+
+const [parkingRules, setParkingRules] = useState({
+  objectiveTotal: 600,
+  categoryPct: {
+    "ROUTE": 0.16,
+    "GRAVEL": 0.16,
+    "VTT": 0.08,
+    "RT/ GRVL AE": 0.03,
+    "VTT AE": 0.24,
+    "VILLE AE": 0.15,
+    "CARGO": 0.03,
+    "VTC AE": 0.15,
+  },
+  pricePct: {
+    "0-1500": 0.15,
+    "1500-2500": 0.40,
+    "2500-3500": 0.30,
+    "3500+": 0.15,
+  },
+  catMarPct: {
+    "A": 0.60,
+    "B": 0.30,
+    "C": 0.10,
+    "D": 0.00,
+  },
+  sizePct: {
+    "XS": 0.10,
+    "S": 0.15,
+    "M": 0.35,
+    "L": 0.25,
+    "XL": 0.15,
+  },
+});
+
+
+const [brandTiersIndex, setBrandTiersIndex] = useState(new Map()); 
+// key = `${category}||${type}||${brand}` -> tier (A/B/C/D)
+const [brandTiersLoading, setBrandTiersLoading] = useState(false);
+const [brandTiersError, setBrandTiersError] = useState("");
+
+
 // ===== Notes par vélo =====
 const [notes, setNotes] = useState({});
 const [isNotesOpen, setIsNotesOpen] = useState(false); // modal ouverte ?
@@ -2188,6 +3149,23 @@ useEffect(() => {
   loadAllPricing();
 }, []);
 
+// 🔗 Récupère le premier Variant ID dispo (pour lien ERP)
+const getFirstVariantId = (row) => {
+  if (!row || typeof row !== "object") return null;
+
+  const entries = Object.entries(row)
+    .filter(([key, val]) => /variant\s*id/i.test(key) && val)
+    .sort(([a], [b]) => {
+      const na = Number(a.match(/\d+/)?.[0] || 0);
+      const nb = Number(b.match(/\d+/)?.[0] || 0);
+      return na - nb;
+    });
+
+  if (!entries.length) return null;
+  return String(entries[0][1]).trim();
+};
+
+
 const openPricingSearchTabs = (v) => {
   if (!v) return;
 
@@ -2206,7 +3184,7 @@ const openPricingSearchTabs = (v) => {
   const typeVeloRaw = getFieldLoose(v, "Type de vélo"); // match même si accents/espaces diffèrent
 const typeVelo = stripDiacritics(String(typeVeloRaw)).toLowerCase().trim();
 
-const isEbike = typeVelo.includes("electrique");
+const isEbike = typeVelo.includes("Électrique");
 const fallbackHay = stripDiacritics(`${v?.Title || ""} ${v?.["Catégorie"] || ""} ${v?.["Motorisation"] || ""}`)
   .toLowerCase();
 
@@ -2476,6 +3454,12 @@ useEffect(() => {
   // eslint-disable-next-line react-hooks/exhaustive-deps
 }, [pricingMode, selectedVelo?.URL]);
 
+/* -------- Règles ouverture modale Parking -------- */
+useEffect(() => {
+  if (!parkingOpen) return;
+  loadBrandTiersIndex();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, [parkingOpen]);
 
 
 // 👉 Très important : recharger les intérêts quand on ouvre un vélo
@@ -3104,6 +4088,15 @@ const bulkCreatePromo = () => {
   promo_openModal();
 };
 
+const openParkingVirtuelTool = () => {
+  alert("🅿️ Outil Parking Virtuel — à brancher (v1 bientôt)");
+};
+
+const openPriceTool = () => {
+  alert("💲 Outil Prix — à brancher (v1 bientôt)");
+};
+
+
 const bulkLinkBikes = () => {
   alert("🟠 Lier les vélos : à brancher ensuite");
 };
@@ -3688,38 +4681,99 @@ ${Object.entries(v)
 )}
           <div className="header-center">
   <div
-    onClick={() => setPricingMode((v) => !v)}
-    title="Basculer entre Portail vendeur et Portail pricing"
     style={{
       display: "flex",
       alignItems: "center",
-      gap: 10,
-      cursor: "pointer",
-      userSelect: "none",
+      gap: 14,
     }}
   >
-    <h1 style={{ margin: 0 }}>
-      {pricingMode ? "Portail Pricing Mint-Bikes" : "Portail Vendeur Mint-Bikes"}{" "}
-      {lastUpdate && (
-        <span className="last-update">
-          (mis à jour {timeAgoFr(lastUpdate)})
-        </span>
-      )}
-    </h1>
+    {/* ===== SWITCH MODE = TITRE ===== */}
+<div
+  role="tablist"
+  aria-label="Sélecteur de mode"
+  style={{
+    display: "inline-flex",
+    alignItems: "center",
+    border: "1px solid rgba(0,0,0,0.14)",
+    borderRadius: 999,
+    overflow: "hidden",
+    background: "rgba(255,255,255,0.96)",
+    boxShadow: "0 10px 22px rgba(0,0,0,0.10)",
+  }}
+>
+  {/* CONSEILLER */}
+  <button
+    type="button"
+    onClick={() => {
+      setPricingMode(false);
+      setSelected({});
+    }}
+    title="Mode conseiller"
+    style={{
+      padding: "10px 20px",
+      border: "none",
+      cursor: "pointer",
+      background: !pricingMode ? "var(--mint-green)" : "transparent",
+      color: "#111827",
+      fontSize: 18,              // 👈 taille titre
+      fontWeight: !pricingMode ? 900 : 600,
+      letterSpacing: "-0.01em",
+      opacity: !pricingMode ? 1 : 0.55,
+      transition: "all .18s ease",
+      transform: !pricingMode ? "translateY(-1px)" : "translateY(0)",
+      boxShadow: !pricingMode ? "0 10px 18px rgba(44,167,106,0.25)" : "none",
+      lineHeight: 1.1,
+    }}
+  >
+    Portail Conseiller
+  </button>
 
-    {/* Indicateur visuel cliquable */}
-    <span
-      style={{
-        fontSize: 16,
-        opacity: 0.75,
-        transform: pricingMode ? "rotate(180deg)" : "none",
-        transition: "transform 0.2s ease",
-      }}
-    >
-      🔁
-    </span>
+  {/* PRICING */}
+  <button
+    type="button"
+    onClick={() => {
+      setPricingMode(true);
+      setSelected({});
+    }}
+    title="Mode pricing"
+    style={{
+      padding: "10px 20px",
+      border: "none",
+      cursor: "pointer",
+      background: pricingMode ? "var(--mint-green)" : "transparent",
+      color: "#111827",
+      fontSize: 18,              // 👈 même taille titre
+      fontWeight: pricingMode ? 900 : 600,
+      letterSpacing: "-0.01em",
+      opacity: pricingMode ? 1 : 0.55,
+      transition: "all .18s ease",
+      transform: pricingMode ? "translateY(-1px)" : "translateY(0)",
+      boxShadow: pricingMode ? "0 10px 18px rgba(44,167,106,0.25)" : "none",
+      lineHeight: 1.1,
+    }}
+  >
+    Portail Pricing
+  </button>
+</div>
+
+
+    {/* ===== LAST UPDATE ===== */}
+    {lastUpdate && (
+      <span
+        className="last-update"
+        style={{
+          fontSize: 12,
+          color: "#6b7280",
+          whiteSpace: "nowrap",
+        }}
+      >
+        mis à jour {timeAgoFr(lastUpdate)}
+      </span>
+    )}
   </div>
 </div>
+
+
           {/* ...dans .header-bar */}
 <div className="header-right">
   <button
@@ -3928,35 +4982,56 @@ ${Object.entries(v)
     )}
 
     {/* ===== MODE PRICING ===== */}
-    {pricingMode && (
-      <>
-        <button
-          onClick={selectAllDisplayed}
-          className="icon-btn"
-          title="Sélectionner tous les vélos affichés"
-          disabled={filteredAndSortedVelos.length === 0}
-        >
-          <FaCheckSquare />
-        </button>
+{pricingMode && (
+  <>
+    <button
+      onClick={selectAllDisplayed}
+      className="icon-btn"
+      title="Sélectionner tous les vélos affichés"
+      disabled={filteredAndSortedVelos.length === 0}
+    >
+      <FaCheckSquare />
+    </button>
 
-        <button
-          onClick={bulkCreatePromo}
-          className="icon-btn"
-          title="Créer une promo (bulk)"
-          disabled={selectedCount === 0}
-        >
-          <FaPercent />
-        </button>
+    <button
+      onClick={bulkCreatePromo}
+      className="icon-btn"
+      title="Outil promo"
+      disabled={selectedCount === 0}
+    >
+      <FaPercent />
+    </button>
 
-        <button
-       onClick={openExportModal}
-       className="icon-btn"
-       title="Exporter"
-        >
+    {/* 🅿️ Parking Virtuel */}
+    <button
+  onClick={() => {
+    setParkingTab("vue");
+    setParkingOpen(true);
+  }}
+  className="icon-btn"
+  title="Parking Virtuel"
+>
+  🅿️
+</button>
+
+    {/* 💲 Outil Prix */}
+    <button
+      onClick={openPriceTool}
+      className="icon-btn"
+      title="Outil Prix"
+    >
+      💲
+    </button>
+
+    <button
+      onClick={openExportModal}
+      className="icon-btn"
+      title="Outil export"
+    >
       <FaFileExport />
-      </button>
-      </>
-    )}
+    </button>
+  </>
+)}
   </div>
 
   {/* Compteur au centre */}
@@ -3990,29 +5065,44 @@ ${Object.entries(v)
     </span>
 
     <span className="velo-label">
-      {pricingMode ? "  Unités dispo" : "  Vélos"}
+      {pricingMode ? "  Unités" : "  Vélos"}
     </span>
   </div>
 
   {/* Icône stats */}
+  {pricingMode && (
   <button
-    type="button"
     onClick={() => setStatsOpen(true)}
-    title="Voir les statistiques"
+    title="Statistiques du stock actuel"
     style={{
-      border: "1px solid #e5e7eb",
-      background: "#fff",
-      borderRadius: 8,
-      padding: "6px 8px",
-      cursor: "pointer",
-      display: "flex",
+      display: "inline-flex",
       alignItems: "center",
-      justifyContent: "center",
-      fontSize: 14,
+      gap: 8,
+      padding: "8px 12px",
+      borderRadius: 999,
+      border: "1px solid rgba(0,0,0,0.15)",
+      background: "#ffffff",
+      color: "#111827",
+      fontWeight: 700,
+      fontSize: 13,
+      cursor: "pointer",
+      transition: "all .15s ease",
+    }}
+    onMouseEnter={(e) => {
+      e.currentTarget.style.background = "var(--mint-green)";
+      e.currentTarget.style.color = "#ffffff";
+      e.currentTarget.style.borderColor = "var(--mint-green)";
+    }}
+    onMouseLeave={(e) => {
+      e.currentTarget.style.background = "#ffffff";
+      e.currentTarget.style.color = "#111827";
+      e.currentTarget.style.borderColor = "rgba(0,0,0,0.15)";
     }}
   >
-    📊
+    <span style={{ fontSize: 15 }}>📊</span>
+    KPI's Parking
   </button>
+)}
 </div>
 
   {/* Vue + Tri */}
@@ -4063,7 +5153,7 @@ ${Object.entries(v)
 ) : (
   <>
     <option value="PRICING_UPDATED_AT">Date du dernier pricing</option>
-    <option value="PRICING_BENEFICE">Bénéfice</option>
+    <option value="PRICING_BENEFICE">Marge</option>
     <option value="Published At">Date de publication</option>
     <option value="PRICING_BUY_PRICE">Prix d&apos;achat</option>
     <option value="Prix réduit">Prix</option>
@@ -4102,40 +5192,72 @@ ${Object.entries(v)
                   <div className="image-wrapper">
   {v["Image 1"] && <img src={v["Image 1"]} alt="Vélo" className="velo-image" />}
 
-  {/* ✅ BADGE PROMO (mode pricing) */}
-  {pricingMode && (() => {
-    const promoRaw =
-      pricingByUrl?.[v.URL]?.mint_promo_amount ??
-      v?.mint_promo_amount ??
-      v?.["mint_promo_amount"];
+  {/* ✅ BADGE PROMO (vente + pricing) */}
+{(() => {
+  const promoRaw =
+    pricingByUrl?.[v.URL]?.mint_promo_amount ??
+    v?.mint_promo_amount ??
+    v?.["mint_promo_amount"];
 
-    const promo = parseNumericValue(promoRaw);
-    if (!Number.isFinite(promo) || promo <= 0) return null;
+  const promo = parseNumericValue(promoRaw);
+  if (!Number.isFinite(promo) || promo <= 0) return null;
 
-    return (
-      <div
-        className="promo-badge"
-        title={`Promo en cours : -${promo.toLocaleString("fr-FR")} €`}
-        onClick={(e) => e.stopPropagation()}
-        style={{
-          position: "absolute",
-          top: 8,
-          left: 8,
-          zIndex: 3,
-          padding: "6px 8px",
-          borderRadius: 10,
-          fontSize: 12,
-          fontWeight: 900,
-          background: "#ef4444",
-          color: "#fff",
-          boxShadow: "0 6px 16px rgba(0,0,0,0.18)",
-          lineHeight: 1,
-        }}
-      >
-        -{promo.toLocaleString("fr-FR")}€
-      </div>
-    );
-  })()}
+  return (
+    <div
+      className="promo-badge"
+      title={`Promo en cours : -${promo.toLocaleString("fr-FR")} €`}
+      onClick={(e) => e.stopPropagation()}
+      style={{
+        position: "absolute",
+        top: 8,
+        left: 8,
+        zIndex: 3,
+        padding: "6px 8px",
+        borderRadius: 10,
+        fontSize: 12,
+        fontWeight: 900,
+        background: "#ef4444",
+        color: "#fff",
+        boxShadow: "0 6px 16px rgba(0,0,0,0.18)",
+        lineHeight: 1,
+      }}
+    >
+      -{promo.toLocaleString("fr-FR")}€
+    </div>
+  );
+})()}
+
+{/* ✅ BADGE LOT / MULTI-UNITÉS (centré, mode pricing uniquement) */}
+{pricingMode && (() => {
+  const units = getRowTotalStock(v);
+  if (!Number.isFinite(units) || units <= 1) return null;
+
+  return (
+    <div
+      title={`${units} unités en stock`}
+      onClick={(e) => e.stopPropagation()}
+      style={{
+        position: "absolute",
+        top: 8,
+        left: "50%",
+        transform: "translateX(-50%)",
+        zIndex: 3,
+        padding: "5px 9px",
+        borderRadius: 999,
+        fontSize: 12,
+        fontWeight: 900,
+        background: "rgba(17,24,39,0.92)",
+        color: "#fff",
+        boxShadow: "0 6px 16px rgba(0,0,0,0.18)",
+        lineHeight: 1,
+        pointerEvents: "none", // évite toute interférence clic
+      }}
+    >
+      x{units}
+    </div>
+  );
+})()}
+
 
   {!pricingMode ? (
   <div
@@ -4217,7 +5339,7 @@ ${Object.entries(v)
             {ben != null ? `${Number(ben).toLocaleString("fr-FR")} €` : "—"}
           </div>
           <div style={{ fontSize: 11, opacity: 0.7, marginBottom: 10 }}>
-            Bénéfice (estimé)
+            Marge (estimée+)
           </div>
 
           <div style={{ marginTop: 6, opacity: 0.75 }}>
@@ -4379,70 +5501,118 @@ ${Object.entries(v)
                 </a>
               )}
             </div>
-            {/* 👇 Bloc horizontal Intérêts + Notes */}
-<div className="velo-extras">
-  {/* Intérêts */}
-  {selectedVelo?.URL && (
-    <div className="interest-widget">
-      <div className="interest-left">
-        <span className="interest-icon" title="Prospects sur ce vélo">
-          <FaUser />
-        </span>
-        <span className="interest-count">
-          {Object.values(interests).reduce((a, b) => a + Number(b || 0), 0)}
-        </span>
+            {/* 👇 Barre d’actions (répartie) : Intérêt | ERP | Notes */}
+{selectedVelo?.URL && (
+  <div
+    className={`velo-extras distributed-row ${pricingMode ? "cols-3" : "cols-2"}`}
+  >
+    {/* ===== INTÉRÊT ===== */}
+<div className={`extra-pill interest-pill ${!pricingMode ? "interest-pill-advisor" : ""}`}>
+  <span className="extra-icon" title="Prospects sur ce vélo">
+    <FaUser />
+  </span>
 
-        {/* Liste flottante au survol de l'icône */}
-        <div className="interest-tooltip">
-          <div className="interest-tooltip-title">Prospects par vendeur</div>
-          {Object.keys(interests).length === 0 ? (
-            <div className="interest-tooltip-empty">Aucun intérêt pour l’instant</div>
-          ) : (
-            <ul className="interest-tooltip-list">
-              {Object.entries(interests).map(([vendor, count]) => (
-                <li key={vendor}>
-                  <strong>{vendor}</strong> — {count}
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-      </div>
+  <span className="extra-text">
+    {Object.values(interests).reduce((a, b) => a + Number(b || 0), 0)}
+  </span>
 
-      <div className="interest-controls">
-        <button
-          type="button"
-          className="interest-btn"
-          onClick={(e) => {
-            e.stopPropagation();
-            addInterest(selectedVelo.URL);
-          }}
-          title="+1 client intéressé"
-        >
-          +
-        </button>
-        <button
-          type="button"
-          className="interest-btn"
-          onClick={(e) => {
-            e.stopPropagation();
-            removeInterest(selectedVelo.URL);
-          }}
-          title="-1 client intéressé"
-        >
-          −
-        </button>
-      </div>
+  {/* Tooltip uniquement en mode Conseiller */}
+  {!pricingMode && (
+    <div className="interest-tooltip">
+      <div className="interest-tooltip-title">Prospects par vendeur</div>
+
+      {Object.keys(interests).length === 0 ? (
+        <div className="interest-tooltip-empty">Aucun intérêt</div>
+      ) : (
+        <ul className="interest-tooltip-list">
+          {Object.entries(interests).map(([vendor, count]) => (
+            <li key={vendor}>
+              <strong>{vendor}</strong> — {count}
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   )}
 
-  {/* Notes */}
-  <div className="notes-widget">
-    <button className="notes-btn" onClick={() => setIsNotesOpen(true)}>
-  {noteCount > 0 ? `📝Notes (${noteCount})` : "📝Notes"}
-</button>
-  </div>
+  {/* + / − UNIQUEMENT en mode Conseiller */}
+  {!pricingMode && (
+    <span
+      className="interest-inline-controls"
+      onClick={(e) => e.stopPropagation()}
+    >
+      <button
+        type="button"
+        className="interest-mini-btn"
+        title="+1 client intéressé"
+        onClick={(e) => {
+          e.stopPropagation();
+          addInterest(selectedVelo.URL);
+        }}
+      >
+        +
+      </button>
+
+      <button
+        type="button"
+        className="interest-mini-btn"
+        title="-1 client intéressé"
+        onClick={(e) => {
+          e.stopPropagation();
+          removeInterest(selectedVelo.URL);
+        }}
+      >
+        −
+      </button>
+    </span>
+  )}
 </div>
+
+    {/* ===== ERP (mode pricing uniquement) ===== */}
+    {pricingMode &&
+      (() => {
+        const serials = getAllSerialsFromRow(selectedVelo);
+        const bikeNumber = serials?.[0] ? String(serials[0]).trim() : "";
+        if (!bikeNumber) return null;
+
+        const erpUrl = `https://erpmint.com/dashboard/products/${encodeURIComponent(
+          bikeNumber
+        )}`;
+
+        return (
+          <button
+            type="button"
+            className="extra-pill clickable"
+            title={`Voir la fiche achat ERP (N° ${bikeNumber})`}
+            onClick={(e) => {
+              e.stopPropagation();
+              window.open(erpUrl, "_blank", "noopener,noreferrer");
+            }}
+          >
+            <span className="extra-icon">👁️</span>
+            <span className="extra-text">ERP</span>
+          </button>
+        );
+      })()}
+
+    {/* ===== NOTES ===== */}
+    <button
+      type="button"
+      className="extra-pill clickable"
+      title="Ouvrir les notes"
+      onClick={(e) => {
+        e.stopPropagation();
+        setIsNotesOpen(true);
+      }}
+    >
+      <span className="extra-icon">📝</span>
+      <span className="extra-text">
+        {noteCount > 0 ? `Notes (${noteCount})` : "Notes"}
+      </span>
+    </button>
+  </div>
+)}
+
 
 
 {/* Fenêtre flottante (modal notes) */}
@@ -4450,7 +5620,9 @@ ${Object.entries(v)
   <>
     <div className="overlay" onClick={() => setIsNotesOpen(false)}></div>
     <div className="notes-modal">
-      <button className="close-btn" onClick={() => setIsNotesOpen(false)}>×</button>
+      <button className="close-btn" onClick={() => setIsNotesOpen(false)}>
+        ×
+      </button>
       <h2>Notes pour ce vélo</h2>
 
       {/* Zone de texte pour l’utilisateur courant */}
@@ -4614,6 +5786,7 @@ ${Object.entries(v)
   "Tom",
   "Victor",
   "Hugo",
+  "Gregory",
   "Autre",
 ];
       const totalCosts =
@@ -6197,6 +7370,406 @@ ${Object.entries(v)
   </>
 )}
 
+{/* ===== MODAL PARKING VIRTUEL ===== */}
+{parkingOpen && (
+  <>
+    <div className="overlay" onClick={() => setParkingOpen(false)} />
+
+    <div className="parking-modal" onClick={(e) => e.stopPropagation()}>
+      <div className="parking-header">
+        <div>
+          <div className="parking-title">🅿️ Parking Virtuel</div>
+          <div className="parking-subtitle">
+            Objectif stock : <strong>{parkingRules.objectiveTotal}</strong> unités
+          </div>
+        </div>
+
+        <button className="close-btn" onClick={() => setParkingOpen(false)}>
+          ×
+        </button>
+      </div>
+
+      {/* Tabs */}
+      <div className="parking-tabs">
+        <button
+          type="button"
+          className={`parking-tab ${parkingTab === "vue" ? "active" : ""}`}
+          onClick={() => setParkingTab("vue")}
+        >
+          Vue
+        </button>
+
+        <button
+          type="button"
+          className={`parking-tab ${parkingTab === "params" ? "active" : ""}`}
+          onClick={() => setParkingTab("params")}
+        >
+          Paramètres
+        </button>
+      </div>
+
+      {/* =======================
+          TAB : VUE
+          ======================= */}
+      {parkingTab === "vue" &&
+        (() => {
+          const baseRows = filteredAndSortedVelos || []; // ou velos si tu préfères tout le stock
+          const rowsForView = applyParkingSelection(baseRows, parkingSelection);
+          const brandRecap = buildBrandRecapByTier(rowsForView);
+          const baseUnits = (baseRows || []).reduce((sum, r) => sum + Number(getRowTotalStock(r) || 0), 0);
+          const filteredUnits = (rowsForView || []).reduce((sum, r) => sum + Number(getRowTotalStock(r) || 0), 0);
+
+
+          // ✅ Objectif total dynamique : si filtre actif => on se cale sur le volume filtré
+          const hasActiveFilter =
+          parkingSelection.category || parkingSelection.priceBand || parkingSelection.catMar || parkingSelection.size;
+
+          const objectiveTotal = Number(parkingRules.objectiveTotal || 0); // ex: 600
+
+          const getPct = (obj, key) => {
+  if (!obj) return 0;
+  const v = obj[key];
+  return Number.isFinite(v) ? v : 0;
+};
+
+// ✅ cascade dans l’ordre : Catégorie -> Prix -> Taille -> CAT_MAR
+const multCategory = parkingSelection.category ? getPct(parkingRules.categoryPct, parkingSelection.category) : 1;
+const multPrice = parkingSelection.priceBand ? getPct(parkingRules.pricePct, parkingSelection.priceBand) : 1;
+
+// ⚠️ Taille : ton selection est une taille (ex "M"). On applique son pct si sélectionnée.
+const multSize = parkingSelection.size ? getPct(parkingRules.sizePct, parkingSelection.size) : 1;
+
+// Total “base” pour chaque table (objectif global * produit des filtres avant)
+const objTotalForCategory = objectiveTotal;
+const objTotalForPrice = objectiveTotal * multCategory;
+const objTotalForSize = objectiveTotal * multCategory * multPrice;
+const objTotalForCatMar = objectiveTotal * multCategory * multPrice * multSize;
+
+
+          // ---- Taille (distribution spéciale)
+          function computeSizeDistribution(rows) {
+  const out = {};
+  let totalUnits = 0;
+
+  for (const r of rows || []) {
+    // ✅ 1) Si on a le détail par taille, on prend la vérité
+    const sizeStocks = getSizeStocksFromRow(r);
+    if (sizeStocks) {
+      for (const [size, units] of Object.entries(sizeStocks)) {
+        out[size] = (out[size] || 0) + units;
+        totalUnits += units;
+      }
+      continue;
+    }
+
+    // ✅ 2) Fallback : ancien comportement (split égal)
+    const units = Number(getRowTotalStock(r) || 0);
+    if (!Number.isFinite(units) || units <= 0) continue;
+
+    const buckets = getVariantSizeBucketsFromRow(r);
+    if (!buckets || buckets.length === 0) continue;
+
+    const share = units / buckets.length;
+    totalUnits += units;
+    for (const b of buckets) out[b] = (out[b] || 0) + share;
+  }
+
+  return { out, totalUnits };
+}
+
+          // ---- Distributions
+          const distSize = computeSizeDistribution(rowsForView);
+          const distCategory = computeDistribution(rowsForView, getCategoryFromRow);
+          const distPrice = computeDistribution(rowsForView, (r) => getPriceBand(getPriceFromRow(r)));
+          const distCatMar = computeDistribution(rowsForView, getCatMarFromRow);
+
+          // ---- Gap rows
+          const catRows = buildGapRows(distCategory.out, distCategory.totalUnits, parkingRules.categoryPct, objTotalForCategory);
+const priceRows = buildGapRows(distPrice.out, distPrice.totalUnits, parkingRules.pricePct, objTotalForPrice);
+const sizeRows = buildGapRows(distSize.out, distSize.totalUnits, parkingRules.sizePct, objTotalForSize);
+const catMarRows = buildGapRows(distCatMar.out, distCatMar.totalUnits, parkingRules.catMarPct, objTotalForCatMar);
+          function shrinkRowsForUI(rows, filterKey) {
+  const selected = parkingSelection?.[filterKey];
+
+  // ✅ Si cette dimension est filtrée -> on n'affiche que la ligne sélectionnée
+  if (selected) {
+    return (rows || []).filter((r) => normStr(r.key) === normStr(selected));
+  }
+
+  // ✅ Sinon -> on laisse TOUT (y compris 0 unités)
+  return rows || [];
+}
+
+          const renderTable = (title, rows, filterKey) => (
+            <div className="parking-card">
+              <div className="parking-card-title">{title}</div>
+
+              <div className="parking-table">
+                <div className="parking-row parking-head">
+                  <div>Clé</div>
+                  <div>Actuel</div>
+                  <div>Obj</div>
+                  <div>Écart</div>
+                </div>
+
+                {rows.map((r) => {
+                  const active =
+                    parkingSelection?.[filterKey] && normStr(parkingSelection[filterKey]) === normStr(r.key);
+
+                  return (
+                    <div
+                      key={r.key}
+                      className={`parking-row parking-row-clickable ${active ? "active" : ""}`}
+                      onClick={() => toggleParkingFilter(filterKey, r.key)}
+                      title="Cliquer pour filtrer (re-cliquer pour enlever)"
+                    >
+                      <div className="parking-key">{r.key || "—"}</div>
+
+                      <div>
+                        <div className="parking-strong">{Math.round(r.actualUnits)} u</div>
+                        <div className="parking-muted">{Math.round(r.actualPct * 100)}%</div>
+                      </div>
+
+                      <div>
+                        <div className="parking-strong">{Math.round(r.targetUnits)} u</div>
+                        <div className="parking-muted">{Math.round(r.targetPct * 100)}%</div>
+                      </div>
+
+                      <div
+                        className={
+                          r.gapUnits > 0
+                            ? "parking-gap plus"
+                            : r.gapUnits < 0
+                            ? "parking-gap minus"
+                            : "parking-gap"
+                        }
+                      >
+                        {r.gapUnits > 0 ? `+${Math.round(r.gapUnits)}` : `${Math.round(r.gapUnits)}`} u
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          );
+
+          return (
+            <div className="parking-body">
+              {/* Barre filtres */}
+              <div className="parking-card" style={{ gridColumn: "1 / -1" }}>
+                <div className="parking-card-title">Filtres actifs</div>
+                <div className="parking-muted" style={{ marginTop: 6 }}>
+  Ordre conseillé : <strong>1) Catégorie</strong> → <strong>2) Prix</strong> → <strong>3) Taille</strong> → <strong>4) CAT_MAR</strong>.
+  <span style={{ marginLeft: 6 }}>
+    (Les <strong>Obj</strong> restent calculés sur {parkingRules.objectiveTotal} unités)
+  </span>
+</div>
+
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                  {parkingSelection.category ? (
+                    <span className="parking-chip">Catégorie: {parkingSelection.category}</span>
+                  ) : null}
+                  {parkingSelection.priceBand ? (
+                    <span className="parking-chip">Prix: {parkingSelection.priceBand}</span>
+                  ) : null}
+                  {parkingSelection.catMar ? (
+                    <span className="parking-chip">CAT_MAR: {parkingSelection.catMar}</span>
+                  ) : null}
+                  {parkingSelection.size ? <span className="parking-chip">Taille: {parkingSelection.size}</span> : null}
+
+                  <button type="button" className="parking-clear-btn" onClick={clearParkingFilters}>
+                    Réinitialiser
+                  </button>
+
+                  <div className="parking-muted" style={{ marginLeft: "auto" }}>
+                    Base: {Math.round(baseUnits)} u · Filtré: {Math.round(filteredUnits)} u
+                  </div>
+                </div>
+              </div>
+
+              {renderTable("Catégories", shrinkRowsForUI(catRows, "category"), "category")}
+              {renderTable("Prix", shrinkRowsForUI(priceRows, "priceBand"), "priceBand")}
+              {renderTable("Tailles", sizeRows, "size")}
+              {renderTable("CAT_MAR (A/B/C/D)", catMarRows, "catMar")}
+
+{/* ✅ Rappel marques par tier (uniquement si une Catégorie est filtrée) */}
+{parkingSelection.category ? (
+  <div className="parking-card" style={{ gridColumn: "1 / -1" }}>
+    <div className="parking-card-title">
+      Marques par CAT_MAR (sur la sélection) — {parkingSelection.category}
+    </div>
+
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(5, minmax(0, 1fr))", gap: 10 }}>
+      {[
+        ["A", brandRecap.A],
+        ["B", brandRecap.B],
+        ["C", brandRecap.C],
+        ["D", brandRecap.D],
+      ].map(([label, list]) => (
+        <div
+          key={label}
+          style={{
+            border: "1px solid #e5e7eb",
+            borderRadius: 12,
+            background: "#fff",
+            padding: 10,
+            minWidth: 0,
+          }}
+        >
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "baseline" }}>
+            <div style={{ fontWeight: 900 }}>{label}</div>
+            <div style={{ fontSize: 12, color: "#6b7280" }}>{list.length}</div>
+          </div>
+
+          <div style={{ marginTop: 8, display: "flex", flexWrap: "wrap", gap: 6 }}>
+            {list.length === 0 ? (
+              <span style={{ fontSize: 12, color: "#9ca3af" }}>—</span>
+            ) : (
+              list.map((b) => (
+                <span
+                  key={b}
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    padding: "5px 8px",
+                    borderRadius: 999,
+                    border: "1px solid rgba(0,0,0,0.12)",
+                    background: "#fafafa",
+                    fontWeight: 800,
+                    fontSize: 12,
+                    maxWidth: "100%",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  }}
+                  title={b}
+                >
+                  {b}
+                </span>
+              ))
+            )}
+          </div>
+        </div>
+      ))}
+    </div>
+
+    <div className="parking-muted" style={{ marginTop: 8 }}>
+      (Basé sur le stock actuellement filtré : prix / taille / CAT_MAR, etc.)
+    </div>
+  </div>
+) : null}
+            </div>
+          );
+        })()}
+
+      {/* =======================
+          TAB : PARAMÈTRES
+          ======================= */}
+      {parkingTab === "params" && (
+        <div className="parking-body-params">
+          <div
+            style={{
+              width: "100%",
+              maxWidth: "none",
+              display: "grid",
+              gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)",
+              gap: 14,
+              alignItems: "start",
+            }}
+          >
+            {/* GAUCHE : RÈGLES */}
+            <div style={{ minWidth: 0, display: "flex", flexDirection: "column", gap: 14 }}>
+              <div className="parking-card">
+                <div className="parking-card-title">Objectif</div>
+
+                <div className="parking-form-row">
+                  <label>Objectif total (unités)</label>
+                  <input
+                    type="number"
+                    value={parkingRules.objectiveTotal}
+                    onChange={(e) =>
+                      setParkingRules((p) => ({
+                        ...p,
+                        objectiveTotal: Number(e.target.value || 0),
+                      }))
+                    }
+                  />
+                </div>
+              </div>
+
+              {[
+                ["Catégories", "categoryPct"],
+                ["Prix", "pricePct"],
+                ["CAT_MAR", "catMarPct"],
+                ["Tailles", "sizePct"],
+              ].map(([label, key]) => {
+                const obj = parkingRules[key] || {};
+                const keys = Object.keys(obj);
+
+                return (
+                  <div key={key} className="parking-card">
+                    <div className="parking-card-title">{label}</div>
+
+                    <div
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+                        gap: 15,
+                      }}
+                    >
+                      {keys.map((k) => (
+                        <div
+                          key={k}
+                          style={{
+                            display: "grid",
+                            gridTemplateColumns: "1fr 90px 20px",
+                            alignItems: "center",
+                            gap: 10,
+                            padding: 10,
+                            borderRadius: 12,
+                            border: "1px solid #e5e7eb",
+                            background: "#fff",
+                            minWidth: 0,
+                          }}
+                        >
+                          <div style={{ fontWeight: 800, fontSize: 13, minWidth: 0 }}>{k}</div>
+
+                          <input
+                            type="number"
+                            step="1"
+                            value={Math.round(clamp01(obj[k]) * 100)}
+                            onChange={(e) => {
+                              const pct = clamp01(Number(e.target.value || 0) / 100);
+                              setParkingRules((p) => ({
+                                ...p,
+                                [key]: { ...(p[key] || {}), [k]: pct },
+                              }));
+                            }}
+                            style={{ width: "100%" }}
+                          />
+
+                          <div style={{ opacity: 0.7 }}>%</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* DROITE : MARQUES */}
+            <div style={{ minWidth: 0 }}>
+              <div className="parking-card" style={{ minHeight: 520 }}>
+                <BrandTierBoard />
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  </>
+)}
+
 {showSaveAlert && (
   <>
     <div className="overlay" onClick={() => setShowSaveAlert(false)} />
@@ -6974,10 +8547,10 @@ ${Object.entries(v)
             }}
           >
             <div>
-              <h2 style={{ margin: 0 }}>Stats parc (selon filtres)</h2>
+              <h2 style={{ margin: 0 }}>KPI's du stock actuel (selon filtres)</h2>
               <div style={{ opacity: 0.7, marginTop: 4, fontSize: 13 }}>
                 Base analysée : <b>{filteredAndSortedVelos.length}</b> fiches ·{" "}
-                <b>{statsData?.kpi?.totalUnits ?? 0}</b> unités dispo 📦
+                <b>{statsData?.kpi?.totalUnits ?? 0}</b> unités en stock 📦
               </div>
             </div>
 
@@ -7081,7 +8654,7 @@ ${Object.entries(v)
         {statsData?.kpi?.negPctUnits ?? 0}%
       </div>
       <div style={{ opacity: 0.6, fontSize: 12, marginTop: 4 }}>
-        base = unités avec bénéfice calculable
+        base = unités avec marge calculable
       </div>
     </div>
 
@@ -7096,7 +8669,7 @@ ${Object.entries(v)
     </div>
 
     <div>
-      <div style={{ opacity: 0.7, fontSize: 12 }}>Médiane bénéfice (par fiche)</div>
+      <div style={{ opacity: 0.7, fontSize: 12 }}>Médiane marge (par fiche)</div>
       <div style={{ fontWeight: 900, fontSize: 18 }}>{fmtEur(statsData?.kpi?.medBenefit ?? 0)}</div>
       <div style={{ opacity: 0.6, fontSize: 12, marginTop: 4 }}>
         (médiane par fiche, pas pondérée)
@@ -7431,7 +9004,7 @@ ${Object.entries(v)
           {/* Histogramme bénéfice */}
           <div style={cardStyle}>
             <div style={{ fontWeight: 900, marginBottom: 10 }}>
-              Répartition des bénéfices — en unités
+              Répartition des marges — en unités
             </div>
 
             <div style={{ width: "100%", height: 250 }}>

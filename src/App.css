@@ -18,6 +18,11 @@ html, body, #root {
   background: var(--bg, #ffffff);
 }
 
+:root{
+  --mint-green: #2ca76a;
+  --mint-green-dark: #22c55e;
+}
+
 /* ==========================
    Header
 ========================== */
@@ -3632,4 +3637,506 @@ html, body, #root {
   margin-left: 8px;
   white-space: nowrap;
 }
+.icon-btn.stats-btn {
+  background: #ffffff;
+  color: #111827;
+}
 
+.icon-btn.stats-btn:hover {
+  background: var(--mint-green);
+  color: #ffffff;
+}
+/* ===== Patch : velo-extras compact (Intérêt + ERP + Notes sur 1 ligne) ===== */
+.velo-extras.compact-row{
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 8px;
+  flex-wrap: nowrap; /* 👈 empêche le retour à la ligne */
+}
+
+.velo-extras.compact-row .interest-widget.compact-interest{
+  flex: 1 1 auto;     /* prend l’espace restant */
+  min-width: 0;       /* autorise le shrink */
+  margin: 0;
+  padding: 6px 10px;
+  min-height: 0;      /* 👈 enlève la hauteur forcée */
+}
+
+.velo-extras.compact-row .extras-actions{
+  display: flex;
+  gap: 8px;
+  flex: 0 0 auto;     /* ne pousse pas à wrap */
+}
+
+/* Boutons compacts (ERP + Notes) */
+.velo-extras.compact-row .notes-btn.compact-btn{
+  width: auto;            /* 👈 au lieu de 100% */
+  padding: 6px 10px;
+  white-space: nowrap;    /* évite le retour à la ligne dans le bouton */
+  margin: 0;
+}
+
+/* Optionnel : en pricing, tooltip intérêt désactivé (déjà fait en JSX) */
+/* =========================
+   Extras répartis (full width)
+========================= */
+
+.velo-extras.distributed-row{
+  display: grid;
+  gap: 8px;
+  width: 100%;
+  margin-top: 8px;
+}
+
+.velo-extras.distributed-row.cols-3{
+  grid-template-columns: repeat(3, 1fr);
+}
+
+.velo-extras.distributed-row.cols-2{
+  grid-template-columns: repeat(2, 1fr);
+}
+
+/* Pill commune */
+.extra-pill{
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;   /* 👈 centre le contenu */
+  gap: 6px;
+
+  height: 34px;
+  padding: 0 10px;
+  border-radius: 999px;
+
+  background: #ffffff;
+  border: 1px solid rgba(0,0,0,0.15);
+
+  font-size: 13px;
+  font-weight: 800;
+  color: #111827;
+
+  white-space: nowrap;
+  position: relative;
+  min-width: 0;              /* important en grid */
+}
+
+/* Hover mint pour les cliquables */
+.extra-pill.clickable{
+  cursor: pointer;
+  transition: all .15s ease;
+}
+
+.extra-pill.clickable:hover{
+  background: var(--mint-green);
+  color: #ffffff;
+  border-color: var(--mint-green);
+}
+
+/* Icône */
+.extra-icon{
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  line-height: 1;
+}
+
+/* Texte (évite overflow) */
+.extra-text{
+  line-height: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.interest-pill-advisor button:hover{
+  background: var(--mint-green);
+  color: #fff;
+  border-color: var(--mint-green);
+}
+/* ===== Tooltip intérêt : visible au hover (mode conseiller) ===== */
+.extra-pill.interest-pill{
+  position: relative;
+  overflow: visible; /* IMPORTANT : sinon le tooltip peut être coupé */
+}
+
+/* Tooltip caché par défaut */
+.interest-pill-advisor .interest-tooltip{
+  display: none;
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 9999;
+  min-width: 240px;
+  max-width: 320px;
+}
+
+/* Affiché au hover sur la pill intérêt */
+.interest-pill-advisor:hover .interest-tooltip{
+  display: block;
+}
+
+/* +/− mini, sans casser le layout */
+.interest-inline-controls{
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 6px;
+}
+
+.interest-mini-btn{
+  width: 26px;
+  height: 26px;
+  border-radius: 999px;
+  border: 1px solid rgba(0,0,0,0.18);
+  background: #fff;
+  cursor: pointer;
+  font-weight: 900;
+  line-height: 1;
+  transition: all .15s ease;
+}
+
+.interest-mini-btn:hover{
+  background: var(--mint-green);
+  color: #fff;
+  border-color: var(--mint-green);
+}
+
+/* ===== Parking Virtuel Modal ===== */
+.parking-modal{
+  position: fixed;
+  z-index: 10000;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: min(1100px, 95vw);
+  max-height: 86vh;
+  overflow: auto;
+  background: #fff;
+  border-radius: 14px;
+  padding: 14px;
+  box-shadow: 0 18px 60px rgba(0,0,0,0.28);
+}
+
+.parking-header{
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.parking-title{
+  font-size: 18px;
+  font-weight: 900;
+}
+
+.parking-subtitle{
+  font-size: 12px;
+  opacity: 0.75;
+  margin-top: 2px;
+}
+
+.parking-tabs{
+  display: flex;
+  gap: 8px;
+  margin: 10px 0 12px;
+}
+
+.parking-tab{
+  border: 1px solid rgba(0,0,0,0.15);
+  background: #fff;
+  border-radius: 999px;
+  padding: 7px 12px;
+  cursor: pointer;
+  font-weight: 800;
+  font-size: 13px;
+}
+
+.parking-tab.active{
+  background: var(--mint-green);
+  color: #fff;
+  border-color: var(--mint-green);
+}
+
+.parking-body{
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+@media (max-width: 900px){
+  .parking-body{ grid-template-columns: 1fr; }
+}
+
+.parking-card{
+  border: 1px solid rgba(0,0,0,0.10);
+  border-radius: 12px;
+  padding: 12px;
+  background: #fff;
+}
+
+.parking-card-title{
+  font-weight: 900;
+  margin-bottom: 10px;
+}
+
+.parking-table{
+  display: grid;
+  gap: 8px;
+}
+
+.parking-row{
+  display: grid;
+  grid-template-columns: 1.4fr 1fr 1fr 0.8fr;
+  gap: 10px;
+  align-items: center;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(0,0,0,0.03);
+}
+
+.parking-row.parking-head{
+  background: transparent;
+  padding: 0 4px 6px;
+  font-weight: 900;
+  opacity: 0.7;
+}
+
+.parking-key{ font-weight: 900; }
+.parking-strong{ font-weight: 900; }
+.parking-muted{ font-size: 12px; opacity: 0.7; }
+
+.parking-gap{
+  font-weight: 900;
+  text-align: right;
+}
+.parking-gap.plus{ color: #166534; }
+.parking-gap.minus{ color: #991b1b; }
+
+.parking-form-row{
+  display: grid;
+  grid-template-columns: 1fr 200px;
+  gap: 10px;
+  align-items: center;
+}
+
+.parking-form-row input{
+  height: 34px;
+  border-radius: 10px;
+  border: 1px solid rgba(0,0,0,0.16);
+  padding: 0 10px;
+}
+
+.parking-edit-grid{
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+}
+
+@media (max-width: 600px){
+  .parking-edit-grid{ grid-template-columns: 1fr; }
+}
+
+.parking-edit-item{
+  display: grid;
+  grid-template-columns: 1fr 90px 18px;
+  gap: 8px;
+  align-items: center;
+}
+
+.parking-edit-item input{
+  height: 34px;
+  border-radius: 10px;
+  border: 1px solid rgba(0,0,0,0.16);
+  padding: 0 10px;
+  text-align: right;
+}
+
+.parking-edit-key{ font-weight: 800; }
+.parking-edit-suffix{ opacity: 0.7; font-weight: 800; }
+
+/* ✅ Parking Virtuel : modale en grand (quasi plein écran) */
+.parking-modal{
+  position: fixed;
+  inset: 18px;                 /* marges autour */
+  width: auto;                 /* prend toute la place via inset */
+  max-width: none;             /* IMPORTANT */
+  height: auto;
+  max-height: calc(100vh - 36px);
+  background: #fff;
+  border-radius: 14px;
+  box-shadow: 0 14px 40px rgba(0,0,0,0.25);
+  z-index: 10001;
+
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;            /* header/tabs fixes + body scroll */
+}
+
+/* ✅ Le contenu doit remplir et scroller */
+.parking-body{
+  flex: 1;
+  width: 100%;
+  overflow: auto;
+  padding: 14px;
+  min-width: 0;                /* évite les bugs flex */
+}
+
+/* (optionnel) tabs visibles même si body scroll */
+.parking-header,
+.parking-tabs{
+  flex: 0 0 auto;
+}
+
+/* =========================
+   MODALE PARKING VIRTUEL — FULLSCREEN (override)
+   ========================= */
+
+.overlay{
+  position: fixed !important;
+  inset: 0 !important;
+  background: rgba(0,0,0,0.55) !important;
+  z-index: 9998 !important;
+}
+
+/* La fenêtre flottante = plein écran avec marges */
+.parking-modal{
+  position: fixed !important;
+  inset: 24px !important;                 /* marge autour (change à 0 si tu veux full full) */
+  width: auto !important;
+  height: auto !important;
+
+  max-width: none !important;
+  max-height: none !important;
+
+  background: #fff !important;
+  border-radius: 16px !important;
+  box-shadow: 0 18px 60px rgba(0,0,0,0.35) !important;
+
+  z-index: 9999 !important;
+
+  /* IMPORTANT : on neutralise tout zoom/transform */
+  transform: none !important;
+  zoom: 1 !important;
+
+  display: flex !important;
+  flex-direction: column !important;
+  overflow: hidden !important;
+
+  /* Lisibilité */
+  font-size: 14px !important;
+  line-height: 1.35 !important;
+}
+
+/* Header + tabs restent en haut */
+.parking-header{
+  flex: 0 0 auto !important;
+  padding: 14px 16px !important;
+  border-bottom: 1px solid #e5e7eb !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  gap: 12px !important;
+}
+
+.parking-title{
+  font-weight: 900 !important;
+  font-size: 18px !important;
+}
+
+.parking-subtitle{
+  font-size: 13px !important;
+  color: #6b7280 !important;
+  margin-top: 2px !important;
+}
+
+.parking-tabs{
+  flex: 0 0 auto !important;
+  display: flex !important;
+  gap: 8px !important;
+  padding: 10px 12px !important;
+  border-bottom: 1px solid #e5e7eb !important;
+  background: #fff !important;
+}
+
+/* Contenu scrollable */
+.parking-body{
+  flex: 1 1 auto !important;
+  overflow: auto !important;
+  padding: 14px !important;
+  width: 100% !important;
+  min-width: 0 !important;
+}
+
+/* Pour éviter des layouts qui “rétrécissent” en flex */
+.parking-body > *{
+  min-width: 0 !important;
+}
+.parking-params-wrap{
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  min-width: 0;
+}
+
+.parking-params-grid{
+  width: 100%;
+  max-width: none;
+  min-width: 0;
+  display: grid;
+  gap: 14px;
+  grid-template-columns: minmax(520px, 1fr) minmax(520px, 1fr);
+  align-items: start;
+}
+
+@media (max-width: 1150px){
+  .parking-params-grid{
+    grid-template-columns: 1fr;
+  }
+}
+.parking-body { max-width: none !important; width: 100% !important; }
+/* ✅ Paramètres : ne PAS hériter du grid 2 colonnes de .parking-body */
+.parking-body-params{
+  flex: 1 1 auto;
+  width: 100%;
+  overflow: auto;
+  padding: 14px;
+  min-width: 0;
+  display: block; /* <-- clé : pas grid ici */
+}
+.parking-row-clickable{
+  cursor: pointer;
+  user-select: none;
+}
+
+.parking-row-clickable:hover{
+  background: rgba(0,0,0,0.05);
+}
+
+.parking-row-clickable.active{
+  outline: 2px solid #111827;
+  outline-offset: -2px;
+  background: rgba(17,24,39,0.06);
+}
+
+.parking-chip{
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(0,0,0,0.15);
+  background: #fff;
+  font-weight: 800;
+  font-size: 12px;
+}
+
+.parking-clear-btn{
+  height: 32px;
+  padding: 0 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(0,0,0,0.15);
+  background: #fff;
+  cursor: pointer;
+  font-weight: 900;
+}
