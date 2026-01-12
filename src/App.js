@@ -2018,38 +2018,23 @@ function formatPrixCourt(val) {
   return `${n.toLocaleString("fr-FR")}€`;
 }
 
-// Construit un SMS ≤ 670 caractères (avec sauts de ligne souhaités)
+// Construit un SMS avec uniquement les suggestions (sans intro/outro, sans limite)
 function buildSmsFromSelection() {
   const selection = velos.filter((v) => selected[v.URL]);
-  const prenom = getPrenomVendeur();
-  const phone = (personalPhone && personalPhone.trim()) || "+33 4 84 98 00 28";
-
-  const intro = `Bonjour,\n\nVoici une sélection de vélos rien que pour vous :\n`;
-  const outro =
-    `\n` + // ligne vide entre la liste et la signature
-    `Répondez-moi directement ou appelez-moi pour en discuter.\n` +
-    `Sportivement,\n` +
-    `${prenom}, conseiller cycle Mint-Bikes (${phone})`;
 
   let body = "";
+
   for (const v of selection) {
     const titre = v.Title || "Vélo";
     const annee = v.Année ? ` ${v.Année}` : "";
     const prix = formatPrixCourt(v["Prix réduit"]);
     const url = v.URL ? ` ${v.URL}` : "";
-    const ligne = `- ${titre}${annee} — ${prix}${url}\n\n`; // ligne vide après chaque vélo
 
-    const candidat = intro + body + ligne + outro;
-    if (candidat.length <= 670) {
-      body += ligne;
-    } else {
-      break;
-    }
+    body += `- ${titre}${annee} — ${prix}${url}\n\n`;
   }
 
-  let sms = intro + body + outro;
-  if (sms.length > 670) sms = sms.slice(0, 667) + "...";
-  return sms;
+  // Nettoyage final (évite 2 retours ligne en trop à la fin)
+  return body.trim();
 }
 
 
@@ -7373,7 +7358,7 @@ ${Object.entries(v)
 {/* ===== MODAL PARKING VIRTUEL ===== */}
 {parkingOpen && (
   <>
-    <div className="overlay" onClick={() => setParkingOpen(false)} />
+    <div className="parking-overlay" onClick={() => setParkingOpen(false)} />
 
     <div className="parking-modal" onClick={(e) => e.stopPropagation()}>
       <div className="parking-header">
