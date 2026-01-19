@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { supabase } from "./supabaseClient";
 import Login from "./Login";
+import InventoryList from "./InventoryList";
 import { 
   FaTrash, FaEnvelope, FaSyncAlt, FaBalanceScale, FaHeart, FaUser, FaUserCircle, 
   FaSms, FaPercent, FaLink, FaCheckSquare, FaFileExport 
@@ -174,8 +175,8 @@ const fieldGroups = {
 
 // Champs numériques -> sliders (noms EXACTS des colonnes)
 const numericFields = {
-  "Année": { min: 2017, max: 2026, step: 1, unit: "" },
-  "Poids du vélo": { min: 0, max: 35, step: 1, unit: "kg" },
+  "Année": { min: 2018, max: 2026, step: 1, unit: "" },
+  "Poids du vélo": { min: 0, max: 40, step: 1, unit: "kg" },
   "Kilométrage": { min: 0, max: 40000, step: 100, unit: "km" },
   "Débattement fourche": { min: 0, max: 220, step: 5, unit: "mm" },
   "Débattement amortisseur": { min: 0, max: 220, step: 5, unit: "mm" },
@@ -741,6 +742,11 @@ const formatVariantSizeRanges = (row) => {
     })
     .filter(Boolean);
 
+  // Debug temporaire
+  if (parts.length === 0 && Object.keys(rangesMap).length > 0) {
+    console.log("⚠️ Ranges trouvées mais aucune en stock:", row?.["Title"], { rangesMap, stockMap, allIdxs });
+  }
+
   return parts.length ? parts.join(" / ") : null;
 };
 // ====== Helpers numéros de série par variante ======
@@ -1121,7 +1127,7 @@ function SortableBrand({ id }) {
   );
 }
 
-function Column({ title, subtitle, items, bucketKey }) {
+function Column({ title, subtitle, items, bucketKey, pctValue = 0, onPctChange }) {
   return (
     <div
       style={{
@@ -1137,7 +1143,7 @@ function Column({ title, subtitle, items, bucketKey }) {
         gap: 10,
       }}
     >
-      <div style={{ display: "flex", flexDirection: "column", gap: 1, minWidth: 0 }}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 0 }}>
         <div style={{ fontWeight: 800, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
           {title}
         </div>
@@ -1146,6 +1152,30 @@ function Column({ title, subtitle, items, bucketKey }) {
             {subtitle}
           </div>
         ) : null}
+        
+        {/* Input % pour le tier */}
+        {onPctChange && (
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <input
+              type="number"
+              min="0"
+              max="100"
+              step="1"
+              value={Math.round(pctValue * 100)}
+              onChange={(e) => onPctChange(Number(e.target.value || 0) / 100)}
+              style={{
+                flex: 1,
+                height: 32,
+                borderRadius: 6,
+                border: "1px solid #d1d5db",
+                padding: "0 6px",
+                fontSize: 13,
+                fontWeight: 600,
+              }}
+            />
+            <span style={{ fontSize: 12, fontWeight: 600, color: "#666" }}>%</span>
+          </div>
+        )}
       </div>
 
       <div
@@ -1176,16 +1206,10 @@ function Column({ title, subtitle, items, bucketKey }) {
   );
 }
 
-function BrandTierBoard() {
+function BrandTierBoard({ tierPct = {}, onTierPctChange, selectedCategoryType }) {
   const TIERS = ["A", "B", "C", "D"];
   const BANK = "BANK";
 
-  // ✅ Catégories EXACTES dans velosmint."Catégorie"
-  const CATEGORY_OPTIONS = ["Vélo de ville", "Vélo De Route", "Gravel", "Cargo", "VTC", "VTT"];
-  const BIKE_TYPE_OPTIONS = ["Électrique", "Musculaire"];
-
-  const [bikeCategory, setBikeCategory] = useState(CATEGORY_OPTIONS[0]);
-  const [bikeType, setBikeType] = useState("Tous"); // ✅ nouveau
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -1200,6 +1224,20 @@ function BrandTierBoard() {
     C: [],
     D: [],
   }));
+
+  // Parser selectedCategoryType pour extraire category et type
+  // Format attendu: "VTT - Électrique"
+  const bikeCategory = useMemo(() => {
+    if (!selectedCategoryType) return null;
+    const parts = selectedCategoryType.split(" - ");
+    return parts[0] || null;
+  }, [selectedCategoryType]);
+
+  const bikeType = useMemo(() => {
+    if (!selectedCategoryType) return null;
+    const parts = selectedCategoryType.split(" - ");
+    return parts[1] || null;
+  }, [selectedCategoryType]);
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
 
@@ -1220,24 +1258,33 @@ function BrandTierBoard() {
   }
 
   async function fetchData() {
+    if (!bikeCategory || !bikeType) {
+      // Ne pas charger si la catégorie n'est pas sélectionnée
+      setBuckets({
+        [BANK]: [],
+        A: [],
+        B: [],
+        C: [],
+        D: [],
+      });
+      return;
+    }
+
     setLoading(true);
     setError("");
 
     try {
-      // 1) Marques du stock pour la catégorie choisie (+ type si choisi)
-let stockQuery = supabase
-  .from("velosmint")
-  .select('Marque, "Catégorie", "Type de vélo"')
-  .eq("Catégorie", bikeCategory);
+      // 1) Marques du stock pour la catégorie choisie
+      const stockQuery = supabase
+        .from("velosmint")
+        .select('Marque, "Catégorie", "Type de vélo"')
+        .eq("Catégorie", bikeCategory)
+        .eq("Type de vélo", bikeType);
 
-if (bikeType !== "Tous") {
-  stockQuery = stockQuery.eq("Type de vélo", bikeType);
-}
+      const { data: stockRows, error: e1 } = await stockQuery;
+      if (e1) throw e1;
 
-const { data: stockRows, error: e1 } = await stockQuery;
-if (e1) throw e1;
-
-const brandsFromStock = uniq((stockRows || []).map((r) => normBrand(r.Marque)));
+      const brandsFromStock = uniq((stockRows || []).map((r) => normBrand(r.Marque)));
 
       // 2) Marques ajoutées à la main (catalog)
       const { data: catRows, error: eCat } = await supabase.from("brand_catalog").select("brand");
@@ -1287,9 +1334,11 @@ const brandsFromStock = uniq((stockRows || []).map((r) => normBrand(r.Marque)));
   }
 
   useEffect(() => {
-  fetchData();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-}, [bikeCategory, bikeType]);
+    if (bikeCategory && bikeType) {
+      fetchData();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bikeCategory, bikeType]);
 
   async function persistTierChange(brand, toBucket) {
     setSaving(true);
@@ -1399,47 +1448,6 @@ const brandsFromStock = uniq((stockRows || []).map((r) => normBrand(r.Marque)));
             Choisis une marque et classe en A/B/C/D afin de mettre à jour les paramètres du parking virtuel.
           </div>
         </div>
-
-        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            <div style={{ fontSize: 12, color: "#6b7280" }}>Catégorie</div>
-            <select
-              value={bikeCategory}
-              onChange={(e) => setBikeCategory(e.target.value)}
-              style={{
-                height: 36,
-                borderRadius: 10,
-                border: "1px solid #e5e7eb",
-                padding: "0 10px",
-                background: "#fff",
-              }}
-            >
-              {CATEGORY_OPTIONS.map((c) => (
-                <option key={c} value={c}>
-                  {c}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-  <div style={{ fontSize: 12, color: "#6b7280" }}>Type de vélo</div>
-  <select
-    value={bikeType}
-    onChange={(e) => setBikeType(e.target.value)}
-    style={{
-      height: 36,
-      borderRadius: 10,
-      border: "1px solid #e5e7eb",
-      padding: "0 10px",
-      background: "#fff",
-    }}
-  >
-    {BIKE_TYPE_OPTIONS.map((t) => (
-      <option key={t} value={t}>{t}</option>
-    ))}
-  </select>
-</div>
-        </div>
       </div>
 
       {error ? <div style={{ marginTop: 10, color: "#b91c1c", fontSize: 13 }}>❌ {error}</div> : null}
@@ -1465,7 +1473,9 @@ const brandsFromStock = uniq((stockRows || []).map((r) => normBrand(r.Marque)));
       subtitle={`${(buckets[t] || []).length} marque(s)`}
       items={buckets[t] || []}
       bucketKey={t}
-      maxWidth={260} // ✅ largeur visuelle max des cartes
+      maxWidth={260}
+      pctValue={tierPct?.[t] || 0}
+      onPctChange={(newPct) => onTierPctChange?.(t, newPct)}
     />
   ))}
 </div>
@@ -1587,7 +1597,7 @@ function DroppableBank({ droppableId, items, bucketKey }) {
 
 
 // --- Droppable wrapper minimal (carte centrée + largeur max)
-function DroppableColumn({ droppableId, title, subtitle, items, bucketKey, maxWidth = 260 }) {
+function DroppableColumn({ droppableId, title, subtitle, items, bucketKey, maxWidth = 260, pctValue, onPctChange }) {
   const { setNodeRef, isOver } = useDroppable({ id: droppableId });
 
   return (
@@ -1602,7 +1612,7 @@ function DroppableColumn({ droppableId, title, subtitle, items, bucketKey, maxWi
         outlineOffset: 2,
       }}
     >
-      <Column title={title} subtitle={subtitle} items={items} bucketKey={bucketKey} />
+      <Column title={title} subtitle={subtitle} items={items} bucketKey={bucketKey} pctValue={pctValue} onPctChange={onPctChange} />
     </div>
   );
 }
@@ -1834,10 +1844,10 @@ useEffect(() => {
     prixMin: 0,
     prixMax: 10000,
 
-    anneeMin: 2017,
+    anneeMin: 2018,
     anneeMax: 2026,
     poidsMin: 0,
-    poidsMax: 35,
+    poidsMax: 40,
     kilometrageMin: 0,
     kilometrageMax: 40000,
     debattementFourcheMin: 0,
@@ -2071,34 +2081,13 @@ const isElectricRow = (row) => {
 
 
 const getCategoryFromRow = (row) => {
-  const catRaw = normalizeStr(row?.["Catégorie"] ?? row?.["Categorie"] ?? "");
-
-  // Base catégorie
-  let base = "";
-  if (catRaw.includes("VTT")) base = "VTT";
-  else if (catRaw.includes("GRAVEL")) base = "GRAVEL";
-  else if (catRaw.includes("ROUTE") || catRaw.includes("ROAD")) base = "ROUTE";
-  else if (catRaw.includes("VTC")) base = "VTC";
-  else if (catRaw.includes("VILLE") || catRaw.includes("CITY") || catRaw.includes("URBAN")) base = "VILLE";
-  else if (catRaw.includes("CARGO")) base = "CARGO";
-  else base = catRaw || "";
-
-  const electric = isElectricRow(row);
-
-  // ⚡️Électrique : on bascule dans les catégories AE attendues
-  if (electric) {
-    if (base === "ROUTE" || base === "GRAVEL") return "RT/ GRVL AE";
-    if (base === "VTT") return "VTT AE";
-    if (base === "VTC") return "VTC AE";
-    if (base === "VILLE") return "VILLE AE";
-    if (base === "CARGO") return "CARGO"; // si cargo AE un jour, adapte
-    return base;
-  }
-
-  // 💪 Musculaire : pas de VTC/Ville musculaire chez vous
-  if (base === "VTT" || base === "ROUTE" || base === "GRAVEL" || base === "CARGO") return base;
-
-  return "";
+  const cat = row?.["Catégorie"] ?? row?.["Categorie"] ?? "";
+  const type = row?.["Type de vélo"] ?? row?.["Type de velo"] ?? "";
+  
+  if (!cat || !type) return "";
+  
+  // Format: "Catégorie - Type"
+  return `${cat} - ${type}`;
 };
 
 const getCatMarFromRow = (row) => {
@@ -2117,6 +2106,11 @@ const getCatMarFromRow = (row) => {
   const k2 = makeTierKey(category, "Tous", brand);
   const t2 = brandTiersIndex.get(k2);
   if (t2) return t2;
+
+  // 🐛 Debug
+  if (category && bikeType && brand) {
+    console.log(`❌ Pas de tier pour: ${k1}`);
+  }
 
   return "";
 };
@@ -2194,15 +2188,22 @@ const loadBrandTiersIndex = async () => {
 
     if (error) throw error;
 
+    console.log(`📦 brand_tiers chargées: ${(data || []).length} lignes`);
+
     const m = new Map();
     (data || []).forEach((r) => {
       const k = makeTierKey(r.bike_category, r.bike_type, r.brand);
       const t = norm(r.tier).toUpperCase();
-      if (k && ["A", "B", "C", "D"].includes(t)) m.set(k, t);
+      if (k && ["A", "B", "C", "D"].includes(t)) {
+        m.set(k, t);
+        console.log(`  ✅ ${k} → ${t}`);
+      }
     });
 
+    console.log(`✅ brandTiersIndex créée avec ${m.size} entrées`);
     setBrandTiersIndex(m);
   } catch (e) {
+    console.error("❌ Erreur chargement brand_tiers:", e);
     setBrandTiersError(e?.message || "Erreur chargement brand_tiers");
     setBrandTiersIndex(new Map());
   } finally {
@@ -2309,7 +2310,20 @@ const normStr = (v) => String(v ?? "").trim().toLowerCase();
 const toggleParkingFilter = (key, value) => {
   setParkingSelection((prev) => {
     const same = normStr(prev[key]) === normStr(value);
-    return { ...prev, [key]: same ? null : value };
+    const newVal = same ? null : value;
+    
+    // ✅ Cascade: si on change category ou size, réinitialiser les suivants
+    if (key === 'category') {
+      return { category: newVal, size: null, priceBand: null, catMar: null };
+    }
+    if (key === 'size') {
+      return { ...prev, size: newVal, priceBand: null, catMar: null };
+    }
+    if (key === 'priceBand') {
+      return { ...prev, priceBand: newVal, catMar: null };
+    }
+    
+    return { ...prev, [key]: newVal };
   });
 };
 
@@ -2391,6 +2405,8 @@ function buildBrandRecapByTier(rows) {
   const tiers = ["A", "B", "C", "D"];
   const map = { A: new Set(), B: new Set(), C: new Set(), D: new Set() };
 
+  console.log(`🔍 buildBrandRecapByTier appelée avec ${(rows || []).length} lignes`);
+
   for (const r of rows || []) {
     const brand = String(r?.["Marque"] ?? "").trim();
     if (!brand) continue;
@@ -2405,12 +2421,15 @@ function buildBrandRecapByTier(rows) {
 
   const toSorted = (set) => Array.from(set).sort((a, b) => a.localeCompare(b, "fr"));
 
-  return {
+  const result = {
     A: toSorted(map.A),
     B: toSorted(map.B),
     C: toSorted(map.C),
     D: toSorted(map.D),
   };
+  
+  console.log(`✅ brandRecap résultat:`, result);
+  return result;
 }
 
 
@@ -2553,6 +2572,77 @@ const promo_applyToSupabase = async () => {
   }
 };
 
+// 🔧 MODIFY : modifier les promos existantes (+/- montant)
+const promo_modifyExisting = async () => {
+  setPromoError("");
+
+  const velosSel = promo_getSelectedVelos();
+  if (velosSel.length === 0) {
+    setPromoError("Aucun vélo sélectionné.");
+    return;
+  }
+
+  // Filtrer selon le choix "all" ou "withpromo"
+  const targetVelos = velosSel.filter((v) => {
+    if (promoModifyTarget === "all") return true;
+    
+    // "withpromo" = vélos ayant déjà une promo (mint_promo_amount > 0)
+    const currentPromo = v?.URL && pricingByUrl?.[v.URL]?.mint_promo_amount;
+    return currentPromo != null && Number(currentPromo) > 0;
+  });
+
+  if (targetVelos.length === 0) {
+    setPromoError(`Aucun vélo ${promoModifyTarget === "withpromo" ? "avec promo" : ""} trouvé.`);
+    return;
+  }
+
+  const updates = targetVelos
+    .filter((v) => v?.URL)
+    .map((v) => {
+      const currentPromo = v?.URL && pricingByUrl?.[v.URL]?.mint_promo_amount 
+        ? Number(pricingByUrl[v.URL].mint_promo_amount) 
+        : 0;
+      
+      const newPromo = Math.max(0, currentPromo + Number(promoModifyAmount || 0));
+      
+      return {
+        mint_url: v.URL,
+        mint_promo_amount: newPromo,
+      };
+    });
+
+  try {
+    setPromoSaving(true);
+
+    const { error } = await supabase
+      .from("mode_pricing")
+      .upsert(updates, { onConflict: "mint_url" });
+
+    if (error) throw error;
+
+    // refresh cache locale
+    setPricingByUrl((prev) => {
+      const next = { ...(prev || {}) };
+      for (const u of updates) {
+        next[u.mint_url] = { ...(next[u.mint_url] || {}), mint_promo_amount: u.mint_promo_amount };
+      }
+      return next;
+    });
+
+    setPromoError(`✅ ${updates.length} promo(s) modifiée(s) avec succès !`);
+    
+    // Reset après succès
+    setTimeout(() => {
+      setPromoError("");
+    }, 3000);
+    
+  } catch (e) {
+    setPromoError(e?.message || "Erreur lors de la modification de la promo.");
+  } finally {
+    setPromoSaving(false);
+  }
+};
+
 // ===== EXPORT MODAL =====
 const [exportModalOpen, setExportModalOpen] = useState(false);
 const [exportBase, setExportBase] = useState("url"); // "url" | "serial" | "variant_id"
@@ -2660,6 +2750,8 @@ const exportDbNow = () => {
 // setSmsText(buildSmsFromSelection()); setShowSmsModal(true);
 
   const [statsOpen, setStatsOpen] = useState(false);
+  const [inventoryOpen, setInventoryOpen] = useState(false);
+  const [inventoryCount, setInventoryCount] = useState(0);
 
   // Gemini
   const [showGeminiModal, setShowGeminiModal] = useState(false);
@@ -2715,6 +2807,10 @@ const [promoRules, setPromoRules] = useState([
 // comportement si plusieurs règles matchent
 const [promoStrategy, setPromoStrategy] = useState("first"); // "first" | "max"
 const [promoDefaultAmount, setPromoDefaultAmount] = useState(0); // si aucune règle ne match
+
+// ✅ Modification promo en cours
+const [promoModifyAmount, setPromoModifyAmount] = useState(0); // montant à ajouter/soustraire
+const [promoModifyTarget, setPromoModifyTarget] = useState("all"); // "all" | "withpromo"
 
 
 // --- États pour le feedback ---
@@ -2874,134 +2970,372 @@ const getPricingRecencyColor = (daysSincePricing) => {
   ]);
 };
 
-
- // ===== Prospects (intérêts par vélo) =====
-const [interests, setInterests] = useState({}); // { "vendeur@ex.com": 2, "autre@ex.com": 1 }
-
 // Qui est l'utilisateur courant (vendeur) ?
 const currentUserName =
   session?.user?.user_metadata?.full_name ||
   session?.user?.email ||
   "Vendeur inconnu";
 
-const INTERESTS_TABLE = "interests";
-
-// Récupère la map des intérêts pour un vélo
-const fetchInterests = async (veloUrl) => {
-  if (!veloUrl) return;
-  try {
-    const { data, error } = await supabase
-      .from(INTERESTS_TABLE)
-      .select("interests")
-      .eq("velo_url", veloUrl)
-      .single();
-
-    if (error) {
-      // Si la ligne n'existe pas encore, c’est normal => on repart sur {}
-      if (error.code === "PGRST116" /* row not found */) {
-        setInterests({});
-        return;
-      }
-      console.error("❌ fetchInterests error:", error);
-      setInterests({});
-      return;
-    }
-
-    setInterests(data?.interests || {});
-  } catch (e) {
-    console.error("❌ fetchInterests exception:", e);
-    setInterests({});
-  }
-};
-
-// +1 pour le vendeur courant
-const addInterest = async (veloUrl) => {
-  if (!veloUrl) return;
-  const current = Number(interests[currentUserName] || 0);
-  const updated = { ...interests, [currentUserName]: current + 1 };
-
-  try {
-    const { error } = await supabase
-      .from(INTERESTS_TABLE)
-      .upsert(
-        { velo_url: veloUrl, interests: updated },
-        { onConflict: "velo_url" } // s'appuie sur la PK
-      );
-
-    if (error) {
-      console.error("❌ addInterest error:", error);
-      return;
-    }
-
-    setInterests(updated); // mise à jour locale immédiate
-  } catch (e) {
-    console.error("❌ addInterest exception:", e);
-  }
-};
-
-// -1 pour le vendeur courant (jamais < 0)
-const removeInterest = async (veloUrl) => {
-  if (!veloUrl) return;
-  const current = Number(interests[currentUserName] || 0);
-  if (current <= 0) return;
-
-  const updated = { ...interests, [currentUserName]: current - 1 };
-
-  try {
-    const { error } = await supabase
-      .from(INTERESTS_TABLE)
-      .upsert(
-        { velo_url: veloUrl, interests: updated },
-        { onConflict: "velo_url" }
-      );
-
-    if (error) {
-      console.error("❌ removeInterest error:", error);
-      return;
-    }
-
-    setInterests(updated);
-  } catch (e) {
-    console.error("❌ removeInterest exception:", e);
-  }
-};
-
 // ===== PARKING VIRTUEL (modal) =====
 const [parkingOpen, setParkingOpen] = useState(false);
 const [parkingTab, setParkingTab] = useState("vue"); // "vue" | "params"
+const [parkingCategory, setParkingCategory] = useState(null); // catégorie sélectionnée pour les objectifs
+const [parkingType, setParkingType] = useState(null); // type sélectionné pour les objectifs
+
+// Charger les combinaisons uniques (Catégorie, Type de vélo) depuis velosmint
+const parkingCategoryTypeOptions = useMemo(() => {
+  const combos = velos
+    .map(v => {
+      const cat = v["Catégorie"];
+      const type = v["Type de vélo"];
+      if (!cat || !type) return null;
+      return {
+        category: cat,
+        type: type,
+        label: `${cat} - ${type}`
+      };
+    })
+    .filter(Boolean);
+
+  // Dédupliquer les combinaisons
+  const uniqueCombos = Array.from(
+    new Map(
+      combos.map(combo => [combo.label, combo])
+    ).values()
+  );
+
+  return uniqueCombos.sort((a, b) => a.label.localeCompare(b.label, "fr"));
+}, [velos]);
+
+// Pour compatibilité avec les selects (à garder pour les filtres de la vue)
+const parkingCategories = useMemo(() => {
+  return parkingCategoryTypeOptions.map(opt => opt.label);
+}, [parkingCategoryTypeOptions]);
+
+const parkingTypes = useMemo(() => {
+  const types = parkingCategoryTypeOptions.map(opt => opt.type).filter(Boolean);
+  return [...new Set(types)].sort((a, b) => a.localeCompare(b, "fr"));
+}, [parkingCategoryTypeOptions]);
+
+const [parkingTierPct, setParkingTierPct] = useState({
+  "A": 0.60,
+  "B": 0.30,
+  "C": 0.10,
+  "D": 0.00,
+});
 
 const [parkingRules, setParkingRules] = useState({
   objectiveTotal: 600,
-  categoryPct: {
-    "ROUTE": 0.16,
-    "GRAVEL": 0.16,
-    "VTT": 0.08,
-    "RT/ GRVL AE": 0.03,
-    "VTT AE": 0.24,
-    "VILLE AE": 0.15,
-    "CARGO": 0.03,
-    "VTC AE": 0.15,
-  },
-  pricePct: {
-    "0-1500": 0.15,
-    "1500-2500": 0.40,
-    "2500-3500": 0.30,
-    "3500+": 0.15,
-  },
-  catMarPct: {
-    "A": 0.60,
-    "B": 0.30,
-    "C": 0.10,
-    "D": 0.00,
-  },
-  sizePct: {
-    "XS": 0.10,
-    "S": 0.15,
-    "M": 0.35,
-    "L": 0.25,
-    "XL": 0.15,
-  },
+  categoryPct: {},
+  pricePct: {},
+  sizePct: {},
 });
+
+// Détails complets des tranches de prix pour pouvoir les éditer
+const [priceBands, setPriceBands] = useState([]);
+
+// Charger les catégories dynamiques depuis pv_categories pour categoryPct
+useEffect(() => {
+  if (parkingCategoryTypeOptions.length > 0) {
+    const defaultPct = 1 / parkingCategoryTypeOptions.length;
+    const categoryPct = {};
+    parkingCategoryTypeOptions.forEach(opt => {
+      categoryPct[opt.label] = defaultPct;
+    });
+    // Remplacer complètement categoryPct pour éviter les anciennes valeurs
+    setParkingRules(prev => ({ 
+      ...prev, 
+      categoryPct // Remplace tout, pas de merge
+    }));
+  } else {
+    // Si pas de catégories, vider
+    setParkingRules(prev => ({ ...prev, categoryPct: {} }));
+  }
+}, [parkingCategoryTypeOptions]);
+
+// Charger les prix depuis pv_price_bands - scopé par parkingCategory
+useEffect(() => {
+  async function loadPriceBands() {
+    if (!parkingCategory) {
+      // Pas de catégorie sélectionnée = tranches vides
+      setPriceBands([]);
+      setParkingRules(prev => ({ ...prev, pricePct: {} }));
+      return;
+    }
+
+    // Parser parkingCategory pour extraire category et type
+    const parts = parkingCategory.split(" - ");
+    const category = parts[0];
+    const type = parts[1];
+
+    const { data, error } = await supabase
+      .from("pv_price_bands")
+      .select("id, category_key, label, min, max, share_pct, sort, bike_category, bike_type")
+      .eq("bike_category", category)
+      .eq("bike_type", type)
+      .order("sort");
+    
+    if (!error && data && data.length > 0) {
+      // Stocker les détails complets
+      setPriceBands(data);
+      
+      // Et aussi les pourcentages pour la compatibilité
+      const pricePct = {};
+      data.forEach(band => {
+        pricePct[band.label || band.category_key] = band.share_pct || 0;
+      });
+      setParkingRules(prev => ({ ...prev, pricePct }));
+    } else {
+      // Fallback si pas de données - créer des tranches par défaut pour cette catégorie
+      const defaultBands = [
+        { id: null, category_key: "0-1500", label: "0-1500", min: 0, max: 1500, share_pct: 0.25, sort: 1, bike_category: category, bike_type: type },
+        { id: null, category_key: "1500-2500", label: "1500-2500", min: 1500, max: 2500, share_pct: 0.40, sort: 2, bike_category: category, bike_type: type },
+        { id: null, category_key: "2500-3500", label: "2500-3500", min: 2500, max: 3500, share_pct: 0.25, sort: 3, bike_category: category, bike_type: type },
+        { id: null, category_key: "3500+", label: "3500+", min: 3500, max: null, share_pct: 0.10, sort: 4, bike_category: category, bike_type: type },
+      ];
+      setPriceBands(defaultBands);
+      
+      const pricePct = {};
+      defaultBands.forEach(band => {
+        pricePct[band.label] = band.share_pct;
+      });
+      setParkingRules(prev => ({ ...prev, pricePct }));
+    }
+  }
+  loadPriceBands();
+}, [parkingCategory]);
+
+// Charger les tailles depuis le stock - mapper en lettres (XS, S, M, L, XL)
+useEffect(() => {
+  // Toujours avoir les 5 tailles standards
+  const STANDARD_SIZES = ["XS", "S", "M", "L", "XL"];
+  
+  // Chercher si on a des tailles dans le stock
+  const tailles = velos
+    .flatMap(v => {
+      const sizeLetters = [];
+      // Chercher les colonnes "Taille cadre variant 1-4" (sans majuscule sur variant)
+      for (let i = 1; i <= 4; i++) {
+        const sizeCol = `Taille cadre variant ${i}`;
+        const sizeValue = v[sizeCol];
+        if (sizeValue && sizeValue !== "N/A") {
+          const letter = mapFrameSizeToLetter(sizeValue);
+          if (letter) sizeLetters.push(letter);
+        }
+      }
+      return sizeLetters;
+    })
+    .filter(Boolean);
+  
+  const uniqueTailles = [...new Set(tailles)].length > 0 
+    ? [...new Set(tailles)].sort((a, b) => {
+        return STANDARD_SIZES.indexOf(a) - STANDARD_SIZES.indexOf(b);
+      })
+    : STANDARD_SIZES; // Fallback: utiliser les 5 tailles standard si rien trouvé
+  
+  // Toujours initialiser avec les 5 tailles
+  const defaultPct = 1 / uniqueTailles.length;
+  const sizePct = {};
+  uniqueTailles.forEach(taille => {
+    sizePct[taille] = defaultPct;
+  });
+  
+  setParkingRules(prev => {
+    // Ne pas écraser si on a déjà des tailles avec des pourcentages personnalisés
+    if (prev.sizePct && Object.keys(prev.sizePct).length > 0) {
+      return prev;
+    }
+    
+    // Sauvegarder les tailles par défaut si c'est la première fois (inline)
+    if (Object.keys(sizePct).length > 0) {
+      supabase.from("pv_settings").upsert({
+        id: "global",
+        size_pct: sizePct,
+        updated_at: new Date().toISOString(),
+      }, { onConflict: "id" });
+    }
+    
+    return { ...prev, sizePct };
+  });
+}, [velos]);
+
+// Mapping des tailles numériques ou texte vers lettres standardisées (XS, S, M, L, XL)
+const mapFrameSizeToLetter = (sizeValue) => {
+  if (!sizeValue) return null;
+  
+  // Si c'est du texte, mapper XXS/XXL
+  const str = String(sizeValue).trim().toUpperCase();
+  if (str === "XXS") return "XS";
+  if (str === "XXL") return "XL";
+  if (["XS", "S", "M", "L", "XL"].includes(str)) return str;
+  
+  // Si c'est numérique
+  const size = Number(sizeValue);
+  if (isNaN(size)) return null;
+  
+  if (size <= 48) return "XS";
+  if (size <= 52) return "S";
+  if (size <= 56) return "M";
+  if (size <= 60) return "L";
+  return "XL";
+};
+const parkingScopeId = (cat, type) => `${cat || "ALL"}__${type || "ALL"}`;
+
+// Charge les réglages depuis pv_settings pour le scope courant
+useEffect(() => {
+  const loadParkingSettings = async () => {
+    // 1. Charger les paramètres GLOBAUX (category_pct, size_pct, objective_total)
+    const { data: globalData } = await supabase
+      .from("pv_settings")
+      .select("id, objective_total, category_pct, size_pct")
+      .eq("id", "global")
+      .maybeSingle();
+
+    if (globalData) {
+      setParkingRules((p) => ({
+        ...p,
+        objectiveTotal: globalData.objective_total ?? p.objectiveTotal,
+        categoryPct: globalData.category_pct ?? p.categoryPct,
+        // Ne charger size_pct que s'il n'est pas vide dans la DB ET qu'on n'a pas déjà des tailles
+        sizePct: (globalData.size_pct && Object.keys(globalData.size_pct).length > 0) 
+          ? globalData.size_pct 
+          : p.sizePct,
+      }));
+    }
+
+    // 2. Charger les paramètres SCOPÉS par catégorie (price_pct, cat_mar_pct)
+    const scope = parkingScopeId(parkingCategory, parkingType);
+    const { data: scopedData, error } = await supabase
+      .from("pv_settings")
+      .select("id, price_pct, cat_mar_pct")
+      .eq("id", scope)
+      .maybeSingle();
+
+    if (!error && scopedData) {
+      setParkingRules((p) => ({
+        ...p,
+        pricePct: scopedData.price_pct ?? p.pricePct,
+      }));
+      setParkingTierPct(scopedData.cat_mar_pct ?? parkingTierPct);
+    }
+  };
+
+  loadParkingSettings();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, [parkingCategory, parkingType]);
+
+// Persiste les réglages parking dans pv_settings
+const saveParkingSettings = useCallback(
+  async (next) => {
+    // 1. Sauvegarder les paramètres GLOBAUX (objective_total, category_pct, size_pct)
+    if (next.objectiveTotal !== undefined || next.categoryPct !== undefined || next.sizePct !== undefined) {
+      const globalPayload = {
+        id: "global",
+        updated_at: new Date().toISOString(),
+      };
+      if (next.objectiveTotal !== undefined) globalPayload.objective_total = next.objectiveTotal;
+      if (next.categoryPct !== undefined) globalPayload.category_pct = next.categoryPct;
+      if (next.sizePct !== undefined) globalPayload.size_pct = next.sizePct;
+      
+      await supabase.from("pv_settings").upsert(globalPayload, { onConflict: "id" });
+    }
+
+    // 2. Sauvegarder les paramètres SCOPÉS par catégorie (price_pct, cat_mar_pct)
+    if (next.pricePct !== undefined || next.tierPct !== undefined) {
+      const scope = parkingScopeId(parkingCategory, parkingType);
+      const scopedPayload = {
+        id: scope,
+        updated_at: new Date().toISOString(),
+      };
+      if (next.pricePct !== undefined) scopedPayload.price_pct = next.pricePct;
+      if (next.tierPct !== undefined) scopedPayload.cat_mar_pct = next.tierPct;
+      
+      await supabase.from("pv_settings").upsert(scopedPayload, { onConflict: "id" });
+    }
+  },
+  [parkingCategory, parkingType]
+);
+
+const handleTierPctChange = useCallback(
+  (tier, pct) => {
+    setParkingTierPct((prev) => {
+      const next = { ...prev, [tier]: pct };
+      saveParkingSettings({ tierPct: next });
+      return next;
+    });
+  },
+  [saveParkingSettings]
+);
+
+// Sauvegarder une tranche de prix dans pv_price_bands
+const savePriceBand = useCallback(async (band) => {
+  try {
+    // Générer un label basé sur min/max
+    const label = band.max ? `${band.min}-${band.max}` : `${band.min}+`;
+    
+    const payload = {
+      category_key: band.category_key || label,
+      label: label,
+      min: band.min,
+      max: band.max,
+      share_pct: band.share_pct,
+      sort: band.sort,
+      bike_category: band.bike_category,
+      bike_type: band.bike_type,
+    };
+
+    console.log("💾 Sauvegarde tranche prix:", payload);
+
+    if (band.id) {
+      // Update existant
+      const { error } = await supabase
+        .from("pv_price_bands")
+        .update(payload)
+        .eq("id", band.id);
+      
+      if (error) {
+        console.error("❌ Erreur update:", error);
+        throw error;
+      }
+      console.log("✅ Mise à jour réussie, id:", band.id);
+    } else {
+      // Insert nouveau
+      const { data, error } = await supabase
+        .from("pv_price_bands")
+        .insert(payload)
+        .select("id")
+        .single();
+      
+      if (error) {
+        console.error("❌ Erreur insert:", error);
+        throw error;
+      }
+      
+      console.log("✅ Insertion réussie, nouvel id:", data?.id);
+      
+      // Mettre à jour l'id local
+      if (data) {
+        const idx = priceBands.findIndex(b => b === band);
+        if (idx >= 0) {
+          const newBands = [...priceBands];
+          newBands[idx] = { ...newBands[idx], id: data.id };
+          setPriceBands(newBands);
+        }
+      }
+    }
+    
+    // ✅ Sauvegarder aussi pricePct dans pv_settings
+    const pricePct = {};
+    priceBands.forEach(b => {
+      if (b.label) pricePct[b.label] = b.share_pct || 0;
+    });
+    if (label) pricePct[label] = band.share_pct || 0; // Inclure la band actuelle
+    saveParkingSettings({ pricePct });
+    
+  } catch (err) {
+    console.error("❌ Erreur sauvegarde tranche prix:", err);
+  }
+}, [priceBands, saveParkingSettings]);
 
 
 const [brandTiersIndex, setBrandTiersIndex] = useState(new Map()); 
@@ -3096,7 +3430,7 @@ const fetchPricingForUrls = async (urls = []) => {
 
       const { data, error } = await supabase
         .from(PRICING_TABLE)
-        .select("mint_url, brand_category, commercial_margin_eur, updated_at")
+        .select("mint_url, brand_category, commercial_margin_eur, updated_at, price_updated_at")
         .in("mint_url", chunk);
 
       if (error) {
@@ -3370,14 +3704,25 @@ const getSaleBreakdownFromModePricing = (velo, pricingRow) => {
 };
 
 
-const savePricingRow = async (row) => {
+// ===== SAVE PRICING: avec bouton manuel pour price_updated_at =====
+const savePricingRow = async (row, updatePriceTimestamp = false) => {
   if (!row?.mint_url) return;
 
   setPricingSaving(true);
   try {
+    const payload = { ...row };
+    
+    // ✅ Si on modifie best_used_url → màj price_updated_at
+    if (updatePriceTimestamp) {
+      payload.price_updated_at = new Date().toISOString();
+    }
+    
+    // On met toujours à jour updated_at pour les autres modifs
+    payload.updated_at = new Date().toISOString();
+
     const { data, error } = await supabase
       .from("mode_pricing")
-      .upsert(row, { onConflict: "mint_url" })
+      .upsert(payload, { onConflict: "mint_url" })
       .select("*")
       .single();
 
@@ -3391,6 +3736,40 @@ const savePricingRow = async (row) => {
     setPricingRow(data); // <- important: reflète ce qui est en base
   } finally {
     setPricingSaving(false);
+  }
+};
+
+// ===== AUTO-UPSERT: pour promo/acheteur/autres champs =====
+const autoUpsertPricingField = async (mintUrl, field, value) => {
+  if (!mintUrl) return;
+
+  try {
+    const payload = {
+      mint_url: mintUrl,
+      [field]: value,
+      updated_at: new Date().toISOString(),
+    };
+
+    const { data, error } = await supabase
+      .from("mode_pricing")
+      .upsert(payload, { onConflict: "mint_url" })
+      .select("*")
+      .single();
+
+    if (error) {
+      console.error(`❌ autoUpsertPricingField (${field}):`, error);
+      return;
+    }
+
+    // Mise à jour du cache local
+    setPricingByUrl((prev) => ({ ...prev, [data.mint_url]: data }));
+    
+    // Si c'est le vélo actuellement sélectionné, màj aussi pricingRow
+    if (selectedVelo?.URL === mintUrl) {
+      setPricingRow(data);
+    }
+  } catch (e) {
+    console.error(`❌ autoUpsertPricingField exception (${field}):`, e);
   }
 };
 
@@ -3447,11 +3826,9 @@ useEffect(() => {
 }, [parkingOpen]);
 
 
-// 👉 Très important : recharger les intérêts quand on ouvre un vélo
+// 👉 Recharger les notes quand on ouvre un vélo
 useEffect(() => {
-  // ⚠️ Ton dataset utilise "URL" (MAJUSCULES), pas "url"
   if (selectedVelo?.URL) {
-    fetchInterests(selectedVelo.URL);
     fetchNotes(selectedVelo.URL).then(() => {
       setDraftNote(notes[currentUserName] || "");
     });  
@@ -3580,8 +3957,15 @@ const applyAllFilters = (sourceVelos, f = {}) => {
   });
 
    // 4) Multi-select …
-  items = applyMulti(items, "Catégorie", f.categories);
-  items = applyMulti(items, "Type de vélo", f.typesVelo);
+  // ⚠️ Seulement filtrer si des catégories sont explicitement sélectionnées
+  if (f.categories && f.categories.length > 0) {
+    items = applyMulti(items, "Catégorie", f.categories);
+  }
+  if (f.typesVelo && f.typesVelo.length > 0) {
+    items = applyMulti(items, "Type de vélo", f.typesVelo);
+  }
+  // Autres multi-selects (comportement standard - filtre seulement si rempli)
+  items = applyMulti(items, "Taille du cadre", f.taillesCadre);
   items = applyMulti(items, "Taille du cadre", f.taillesCadre);
 
   // Transmission
@@ -3684,8 +4068,8 @@ if (key === "PRICING_BUY_PRICE") {
 }
 
 if (key === "PRICING_UPDATED_AT") {
-  aVal = pricingByUrl?.[a?.URL]?.updated_at ?? null;
-  bVal = pricingByUrl?.[b?.URL]?.updated_at ?? null;
+  aVal = pricingByUrl?.[a?.URL]?.price_updated_at ?? null;
+  bVal = pricingByUrl?.[b?.URL]?.price_updated_at ?? null;
 
   const at = parseDateFlexible(aVal);
   const bt = parseDateFlexible(bVal);
@@ -4390,7 +4774,39 @@ ${Object.entries(v)
      Rendu
   ============================= */
   return (
-    <div className={`app-container ${darkMode ? "dark" : ""}`}>
+    <>
+      <style>{`
+        .tier-card-hover {
+          transition: transform 0.2s ease, box-shadow 0.2s ease;
+        }
+        
+        .tier-card-hover:hover {
+          transform: translateY(-2px);
+          box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+        }
+        
+        .tier-velos-tooltip {
+          display: none;
+          position: absolute;
+          top: 100%;
+          left: 0;
+          right: 0;
+          margin-top: 8px;
+          background: white;
+          border: 1px solid #e5e7eb;
+          border-radius: 12px;
+          padding: 12px;
+          box-shadow: 0 8px 24px rgba(0,0,0,0.15);
+          z-index: 1000;
+          min-width: 320px;
+        }
+        
+        .tier-card-hover:hover .tier-velos-tooltip {
+          display: block;
+        }
+      `}</style>
+      
+      <div className={`app-container ${darkMode ? "dark" : ""}`}>
       {/* HEADER */}
       <div className="header-fixed">
         <div className="header-bar">
@@ -5088,6 +5504,41 @@ ${Object.entries(v)
     KPI's Parking
   </button>
 )}
+
+  {/* Bouton Inventaire (mode conseiller uniquement) */}
+  {!pricingMode && (
+  <button
+    onClick={() => setInventoryOpen(true)}
+    title="Consulter l'inventaire des achats"
+    style={{
+      display: "inline-flex",
+      alignItems: "center",
+      gap: 8,
+      padding: "8px 12px",
+      borderRadius: 999,
+      border: "1px solid rgba(0,0,0,0.15)",
+      background: "#ffffff",
+      color: "#111827",
+      fontWeight: 700,
+      fontSize: 13,
+      cursor: "pointer",
+      transition: "all .15s ease",
+    }}
+    onMouseEnter={(e) => {
+      e.currentTarget.style.background = "var(--mint-green)";
+      e.currentTarget.style.color = "#ffffff";
+      e.currentTarget.style.borderColor = "var(--mint-green)";
+    }}
+    onMouseLeave={(e) => {
+      e.currentTarget.style.background = "#ffffff";
+      e.currentTarget.style.color = "#111827";
+      e.currentTarget.style.borderColor = "rgba(0,0,0,0.15)";
+    }}
+  >
+    <span style={{ fontSize: 15 }}>📦</span>
+    À venir <span style={{ fontSize: 14, opacity: 0.7 }}>+{inventoryCount}</span>
+  </button>
+)}
 </div>
 
   {/* Vue + Tri */}
@@ -5309,7 +5760,7 @@ ${Object.entries(v)
     {(() => {
       const ben = computeCardBenefit(v, p);
       const daysOnline = getDaysSincePublication(v["Published At"]);
-      const pricingDays = daysSince(p?.updated_at);
+      const pricingDays = daysSince(p?.price_updated_at);
 
       return (
         <>
@@ -5491,92 +5942,60 @@ ${Object.entries(v)
   <div
     className={`velo-extras distributed-row ${pricingMode ? "cols-3" : "cols-2"}`}
   >
-    {/* ===== INTÉRÊT ===== */}
-<div className={`extra-pill interest-pill ${!pricingMode ? "interest-pill-advisor" : ""}`}>
-  <span className="extra-icon" title="Prospects sur ce vélo">
-    <FaUser />
-  </span>
-
-  <span className="extra-text">
-    {Object.values(interests).reduce((a, b) => a + Number(b || 0), 0)}
-  </span>
-
-  {/* Tooltip uniquement en mode Conseiller */}
-  {!pricingMode && (
-    <div className="interest-tooltip">
-      <div className="interest-tooltip-title">Prospects par vendeur</div>
-
-      {Object.keys(interests).length === 0 ? (
-        <div className="interest-tooltip-empty">Aucun intérêt</div>
-      ) : (
-        <ul className="interest-tooltip-list">
-          {Object.entries(interests).map(([vendor, count]) => (
-            <li key={vendor}>
-              <strong>{vendor}</strong> — {count}
-            </li>
-          ))}
-        </ul>
-      )}
-    </div>
-  )}
-
-  {/* + / − UNIQUEMENT en mode Conseiller */}
-  {!pricingMode && (
-    <span
-      className="interest-inline-controls"
-      onClick={(e) => e.stopPropagation()}
-    >
-      <button
-        type="button"
-        className="interest-mini-btn"
-        title="+1 client intéressé"
-        onClick={(e) => {
-          e.stopPropagation();
-          addInterest(selectedVelo.URL);
-        }}
-      >
-        +
-      </button>
-
-      <button
-        type="button"
-        className="interest-mini-btn"
-        title="-1 client intéressé"
-        onClick={(e) => {
-          e.stopPropagation();
-          removeInterest(selectedVelo.URL);
-        }}
-      >
-        −
-      </button>
-    </span>
-  )}
-</div>
-
-    {/* ===== ERP (mode pricing uniquement) ===== */}
-    {pricingMode &&
-      (() => {
+    {/* ===== ERP (pricing uniquement) & SHOPIFY (tous modes) ===== */}
+    {(() => {
         const serials = getAllSerialsFromRow(selectedVelo);
         const bikeNumber = serials?.[0] ? String(serials[0]).trim() : "";
-        if (!bikeNumber) return null;
+        
+        // ID Shopify depuis la colonne ID (Shopify Product ID)
+        const shopifyProductId = selectedVelo?.ID 
+          || selectedVelo?.id 
+          || selectedVelo?.shopify_product_id 
+          || selectedVelo?.["Shopify Product ID"] 
+          || "";
+        
+        if (!bikeNumber && !shopifyProductId) return null;
 
-        const erpUrl = `https://erpmint.com/dashboard/products/${encodeURIComponent(
-          bikeNumber
-        )}`;
+        const erpUrl = bikeNumber 
+          ? `https://erpmint.com/dashboard/products/${encodeURIComponent(bikeNumber)}`
+          : null;
+          
+        const shopifyUrl = shopifyProductId
+          ? `https://admin.shopify.com/store/velokaz/products/${encodeURIComponent(shopifyProductId)}`
+          : null;
 
         return (
-          <button
-            type="button"
-            className="extra-pill clickable"
-            title={`Voir la fiche achat ERP (N° ${bikeNumber})`}
-            onClick={(e) => {
-              e.stopPropagation();
-              window.open(erpUrl, "_blank", "noopener,noreferrer");
-            }}
-          >
-            <span className="extra-icon">👁️</span>
-            <span className="extra-text">ERP</span>
-          </button>
+          <>
+            {pricingMode && erpUrl && (
+              <button
+                type="button"
+                className="extra-pill clickable"
+                title={`Voir la fiche achat ERP (N° ${bikeNumber})`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  window.open(erpUrl, "_blank", "noopener,noreferrer");
+                }}
+              >
+                <span className="extra-icon">👁️</span>
+                <span className="extra-text">ERP</span>
+              </button>
+            )}
+            
+            {shopifyUrl && (
+              <button
+                type="button"
+                className="extra-pill clickable"
+                title={`Voir le produit sur Shopify (ID: ${shopifyProductId})`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  window.open(shopifyUrl, "_blank", "noopener,noreferrer");
+                }}
+              >
+                <span className="extra-icon">🛒</span>
+                <span className="extra-text">Shopify</span>
+              </button>
+            )}
+          </>
         );
       })()}
 
@@ -5684,14 +6103,6 @@ ${Object.entries(v)
           🔎 Annonces Concurrence
         </button>
 
-        <button
-          type="button"
-          className="save-btn"
-          onClick={() => savePricingRow(pricingRow)}
-          disabled={pricingSaving || pricingLoading || !pricingRow?.mint_url}
-        >
-          {pricingSaving ? "Enregistrement..." : "Enregistrer"}
-        </button>
       </div>
     </div>
 
@@ -5734,21 +6145,7 @@ ${Object.entries(v)
         Number.isFinite(x) ? `${Number(x).toLocaleString("fr-FR")} %` : "—";
 
       // =====================================================
-      // 1) PRICING MINT
-      // Prix original = premier prix Mint (estimated_sale_price)
-      // =====================================================
-      const mintOriginal = n(pricingRow?.estimated_sale_price);
-      const mintDepreciation = n(pricingRow?.mint_depreciation_price) ?? 0;
-      const mintPromo = n(pricingRow?.mint_promo_amount) ?? 0;
-
-      const mintNoPromo =
-        mintOriginal != null ? Math.max(0, mintOriginal - mintDepreciation) : null;
-
-      const mintFinal =
-        mintNoPromo != null ? Math.max(0, mintNoPromo - mintPromo) : null;
-
-      // =====================================================
-      // 2) PRICING MARCHÉ
+      // 1) PRICING MARCHÉ
       // Neuf déstock = new_price / new_bike_url
       // Occaz = best_used_price / best_used_url
       // =====================================================
@@ -5756,7 +6153,12 @@ ${Object.entries(v)
       const marketUsedUrl = pricingRow?.best_used_url ?? "";
 
       // =====================================================
-      // 3) INFO ACHAT
+      // 2) INFO ACHAT
+      // =====================================================
+      const mintPromo = n(pricingRow?.mint_promo_amount) ?? 0;
+
+      // =====================================================
+      // 3) COÛTS ACHAT
       // =====================================================
       const buyPrice = n(pricingRow?.negotiated_buy_price);
       const partsCost = n(pricingRow?.parts_cost_actual);
@@ -5774,6 +6176,16 @@ ${Object.entries(v)
   "Gregory",
   "Autre",
 ];
+
+      const SELLER_TYPES = [
+  "",               // permet "vide"
+  "Vélociste",            // Vélociste
+  "Particulier",
+  "Partenaire",
+  "Fabricant",
+  "Autre",
+];
+
       const totalCosts =
         (buyPrice ?? 0) + (partsCost ?? 0) + (logisticsCost ?? 0) + (marketingCost ?? 0);
       // =====================================================
@@ -5839,60 +6251,21 @@ ${Object.entries(v)
       return (
         <div style={{ marginTop: 10, display: "grid", gap: 10 }}>
           {/* =========================
-              1) PRICING MINT
+              1) PRICING MARCHÉ
              ========================= */}
           <div style={sectionStyle}>
-            <div style={titleStyle}>1) Pricing Mint</div>
-
-            <div style={{ display: "grid", gap: 10 }}>
-              <div style={fieldWrap}>
-                <label style={labelStyle}>Prix original (premier prix Mint)</label>
-                <input
-                  type="number"
-                  value={pricingRow?.estimated_sale_price ?? ""}
-                  onChange={setField("estimated_sale_price", "number")}
-                  style={inputStyle}
-                />
-              </div>
-
-              <div style={fieldWrap}>
-                <label style={labelStyle}>Dévaluation prix</label>
-                <input
-                  type="number"
-                  value={pricingRow?.mint_depreciation_price ?? ""}
-                  onChange={setField("mint_depreciation_price", "number")}
-                  style={inputStyle}
-                  placeholder="(auto plus tard) ex: 120"
-                />
-              </div>
-
-              <div style={fieldWrap}>
-                <label style={labelStyle}>Prix actuel hors promo (calculé)</label>
-                <div style={roStyle}>{fmt(mintNoPromo)}</div>
-              </div>
-
-              <div style={fieldWrap}>
-                <label style={labelStyle}>Montant promo</label>
-                <input
-                  type="number"
-                  value={pricingRow?.mint_promo_amount ?? ""}
-                  onChange={setField("mint_promo_amount", "number")}
-                  style={inputStyle}
-                />
-              </div>
-
-              <div style={fieldWrap}>
-                <label style={labelStyle}>Prix final (indicatif)</label>
-                <div style={roStyle}>{fmt(mintFinal)}</div>
-              </div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+              <div style={titleStyle}>1) Pricing marché</div>
+              <button
+                type="button"
+                className="save-btn"
+                onClick={() => savePricingRow(pricingRow, true)}
+                disabled={pricingSaving || pricingLoading || !pricingRow?.mint_url}
+                style={{ margin: 0, padding: "6px 12px", fontSize: 13 }}
+              >
+                {pricingSaving ? "Enregistrement..." : "💾 Enregistrer"}
+              </button>
             </div>
-          </div>
-
-          {/* =========================
-              2) PRICING MARCHÉ
-             ========================= */}
-          <div style={sectionStyle}>
-            <div style={titleStyle}>2) Pricing marché</div>
 
             <div style={{ display: "grid", gap: 12 }}>
               <div style={grid2}>
@@ -5942,20 +6315,52 @@ ${Object.entries(v)
           </div>
 
           {/* =========================
-              3) INFO ACHAT
+              2) INFO ACHAT
              ========================= */}
           <div style={sectionStyle}>
-            <div style={titleStyle}>3) Info achat</div>
+            <div style={titleStyle}>2) Info achat</div>
 
             <div style={grid2}>
   <div style={fieldWrap}>
-    <label style={labelStyle}>Vendeur</label>
+    <label style={labelStyle}>Date d'achat</label>
+    <input
+      type="date"
+      value={pricingRow?.purchase_date ? pricingRow.purchase_date.split('T')[0] : ""}
+      onChange={setField("purchase_date", "text")}
+      onBlur={(e) => autoUpsertPricingField(selectedVelo.URL, 'purchase_date', e.target.value || null)}
+      style={inputStyle}
+    />
+  </div>
+
+  <div style={fieldWrap}>
+    <label style={labelStyle}>Type de vendeur</label>
+    <input
+      type="text"
+      list="seller-types-list"
+      value={pricingRow?.seller_type ?? ""}
+      onChange={setField("seller_type", "text")}
+      onBlur={(e) => autoUpsertPricingField(selectedVelo.URL, 'seller_type', e.target.value)}
+      style={inputStyle}
+      placeholder="ex: VEL, Particulier, Partenaire..."
+    />
+    <datalist id="seller-types-list">
+      {SELLER_TYPES.filter(t => t).map((type) => (
+        <option key={type} value={type}>{type}</option>
+      ))}
+    </datalist>
+  </div>
+</div>
+
+<div style={grid2}>
+  <div style={fieldWrap}>
+    <label style={labelStyle}>Nom du vendeur</label>
     <input
       type="text"
       value={pricingRow?.seller ?? ""}
       onChange={setField("seller", "text")}
+      onBlur={(e) => autoUpsertPricingField(selectedVelo.URL, 'seller', e.target.value)}
       style={inputStyle}
-      placeholder="ex: Particulier / Pro / Nom vendeur…"
+      placeholder="ex: Bikeshop22, Decathlon..."
     />
   </div>
 
@@ -5963,7 +6368,10 @@ ${Object.entries(v)
     <label style={labelStyle}>Acheteur</label>
     <select
       value={pricingRow?.buyer ?? ""}
-      onChange={setField("buyer", "text")}
+      onChange={(e) => {
+        setField("buyer", "text")(e);
+        autoUpsertPricingField(selectedVelo.URL, 'buyer', e.target.value);
+      }}
       style={inputStyle}
     >
       {BUYERS.map((name) => (
@@ -5983,6 +6391,7 @@ ${Object.entries(v)
                     type="number"
                     value={pricingRow?.negotiated_buy_price ?? ""}
                     onChange={setField("negotiated_buy_price", "number")}
+                    onBlur={(e) => autoUpsertPricingField(selectedVelo.URL, 'negotiated_buy_price', parseFloat(e.target.value) || null)}
                     style={inputStyle}
                   />
                 </div>
@@ -5993,6 +6402,7 @@ ${Object.entries(v)
                     type="number"
                     value={pricingRow?.parts_cost_actual ?? ""}
                     onChange={setField("parts_cost_actual", "number")}
+                    onBlur={(e) => autoUpsertPricingField(selectedVelo.URL, 'parts_cost_actual', parseFloat(e.target.value) || null)}
                     style={inputStyle}
                   />
                 </div>
@@ -6005,6 +6415,7 @@ ${Object.entries(v)
                     type="number"
                     value={pricingRow?.logistics_cost ?? ""}
                     onChange={setField("logistics_cost", "number")}
+                    onBlur={(e) => autoUpsertPricingField(selectedVelo.URL, 'logistics_cost', parseFloat(e.target.value) || null)}
                     style={inputStyle}
                   />
                 </div>
@@ -6015,6 +6426,7 @@ ${Object.entries(v)
                     type="number"
                     value={pricingRow?.marketing_cost ?? ""}
                     onChange={setField("marketing_cost", "number")}
+                    onBlur={(e) => autoUpsertPricingField(selectedVelo.URL, 'marketing_cost', parseFloat(e.target.value) || null)}
                     style={inputStyle}
                   />
                 </div>
@@ -6078,6 +6490,7 @@ ${Object.entries(v)
                   )
                 )
               }
+              onBlur={(e) => autoUpsertPricingField(selectedVelo.URL, 'comment', e.target.value)}
               style={{
                 minHeight: 80,
                 border: "1px solid #d1d5db",
@@ -6086,6 +6499,24 @@ ${Object.entries(v)
                 resize: "vertical",
               }}
             />
+          </div>
+
+          {/* =========================
+              PROMO
+             ========================= */}
+          <div style={sectionStyle}>
+            <div style={titleStyle}>🎁 Promo</div>
+            <div style={fieldWrap}>
+              <label style={labelStyle}>Montant promo (€)</label>
+              <input
+                type="number"
+                value={pricingRow?.mint_promo_amount ?? ""}
+                onChange={setField("mint_promo_amount", "number")}
+                onBlur={(e) => autoUpsertPricingField(selectedVelo.URL, 'mint_promo_amount', parseFloat(e.target.value) || null)}
+                style={inputStyle}
+                placeholder="ex: 100"
+              />
+            </div>
           </div>
         </div>
       );
@@ -7419,16 +7850,10 @@ ${Object.entries(v)
 
 // ✅ cascade dans l’ordre : Catégorie -> Prix -> Taille -> CAT_MAR
 const multCategory = parkingSelection.category ? getPct(parkingRules.categoryPct, parkingSelection.category) : 1;
-const multPrice = parkingSelection.priceBand ? getPct(parkingRules.pricePct, parkingSelection.priceBand) : 1;
-
-// ⚠️ Taille : ton selection est une taille (ex "M"). On applique son pct si sélectionnée.
 const multSize = parkingSelection.size ? getPct(parkingRules.sizePct, parkingSelection.size) : 1;
 
 // Total “base” pour chaque table (objectif global * produit des filtres avant)
-const objTotalForCategory = objectiveTotal;
-const objTotalForPrice = objectiveTotal * multCategory;
-const objTotalForSize = objectiveTotal * multCategory * multPrice;
-const objTotalForCatMar = objectiveTotal * multCategory * multPrice * multSize;
+const objTotalForCatMar = objectiveTotal * multCategory * multSize;
 
 
           // ---- Taille (distribution spéciale)
@@ -7462,17 +7887,92 @@ const objTotalForCatMar = objectiveTotal * multCategory * multPrice * multSize;
   return { out, totalUnits };
 }
 
-          // ---- Distributions
-          const distSize = computeSizeDistribution(rowsForView);
-          const distCategory = computeDistribution(rowsForView, getCategoryFromRow);
-          const distPrice = computeDistribution(rowsForView, (r) => getPriceBand(getPriceFromRow(r)));
-          const distCatMar = computeDistribution(rowsForView, getCatMarFromRow);
+          // ---- Distributions avec ORDRE FORCÉ et valeurs figées
+          // 1) Catégories - pas de filtre
+          const rowsForCategories = baseRows;
+          const distCategory = computeDistribution(rowsForCategories, getCategoryFromRow);
+          
+          // 2) Tailles - filtre par catégorie SI sélectionnée
+          const rowsForSizes = parkingSelection.category 
+            ? rowsForCategories.filter(r => getCategoryFromRow(r) === parkingSelection.category)
+            : rowsForCategories;
+          const distSize = computeSizeDistribution(rowsForSizes);
+          
+          // 3) Prix - filtre par catégorie + taille SI sélectionnées  
+          const rowsForPrices = parkingSelection.size
+            ? rowsForSizes.filter(r => {
+                const sizeStocks = getSizeStocksFromRow(r);
+                if (sizeStocks) return Object.keys(sizeStocks).includes(parkingSelection.size);
+                const buckets = getVariantSizeBucketsFromRow(r);
+                return buckets && buckets.includes(parkingSelection.size);
+              })
+            : rowsForSizes;
+          
+          // ✅ Si taille sélectionnée, ne compter que les unités de cette taille
+          const computeDistributionForSize = (rows, getKeyFn, selectedSize) => {
+            const out = {};
+            let totalUnits = 0;
+            
+            for (const r of rows || []) {
+              let units = 0;
+              
+              if (selectedSize) {
+                // Ne compter que les unités de la taille sélectionnée
+                const sizeStocks = getSizeStocksFromRow(r);
+                if (sizeStocks && sizeStocks[selectedSize]) {
+                  units = Number(sizeStocks[selectedSize] || 0);
+                } else {
+                  // Fallback: split égal entre les tailles disponibles
+                  const totalStock = Number(getRowTotalStock(r) || 0);
+                  const buckets = getVariantSizeBucketsFromRow(r);
+                  if (buckets && buckets.includes(selectedSize)) {
+                    units = totalStock / buckets.length;
+                  }
+                }
+              } else {
+                // Pas de taille sélectionnée: toutes les unités
+                units = Number(getRowTotalStock(r) || 0);
+              }
+              
+              if (!Number.isFinite(units) || units <= 0) continue;
+              
+              const key = String(getKeyFn(r) || "").trim();
+              if (!key) continue;
+              
+              totalUnits += units;
+              out[key] = (out[key] || 0) + units;
+            }
+            
+            return { out, totalUnits };
+          };
+          
+          const distPrice = computeDistributionForSize(rowsForPrices, (r) => getPriceBand(getPriceFromRow(r)), parkingSelection.size);
 
-          // ---- Gap rows
+          // ---- Gap rows avec objectifs cascadés
+          const objTotalForCategory = objectiveTotal;
+          const objTotalForSize = objectiveTotal * multCategory;
+          const objTotalForPrice = objectiveTotal * multCategory * multSize;
+          
           const catRows = buildGapRows(distCategory.out, distCategory.totalUnits, parkingRules.categoryPct, objTotalForCategory);
-const priceRows = buildGapRows(distPrice.out, distPrice.totalUnits, parkingRules.pricePct, objTotalForPrice);
-const sizeRows = buildGapRows(distSize.out, distSize.totalUnits, parkingRules.sizePct, objTotalForSize);
-const catMarRows = buildGapRows(distCatMar.out, distCatMar.totalUnits, parkingRules.catMarPct, objTotalForCatMar);
+          const sizeRows = buildGapRows(distSize.out, distSize.totalUnits, parkingRules.sizePct, objTotalForSize);
+          const priceRows = buildGapRows(distPrice.out, distPrice.totalUnits, parkingRules.pricePct, objTotalForPrice);
+          
+          // ✅ Vélos par tier (filtrés par catégorie + taille + prix si sélectionnés)
+          const getVelosByTier = (tier) => {
+            return (rowsForPrices || [])
+              .filter(r => {
+                const t = String(getCatMarFromRow(r) || "").trim().toUpperCase();
+                return t === tier;
+              })
+              .map(r => ({
+                brand: r?.["Marque"] || "",
+                model: r?.["Modèle"] || "",
+                year: r?.["Année"] || "",
+                price: r?.["Prix réduit"] || r?.["Prix"] || "",
+                photo: r?.["Photo"] || r?.["Image"] || "",
+                url: r?.["URL"] || "",
+              }));
+          };
           function shrinkRowsForUI(rows, filterKey) {
   const selected = parkingSelection?.[filterKey];
 
@@ -7544,9 +8044,9 @@ const catMarRows = buildGapRows(distCatMar.out, distCatMar.totalUnits, parkingRu
               <div className="parking-card" style={{ gridColumn: "1 / -1" }}>
                 <div className="parking-card-title">Filtres actifs</div>
                 <div className="parking-muted" style={{ marginTop: 6 }}>
-  Ordre conseillé : <strong>1) Catégorie</strong> → <strong>2) Prix</strong> → <strong>3) Taille</strong> → <strong>4) CAT_MAR</strong>.
+  Ordre OBLIGATOIRE : <strong>1) Catégorie</strong> → <strong>2) Taille</strong> → <strong>3) Prix</strong>.
   <span style={{ marginLeft: 6 }}>
-    (Les <strong>Obj</strong> restent calculés sur {parkingRules.objectiveTotal} unités)
+    (Les <strong>Actuel</strong> et <strong>Obj</strong> de chaque table restent figés)
   </span>
 </div>
 
@@ -7573,15 +8073,18 @@ const catMarRows = buildGapRows(distCatMar.out, distCatMar.totalUnits, parkingRu
               </div>
 
               {renderTable("Catégories", shrinkRowsForUI(catRows, "category"), "category")}
-              {renderTable("Prix", shrinkRowsForUI(priceRows, "priceBand"), "priceBand")}
-              {renderTable("Tailles", sizeRows, "size")}
-              {renderTable("CAT_MAR (A/B/C/D)", catMarRows, "catMar")}
+              {parkingSelection.category && renderTable("Tailles", shrinkRowsForUI(sizeRows, "size"), "size")}
+              {parkingSelection.category && parkingSelection.size && renderTable("Prix", shrinkRowsForUI(priceRows, "priceBand"), "priceBand")}
+
 
 {/* ✅ Rappel marques par tier (uniquement si une Catégorie est filtrée) */}
 {parkingSelection.category ? (
   <div className="parking-card" style={{ gridColumn: "1 / -1" }}>
     <div className="parking-card-title">
       Marques par CAT_MAR (sur la sélection) — {parkingSelection.category}
+    </div>
+    <div className="parking-muted" style={{ marginBottom: 10 }}>
+      (Basé sur le stock actuellement filtré : catégorie / taille / prix)
     </div>
 
     <div style={{ display: "grid", gridTemplateColumns: "repeat(5, minmax(0, 1fr))", gap: 10 }}>
@@ -7590,7 +8093,11 @@ const catMarRows = buildGapRows(distCatMar.out, distCatMar.totalUnits, parkingRu
         ["B", brandRecap.B],
         ["C", brandRecap.C],
         ["D", brandRecap.D],
-      ].map(([label, list]) => (
+      ].map(([label, list]) => {
+        const velosInTier = getVelosByTier(label);
+        const tierPct = parkingTierPct[label] || 0;
+        
+        return (
         <div
           key={label}
           style={{
@@ -7599,11 +8106,20 @@ const catMarRows = buildGapRows(distCatMar.out, distCatMar.totalUnits, parkingRu
             background: "#fff",
             padding: 10,
             minWidth: 0,
+            position: "relative",
+            cursor: velosInTier.length > 0 ? "pointer" : "default",
           }}
+          className="tier-card-hover"
         >
           <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "baseline" }}>
             <div style={{ fontWeight: 900 }}>{label}</div>
-            <div style={{ fontSize: 12, color: "#6b7280" }}>{list.length}</div>
+            <div style={{ fontSize: 12, color: "#6b7280" }}>
+              <span style={{ fontWeight: 700, color: "#059669" }}>{Math.round(tierPct * 100)}%</span>
+            </div>
+          </div>
+          
+          <div style={{ fontSize: 11, color: "#6b7280", marginTop: 4 }}>
+            {list.length} marques · {velosInTier.length} vélos
           </div>
 
           <div style={{ marginTop: 8, display: "flex", flexWrap: "wrap", gap: 6 }}>
@@ -7634,12 +8150,53 @@ const catMarRows = buildGapRows(distCatMar.out, distCatMar.totalUnits, parkingRu
               ))
             )}
           </div>
+          
+          {/* Tooltip au survol avec liste des vélos */}
+          {velosInTier.length > 0 && (
+            <div className="tier-velos-tooltip">
+              <div style={{ fontWeight: 700, marginBottom: 8, borderBottom: "1px solid #e5e7eb", paddingBottom: 6 }}>
+                Vélos Tier {label} ({velosInTier.length})
+              </div>
+              <div style={{ maxHeight: 400, overflowY: "auto" }}>
+                {velosInTier.map((v, i) => (
+                  <div 
+                    key={i}
+                    style={{
+                      display: "flex",
+                      gap: 10,
+                      padding: 8,
+                      borderBottom: i < velosInTier.length - 1 ? "1px solid #f3f4f6" : "none",
+                      alignItems: "center",
+                    }}
+                  >
+                    {v.photo && (
+                      <img 
+                        src={v.photo} 
+                        alt={v.model}
+                        style={{
+                          width: 50,
+                          height: 50,
+                          objectFit: "cover",
+                          borderRadius: 6,
+                          flexShrink: 0,
+                        }}
+                      />
+                    )}
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontWeight: 600, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {v.brand} {v.model}
+                      </div>
+                      <div style={{ fontSize: 11, color: "#6b7280" }}>
+                        {v.year} · {v.price}€
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
-      ))}
-    </div>
-
-    <div className="parking-muted" style={{ marginTop: 8 }}>
-      (Basé sur le stock actuellement filtré : prix / taille / CAT_MAR, etc.)
+      )})}
     </div>
   </div>
 ) : null}
@@ -7656,36 +8213,64 @@ const catMarRows = buildGapRows(distCatMar.out, distCatMar.totalUnits, parkingRu
             style={{
               width: "100%",
               maxWidth: "none",
-              display: "grid",
-              gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)",
+              display: "flex",
+              flexDirection: "column",
               gap: 14,
-              alignItems: "start",
             }}
           >
-            {/* GAUCHE : RÈGLES */}
-            <div style={{ minWidth: 0, display: "flex", flexDirection: "column", gap: 14 }}>
-              <div className="parking-card">
-                <div className="parking-card-title">Objectif</div>
-
-                <div className="parking-form-row">
-                  <label>Objectif total (unités)</label>
-                  <input
-                    type="number"
-                    value={parkingRules.objectiveTotal}
-                    onChange={(e) =>
-                      setParkingRules((p) => ({
-                        ...p,
-                        objectiveTotal: Number(e.target.value || 0),
-                      }))
-                    }
-                  />
-                </div>
+            {/* SECTION SÉLECTION CATÉGORIE/TYPE */}
+            <div className="parking-card" style={{background: "#f0fdf4", borderLeft: "4px solid #22c55e"}}>
+              <div className="parking-card-title">Filtre par catégorie et type</div>
+              
+              <div className="parking-form-row">
+                <label>Catégorie de vélo</label>
+                <select
+                  value={parkingCategory || ""}
+                  onChange={(e) => setParkingCategory(e.target.value || null)}
+                >
+                  {parkingCategories.map((cat) => (
+                    <option key={cat} value={cat}>{cat}</option>
+                  ))}
+                </select>
               </div>
+
+              <div style={{marginTop: 10, fontSize: 12, color: "#666", fontStyle: "italic"}}>
+                Cette sélection s'applique à tous les objectifs ci-dessous
+              </div>
+            </div>
+
+            {/* GAUCHE : RÈGLES */}
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)",
+                gap: 14,
+                alignItems: "start",
+              }}
+            >
+              <div style={{ minWidth: 0, display: "flex", flexDirection: "column", gap: 14 }}>
+                <div className="parking-card">
+                  <div className="parking-card-title">Objectif</div>
+
+                  <div className="parking-form-row">
+                    <label>Objectif total (unités)</label>
+                    <input
+                      type="number"
+                      value={parkingRules.objectiveTotal}
+                      onChange={(e) => {
+                        const newTotal = Number(e.target.value || 0);
+                        setParkingRules((p) => ({
+                          ...p,
+                          objectiveTotal: newTotal,
+                        }));
+                        saveParkingSettings({ objectiveTotal: newTotal });
+                      }}
+                    />
+                  </div>
+                </div>
 
               {[
                 ["Catégories", "categoryPct"],
-                ["Prix", "pricePct"],
-                ["CAT_MAR", "catMarPct"],
                 ["Tailles", "sizePct"],
               ].map(([label, key]) => {
                 const obj = parkingRules[key] || {};
@@ -7725,10 +8310,17 @@ const catMarRows = buildGapRows(distCatMar.out, distCatMar.totalUnits, parkingRu
                             value={Math.round(clamp01(obj[k]) * 100)}
                             onChange={(e) => {
                               const pct = clamp01(Number(e.target.value || 0) / 100);
-                              setParkingRules((p) => ({
-                                ...p,
-                                [key]: { ...(p[key] || {}), [k]: pct },
-                              }));
+                              setParkingRules((p) => {
+                                const newObj = { ...(p[key] || {}), [k]: pct };
+                                const updated = { ...p, [key]: newObj };
+                                // Sauvegarder dans Supabase
+                                saveParkingSettings({ 
+                                  categoryPct: key === 'categoryPct' ? newObj : undefined,
+                                  sizePct: key === 'sizePct' ? newObj : undefined,
+                                  pricePct: key === 'pricePct' ? newObj : undefined 
+                                });
+                                return updated;
+                              });
                             }}
                             style={{ width: "100%" }}
                           />
@@ -7740,12 +8332,97 @@ const catMarRows = buildGapRows(distCatMar.out, distCatMar.totalUnits, parkingRu
                   </div>
                 );
               })}
-            </div>
 
-            {/* DROITE : MARQUES */}
-            <div style={{ minWidth: 0 }}>
-              <div className="parking-card" style={{ minHeight: 520 }}>
-                <BrandTierBoard />
+              {/* Section Prix - édition complète des tranches */}
+              <div className="parking-card">
+                <div className="parking-card-title">Prix</div>
+
+                <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                  {priceBands.map((band, idx) => (
+                    <div
+                      key={band.id || idx}
+                      style={{
+                        padding: 12,
+                        borderRadius: 12,
+                        border: "1px solid #e5e7eb",
+                        background: "#fff",
+                      }}
+                    >
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 100px", gap: 10, marginBottom: 8 }}>
+                        <div>
+                          <label style={{ fontSize: 11, color: "#666", display: "block", marginBottom: 4 }}>Min (€)</label>
+                          <input
+                            type="number"
+                            value={band.min ?? ""}
+                            onChange={(e) => {
+                              const newBands = [...priceBands];
+                              newBands[idx] = { ...newBands[idx], min: Number(e.target.value) || 0 };
+                              setPriceBands(newBands);
+                              // Sauvegarder dans Supabase
+                              savePriceBand(newBands[idx]);
+                            }}
+                            style={{ width: "100%", padding: "6px 8px", fontSize: 12 }}
+                          />
+                        </div>
+
+                        <div>
+                          <label style={{ fontSize: 11, color: "#666", display: "block", marginBottom: 4 }}>Max (€)</label>
+                          <input
+                            type="number"
+                            value={band.max ?? ""}
+                            onChange={(e) => {
+                              const newBands = [...priceBands];
+                              newBands[idx] = { ...newBands[idx], max: Number(e.target.value) || null };
+                              setPriceBands(newBands);
+                              savePriceBand(newBands[idx]);
+                            }}
+                            placeholder="∞"
+                            style={{ width: "100%", padding: "6px 8px", fontSize: 12 }}
+                          />
+                        </div>
+
+                        <div>
+                          <label style={{ fontSize: 11, color: "#666", display: "block", marginBottom: 4 }}>Part (%)</label>
+                          <input
+                            type="number"
+                            step="1"
+                            value={Math.round((band.share_pct || 0) * 100)}
+                            onChange={(e) => {
+                              const pct = clamp01(Number(e.target.value || 0) / 100);
+                              const newBands = [...priceBands];
+                              newBands[idx] = { ...newBands[idx], share_pct: pct };
+                              setPriceBands(newBands);
+                              
+                              // Mettre à jour aussi pricePct pour la compatibilité
+                              setParkingRules((p) => ({
+                                ...p,
+                                pricePct: { ...(p.pricePct || {}), [band.label]: pct },
+                              }));
+                              savePriceBand(newBands[idx]);
+                            }}
+                            style={{ width: "100%", padding: "6px 8px", fontSize: 12 }}
+                          />
+                        </div>
+                      </div>
+
+                      <div style={{ fontSize: 12, fontWeight: 600 }}>
+                        {band.min ?? 0}€ - {band.max ? `${band.max}€` : "∞"}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              </div>
+
+              {/* DROITE : MARQUES */}
+              <div style={{ minWidth: 0 }}>
+                <div className="parking-card" style={{ minHeight: 520 }}>
+                  <BrandTierBoard 
+                    tierPct={parkingTierPct} 
+                    onTierPctChange={handleTierPctChange}
+                    selectedCategoryType={parkingCategory}
+                  />
+                </div>
               </div>
             </div>
           </div>
@@ -7977,10 +8654,56 @@ const catMarRows = buildGapRows(distCatMar.out, distCatMar.totalUnits, parkingRu
       </div>
 
       {promoError && (
-        <div style={{ marginTop: 10, padding: 10, borderRadius: 10, background: "#fee2e2", color: "#991b1b" }}>
-          ❌ {promoError}
+        <div style={{ marginTop: 10, padding: 10, borderRadius: 10, background: promoError.startsWith("✅") ? "#d1fae5" : "#fee2e2", color: promoError.startsWith("✅") ? "#065f46" : "#991b1b" }}>
+          {promoError}
         </div>
       )}
+
+      {/* ✅ Section modification promo */}
+      <div style={{ marginTop: 16, padding: 14, border: "2px solid #3b82f6", borderRadius: 12, background: "#eff6ff" }}>
+        <h3 style={{ margin: "0 0 12px 0", color: "#1e40af" }}>🔧 Modifier les promos en cours</h3>
+        
+        <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
+          <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            Montant à ajouter/soustraire :
+            <input
+              type="number"
+              value={promoModifyAmount}
+              onChange={(e) => setPromoModifyAmount(parseNumericValue(e.target.value) || 0)}
+              disabled={promoSaving}
+              style={{ width: 120, fontWeight: 700 }}
+              placeholder="ex: -50 ou +100"
+            />
+            €
+          </label>
+
+          <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            Appliquer sur :
+            <select
+              value={promoModifyTarget}
+              onChange={(e) => setPromoModifyTarget(e.target.value)}
+              disabled={promoSaving}
+            >
+              <option value="all">Tous les vélos sélectionnés</option>
+              <option value="withpromo">Uniquement les vélos déjà promotionnés</option>
+            </select>
+          </label>
+
+          <button
+            type="button"
+            className="save-btn"
+            onClick={promo_modifyExisting}
+            disabled={promoSaving || promo_getSelectedVelos().length === 0}
+            style={{ marginLeft: "auto" }}
+          >
+            {promoSaving ? "Modification..." : "Modifier les promos"}
+          </button>
+        </div>
+
+        <div style={{ marginTop: 8, fontSize: 12, color: "#6b7280" }}>
+          💡 Montant positif = augmenter la promo, négatif = diminuer la promo. Le résultat ne peut pas être négatif.
+        </div>
+      </div>
 
       {/* Rules */}
       <div style={{ marginTop: 14 }}>
@@ -9072,6 +9795,14 @@ const catMarRows = buildGapRows(distCatMar.out, distCatMar.totalUnits, parkingRu
   );
 })()}
   </div>
+
+  {/* Modal Inventaire */}
+  <InventoryList 
+    isOpen={inventoryOpen} 
+    onClose={() => setInventoryOpen(false)}
+    onCountChange={setInventoryCount}
+  />
+  </>
   );
 }
    
