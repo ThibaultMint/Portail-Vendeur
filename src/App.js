@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo, useCallback, useRef } from "react"
 import { supabase } from "./supabaseClient";
 import Login from "./Login";
 import InventoryList from "./InventoryList";
+import KPIDashboard from "./KPIDashboard";
 import { 
   FaTrash, FaEnvelope, FaSyncAlt, FaBalanceScale, FaHeart, FaUser, FaUserCircle, 
   FaSms, FaPercent, FaLink, FaCheckSquare, FaFileExport 
@@ -4364,9 +4365,12 @@ const mUnit = Number(b?.margin); // marge €/unité (ton breakdown est déjà p
 
 if (Number.isFinite(dListing) && Number.isFinite(mUnit)) {
   marginAgeScatter.push({
-    days: dListing,
-    margin: mUnit,
+    age: dListing,
+    benefit: mUnit,
     units,
+    brand: v?.["Marque"] || "Inconnue",
+    model: v?.["Modèle"] || "",
+    year: v?.["Année"] || "",
     title: v?.Title || v?.["Title"] || "",
     url: v?.URL || "",
     price: Number(v?.["Prix réduit"] ?? NaN),
@@ -4405,8 +4409,58 @@ const locationPie = [
   { name: "Inconnu", units: unknownUnits },
 ].filter((x) => x.units > 0);
 
+// NOUVEAU : Marge moyenne par marque
+const brandBenefitMap = {};
+for (const v of list) {
+  const units = getRowTotalStock(v);
+  if (!units || units <= 0) continue;
+  
+  const benefit = computeCardBenefit(v);
+  if (!Number.isFinite(benefit)) continue;
+  
+  const brand = String(v?.Marque || "Inconnu").trim();
+  if (!brandBenefitMap[brand]) {
+    brandBenefitMap[brand] = { totalBenefit: 0, totalUnits: 0 };
+  }
+  brandBenefitMap[brand].totalBenefit += benefit * units;
+  brandBenefitMap[brand].totalUnits += units;
+}
 
-  return {
+const brandBenefit = Object.entries(brandBenefitMap)
+  .map(([brand, data]) => ({
+    brand,
+    avgBenefit: data.totalUnits > 0 ? data.totalBenefit / data.totalUnits : 0,
+    units: data.totalUnits,
+  }))
+  .sort((a, b) => b.avgBenefit - a.avgBenefit);
+
+// NOUVEAU : Prix moyen par catégorie
+const categoryPriceMap = {};
+for (const v of list) {
+  const units = getRowTotalStock(v);
+  if (!units || units <= 0) continue;
+  
+  const price = parseNumericValue(v?.["Prix réduit"]);
+  if (!Number.isFinite(price)) continue;
+  
+  const category = String(v?.Catégorie || "Autre").trim();
+  if (!categoryPriceMap[category]) {
+    categoryPriceMap[category] = { totalPrice: 0, totalUnits: 0 };
+  }
+  categoryPriceMap[category].totalPrice += price * units;
+  categoryPriceMap[category].totalUnits += units;
+}
+
+const categoryPrice = Object.entries(categoryPriceMap)
+  .map(([category, data]) => ({
+    category,
+    avgPrice: data.totalUnits > 0 ? data.totalPrice / data.totalUnits : 0,
+    units: data.totalUnits,
+  }))
+  .sort((a, b) => b.avgPrice - a.avgPrice);
+
+
+  const statsResult = {
   priceHisto,
   benefitHisto,
   locationPie, // ✅ AJOUT : sinon le graph est toujours vide
@@ -4435,7 +4489,24 @@ stockValueEur,
   mixTypology,
   elecMuscu,
   marginAgeScatter,
+  brandBenefit,
+  categoryPrice,
+  scatterBenefitAge: marginAgeScatter,
 };
+
+console.log("📊 Stats Debug:", {
+  priceHisto: statsResult.priceHisto?.length,
+  benefitHisto: statsResult.benefitHisto?.length,
+  listingAgeDist: statsResult.listingAgeDist?.length,
+  mixTypology: statsResult.mixTypology?.length,
+  elecMuscu: statsResult.elecMuscu?.length,
+  locationPie: statsResult.locationPie?.length,
+  marginAgeScatter: statsResult.marginAgeScatter?.length,
+  brandBenefit: statsResult.brandBenefit?.length,
+  categoryPrice: statsResult.categoryPrice?.length,
+});
+
+return statsResult;
 }, [filteredAndSortedVelos, pricingByUrl]);
 
   /* -------- Utilitaires sélection -------- */
@@ -9021,7 +9092,8 @@ const objTotalForCatMar = objectiveTotal * multCategory * multSize;
     </div>
   </>
 )} 
-{statsOpen && (() => {
+{/* Ancien modal stats remplacé par KPIDashboard - code commenté */}
+{false && statsOpen && (() => {
   // =========================
   // 🎨 Styles & couleurs
   // =========================
@@ -9801,6 +9873,16 @@ const objTotalForCatMar = objectiveTotal * multCategory * multSize;
     isOpen={inventoryOpen} 
     onClose={() => setInventoryOpen(false)}
     onCountChange={setInventoryCount}
+  />
+
+  {/* Modal KPI Dashboard */}
+  <KPIDashboard
+    isOpen={statsOpen}
+    onClose={() => setStatsOpen(false)}
+    statsData={statsData}
+    velos={filteredAndSortedVelos}
+    pricingByUrl={pricingByUrl}
+    filteredVelosCount={filteredAndSortedVelos.length}
   />
   </>
   );

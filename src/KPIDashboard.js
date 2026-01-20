@@ -1,0 +1,1617 @@
+import React, { useMemo, useState, useEffect } from "react";
+import { PieChart, Pie, BarChart, Bar, ScatterChart, Scatter, Cell, XAxis, YAxis, Tooltip, ResponsiveContainer, Legend, ZAxis, CartesianGrid, Line, ComposedChart, LabelList } from "recharts";
+import { supabase } from "./supabaseClient";
+
+const KPIDashboard = ({ isOpen, onClose, statsData, velos = [], pricingByUrl = {}, filteredVelosCount }) => {
+  const [inventoryData, setInventoryData] = useState([]);
+  const [selectedMonth, setSelectedMonth] = useState("");
+
+  // Charger les données inventory
+  useEffect(() => {
+    if (!isOpen) return;
+    
+    const fetchInventory = async () => {
+      try {
+        const { data, error } = await supabase
+          .from("inventory")
+          .select("*")
+          .order("date_achat", { ascending: true });
+        
+        if (error) {
+          console.error("Error loading inventory:", error);
+          return;
+        }
+        
+        if (data) {
+          setInventoryData(data);
+          
+          // Définir le mois actuel par défaut
+          const now = new Date();
+          const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+          setSelectedMonth(currentMonth);
+        }
+      } catch (err) {
+        console.error("Exception loading inventory:", err);
+      }
+    };
+    
+    fetchInventory();
+  }, [isOpen]);
+
+  // =========================
+  // 📊 Calculs simples directs
+  // =========================
+  const simpleData = useMemo(() => {
+    // Helper pour compter les unités en stock d'un vélo
+    const getStockUnits = (v) => {
+      let total = 0;
+      for (let i = 1; i <= 6; i++) {
+        const stock = parseInt(v?.[`Stock variant ${i}`]) || 0;
+        total += stock;
+      }
+      return total;
+    };
+
+    // Count par catégorie (en unités)
+    const categoryCount = {};
+    velos.forEach(v => {
+      const cat = v?.["Catégorie"] || "Non classé";
+      const units = getStockUnits(v);
+      categoryCount[cat] = (categoryCount[cat] || 0) + units;
+    });
+    const categoryData = Object.entries(categoryCount).map(([name, value]) => ({ name, value }));
+
+    // Count par marque (en unités)
+    const brandCount = {};
+    velos.forEach(v => {
+      const brand = v?.["Marque"] || "Inconnue";
+      const units = getStockUnits(v);
+      brandCount[brand] = (brandCount[brand] || 0) + units;
+    });
+    const brandData = Object.entries(brandCount)
+      .map(([name, value]) => ({ name, value }))
+      .sort((a, b) => b.value - a.value)
+      .slice(0, 10);
+
+    // Distribution des prix (en unités)
+    const priceRanges = [
+      { range: "0-500€", min: 0, max: 500, count: 0 },
+      { range: "500-750€", min: 500, max: 750, count: 0 },
+      { range: "750-1000€", min: 750, max: 1000, count: 0 },
+      { range: "1000-1250€", min: 1000, max: 1250, count: 0 },
+      { range: "1250-1500€", min: 1250, max: 1500, count: 0 },
+      { range: "1500-1750€", min: 1500, max: 1750, count: 0 },
+      { range: "1750-2000€", min: 1750, max: 2000, count: 0 },
+      { range: "2000-2250€", min: 2000, max: 2250, count: 0 },
+      { range: "2250-2500€", min: 2250, max: 2500, count: 0 },
+      { range: "2500-2750€", min: 2500, max: 2750, count: 0 },
+      { range: "2750-3000€", min: 2750, max: 3000, count: 0 },
+      { range: "3000-3250€", min: 3000, max: 3250, count: 0 },
+      { range: "3250-3500€", min: 3250, max: 3500, count: 0 },
+      { range: "3500-3750€", min: 3500, max: 3750, count: 0 },
+      { range: "3750-4000€", min: 3750, max: 4000, count: 0 },
+      { range: "4000-4250€", min: 4000, max: 4250, count: 0 },
+      { range: "4250-4500€", min: 4250, max: 4500, count: 0 },
+      { range: "4500€+", min: 4500, max: Infinity, count: 0 },
+    ];
+    velos.forEach(v => {
+      const priceStr = String(v?.["Prix réduit"] || "0").replace(/[^\d.,]/g, "").replace(",", ".");
+      const price = parseFloat(priceStr) || 0;
+      const units = getStockUnits(v);
+      if (price > 0 && units > 0) {
+        const bucket = priceRanges.find(r => price >= r.min && price < r.max);
+        if (bucket) bucket.count += units;
+      }
+    });
+    const priceData = priceRanges.filter(r => r.count > 0).map(r => ({ name: r.range, value: r.count }));
+
+    // Type de vélo (en unités)
+    const typeCount = {};
+    velos.forEach(v => {
+      const type = v?.["Type de vélo"] || "Inconnu";
+      const units = getStockUnits(v);
+      typeCount[type] = (typeCount[type] || 0) + units;
+    });
+    const typeData = Object.entries(typeCount).map(([name, value]) => ({ name, value }));
+
+    // Durée de mise en ligne (en unités)
+    const daysSince = (dateStr) => {
+      if (!dateStr) return null;
+      const date = new Date(dateStr);
+      if (isNaN(date.getTime())) return null;
+      const now = new Date();
+      return Math.floor((now - date) / (1000 * 60 * 60 * 24));
+    };
+
+    const ageRanges = [
+      { range: "0-7j", min: 0, max: 7, count: 0 },
+      { range: "7-30j", min: 7, max: 30, count: 0 },
+      { range: "30-60j", min: 30, max: 60, count: 0 },
+      { range: "60-90j", min: 60, max: 90, count: 0 },
+      { range: "90-120j", min: 90, max: 120, count: 0 },
+      { range: "120-150j", min: 120, max: 150, count: 0 },
+      { range: "150j+", min: 150, max: Infinity, count: 0 },
+    ];
+    velos.forEach(v => {
+      const age = daysSince(v?.["Published At"]);
+      const units = getStockUnits(v);
+      if (age !== null && age >= 0 && units > 0) {
+        const bucket = ageRanges.find(r => age >= r.min && age < r.max);
+        if (bucket) bucket.count += units;
+      }
+    });
+    const ageData = ageRanges.filter(r => r.count > 0).map(r => ({ name: r.range, value: r.count }));
+
+    // Marge moyenne par marque (en unités avec tooltip)
+    const brandMarginMap = {};
+    velos.forEach(v => {
+      const brand = v?.["Marque"] || "Inconnue";
+      const url = v?.URL;
+      const pricing = pricingByUrl?.[url];
+      const units = getStockUnits(v);
+      
+      if (pricing && units > 0) {
+        // Parser robuste pour Prix réduit (TEXT avec possiblement €, espaces, etc.)
+        const priceStr = String(v?.["Prix réduit"] || "0").replace(/[^\d.,]/g, "").replace(",", ".");
+        const price = parseFloat(priceStr) || 0;
+        
+        const buy = Number(pricing.negotiated_buy_price) || 0;
+        const parts = Number(pricing.parts_cost_actual) || 0;
+        const logistics = Number(pricing.logistics_cost) || 0;
+        
+        // Marge = Prix de vente - Achat - Pièces - Logistique
+        const margin = price - buy - parts - logistics;
+        
+        // Ignorer les marges aberrantes (vélos sans prix valide)
+        if (price > 0) {
+          if (!brandMarginMap[brand]) {
+            brandMarginMap[brand] = { totalMargin: 0, totalUnits: 0 };
+          }
+          brandMarginMap[brand].totalMargin += margin * units; // Marge totale pondérée par les unités
+          brandMarginMap[brand].totalUnits += units;
+        }
+      }
+    });
+    
+    const brandMarginData = Object.entries(brandMarginMap)
+      .map(([name, data]) => ({
+        name,
+        avgMargin: data.totalUnits > 0 ? data.totalMargin / data.totalUnits : 0,
+        units: data.totalUnits
+      }))
+      .filter(item => item.units > 0)
+      .sort((a, b) => b.avgMargin - a.avgMargin);
+
+    // Distribution des marges (par tranches de 300€, incluant le négatif)
+    const marginRanges = [
+      { range: "-900€ et moins", min: -Infinity, max: -900, count: 0 },
+      { range: "-900 à -600€", min: -900, max: -600, count: 0 },
+      { range: "-600 à -300€", min: -600, max: -300, count: 0 },
+      { range: "-300 à 0€", min: -300, max: 0, count: 0 },
+      { range: "0 à 300€", min: 0, max: 300, count: 0 },
+      { range: "300 à 600€", min: 300, max: 600, count: 0 },
+      { range: "600 à 900€", min: 600, max: 900, count: 0 },
+      { range: "900€ et plus", min: 900, max: Infinity, count: 0 },
+    ];
+
+    // Moyenne promo par catégorie
+    const promoCategoryStats = {};
+    velos.forEach(v => {
+      const cat = v?.Catégorie || "Non classé";
+      const url = v?.URL;
+      const pricing = pricingByUrl?.[url];
+      const promoAmt = Number(pricing?.mint_promo_amount) || 0;
+      const units = getStockUnits(v);
+      if (promoAmt > 0) {
+        if (!promoCategoryStats[cat]) {
+          promoCategoryStats[cat] = { sum: 0, count: 0 };
+        }
+        promoCategoryStats[cat].sum += promoAmt * units;
+        promoCategoryStats[cat].count += units;
+      }
+    });
+    const promoCategoryData = Object.entries(promoCategoryStats)
+      .map(([name, stats]) => ({ name, value: stats.sum / stats.count, units: stats.count }))
+      .sort((a, b) => b.value - a.value);
+
+    // Répartition des promos par montant
+    const promoAmountMap = {};
+    velos.forEach(v => {
+      const url = v?.URL;
+      const pricing = pricingByUrl?.[url];
+      const promoAmt = Number(pricing?.mint_promo_amount) || 0;
+      const units = getStockUnits(v);
+      if (promoAmt > 0) {
+        const amtKey = `${promoAmt}€`;
+        promoAmountMap[amtKey] = (promoAmountMap[amtKey] || 0) + units;
+      }
+    });
+    const promoDistributionData = Object.entries(promoAmountMap)
+      .map(([name, value]) => ({ name, value, sortKey: parseFloat(name) }))
+      .sort((a, b) => a.sortKey - b.sortKey);
+    
+    velos.forEach(v => {
+      const url = v?.URL;
+      const pricing = pricingByUrl?.[url];
+      const units = getStockUnits(v);
+      
+      if (pricing && units > 0) {
+        const priceStr = String(v?.["Prix réduit"] || "0").replace(/[^\d.,]/g, "").replace(",", ".");
+        const price = parseFloat(priceStr) || 0;
+        
+        const buy = Number(pricing.negotiated_buy_price) || 0;
+        const parts = Number(pricing.parts_cost_actual) || 0;
+        const logistics = Number(pricing.logistics_cost) || 0;
+        
+        const margin = price - buy - parts - logistics;
+        
+        if (price > 0) {
+          const bucket = marginRanges.find(r => margin >= r.min && margin < r.max);
+          if (bucket) bucket.count += units;
+        }
+      }
+    });
+    
+    const marginData = marginRanges.filter(r => r.count > 0).map(r => ({ name: r.range, value: r.count }));
+
+    // Marge moyenne par tranche de date de publication
+    const publicationRanges = [
+      { range: "-21j", min: 0, max: 21, totalMargin: 0, units: 0, sellValue: 0, totalBuyPrice: 0, totalParts: 0 },
+      { range: "22-42j", min: 22, max: 42, totalMargin: 0, units: 0, sellValue: 0, totalBuyPrice: 0, totalParts: 0 },
+      { range: "43-63j", min: 43, max: 63, totalMargin: 0, units: 0, sellValue: 0, totalBuyPrice: 0, totalParts: 0 },
+      { range: "64-84j", min: 64, max: 84, totalMargin: 0, units: 0, sellValue: 0, totalBuyPrice: 0, totalParts: 0 },
+      { range: "85-105j", min: 85, max: 105, totalMargin: 0, units: 0, sellValue: 0, totalBuyPrice: 0, totalParts: 0 },
+      { range: "106-126j", min: 106, max: 126, totalMargin: 0, units: 0, sellValue: 0, totalBuyPrice: 0, totalParts: 0 },
+      { range: "126j+", min: 126, max: Infinity, totalMargin: 0, units: 0, sellValue: 0, totalBuyPrice: 0, totalParts: 0 },
+    ];
+    
+    let totalUnitsForPublication = 0;
+    velos.forEach(v => {
+      const age = daysSince(v?.["Published At"]);
+      const url = v?.URL;
+      const pricing = pricingByUrl?.[url];
+      const units = getStockUnits(v);
+      
+      if (age !== null && age >= 0 && pricing && units > 0) {
+        const priceStr = String(v?.["Prix réduit"] || "0").replace(/[^\d.,]/g, "").replace(",", ".");
+        const sellPrice = parseFloat(priceStr) || 0;
+        const buyPrice = Number(pricing.negotiated_buy_price) || 0;
+        const parts = Number(pricing.parts_cost_actual) || 0;
+        const logistics = Number(pricing.logistics_cost) || 0;
+        const margin = sellPrice - buyPrice - parts - logistics;
+        
+        if (sellPrice > 0) {
+          const bucket = publicationRanges.find(r => age >= r.min && age < r.max);
+          if (bucket) {
+            bucket.totalMargin += margin * units;
+            bucket.units += units;
+            bucket.sellValue += sellPrice * units;
+            bucket.totalBuyPrice += buyPrice * units;
+            bucket.totalParts += parts * units;
+            totalUnitsForPublication += units;
+          }
+        }
+      }
+    });
+    
+    const publicationMarginData = publicationRanges
+      .filter(r => r.units > 0)
+      .map(r => ({
+        name: r.range,
+        avgMargin: r.totalMargin / r.units,
+        units: r.units,
+        percentage: totalUnitsForPublication > 0 ? ((r.units / totalUnitsForPublication) * 100).toFixed(1) : 0,
+        sellValue: r.sellValue,
+        avgBuyPrice: r.units > 0 ? r.totalBuyPrice / r.units : 0,
+        avgParts: r.units > 0 ? r.totalParts / r.units : 0
+      }));
+
+    return { 
+      categoryData, 
+      brandData, 
+      priceData, 
+      typeData, 
+      ageData, 
+      brandMarginData, 
+      marginData, 
+      promoCategoryData, 
+      promoDistributionData,
+      publicationMarginData
+    };
+  }, [velos, pricingByUrl]);
+
+  // Calculs pour KPI Achat basés sur inventory
+  const achatData = useMemo(() => {
+    if (!inventoryData.length) {
+      return { 
+        purchasesByMonth: [], 
+        marginByMonth: [], 
+        availableMonths: [],
+        monthlyKPIs: {},
+        marginByCategory: []
+      };
+    }
+
+    // Liste des mois disponibles
+    const monthsSet = new Set();
+    inventoryData.forEach(item => {
+      if (item.date_achat) {
+        const date = new Date(item.date_achat);
+        const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+        monthsSet.add(monthKey);
+      }
+    });
+    const availableMonths = Array.from(monthsSet).sort((a, b) => b.localeCompare(a));
+
+    // Nombre d'achats par mois
+    const monthlyPurchases = {};
+    inventoryData.forEach(item => {
+      if (!item.date_achat) return;
+      const date = new Date(item.date_achat);
+      const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+      monthlyPurchases[monthKey] = (monthlyPurchases[monthKey] || 0) + 1;
+    });
+
+    const purchasesByMonth = Object.entries(monthlyPurchases)
+      .map(([month, count]) => ({ name: month, value: count }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+
+    // Calculer les marges par mois
+    const monthlyMargins = {};
+    
+    inventoryData.forEach(item => {
+      if (!item.date_achat || !item.url) return;
+      
+      const date = new Date(item.date_achat);
+      const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+      
+      const matchingVelo = velos.find(v => v?.URL === item.url);
+
+      if (matchingVelo) {
+        const pricing = pricingByUrl?.[item.url];
+        
+        const stockQty = Number(matchingVelo?.["Total Inventory Qty"]) || 1;
+        
+        const priceStr = String(matchingVelo?.["Prix réduit"] || "0").replace(/[^\d.,]/g, "").replace(",", ".");
+        const sellPrice = parseFloat(priceStr) || 0;
+        
+        const buyPrice = Number(item.prix_achat_negocie) || 0;
+        const parts = Number(pricing?.parts_cost_actual) || 0;
+        const logistics = Number(pricing?.logistics_cost) || 0;
+        
+        const unitMargin = sellPrice - buyPrice - parts - logistics;
+        const totalMargin = unitMargin * stockQty;
+        
+        if (!monthlyMargins[monthKey]) {
+          monthlyMargins[monthKey] = { totalMargin: 0, count: 0 };
+        }
+        monthlyMargins[monthKey].totalMargin += totalMargin;
+        monthlyMargins[monthKey].count += stockQty;
+      }
+    });
+
+    // KPIs par mois
+    const monthlyKPIs = {};
+    availableMonths.forEach(monthKey => {
+      const monthItems = inventoryData.filter(item => {
+        if (!item.date_achat) return false;
+        const date = new Date(item.date_achat);
+        const itemMonth = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+        return itemMonth === monthKey;
+      });
+
+      const totalAchats = monthItems.length;
+      const valeurAchats = monthItems.reduce((sum, i) => sum + (Number(i.prix_achat_negocie) || 0), 0);
+      const prixMoyenAchat = totalAchats > 0 ? valeurAchats / totalAchats : 0;
+      
+      const marginData = monthlyMargins[monthKey];
+      const margeMoyenne = marginData && marginData.count > 0 ? marginData.totalMargin / marginData.count : 0;
+
+      monthlyKPIs[monthKey] = { totalAchats, valeurAchats, prixMoyenAchat, margeMoyenne };
+    });
+
+    // Marge par mois (basée sur purchase_date de pricingByUrl)
+    const monthlyMarginsFromStock = {};
+    velos.forEach(v => {
+      const url = v?.URL;
+      const pricing = pricingByUrl?.[url];
+      
+      if (!pricing || !pricing.purchase_date) return;
+      
+      const purchaseDate = new Date(pricing.purchase_date);
+      const monthKey = `${purchaseDate.getFullYear()}-${String(purchaseDate.getMonth() + 1).padStart(2, '0')}`;
+      
+      const priceStr = String(v?.["Prix réduit"] || "0").replace(/[^\d.,]/g, "").replace(",", ".");
+      const sellPrice = parseFloat(priceStr) || 0;
+      const buyPrice = Number(pricing?.negotiated_buy_price) || 0;
+      const parts = Number(pricing?.parts_cost_actual) || 0;
+      const logistics = Number(pricing?.logistics_cost) || 0;
+      const margin = sellPrice - buyPrice - parts - logistics;
+      
+      if (!monthlyMarginsFromStock[monthKey]) {
+        monthlyMarginsFromStock[monthKey] = { totalMargin: 0, count: 0 };
+      }
+      
+      monthlyMarginsFromStock[monthKey].totalMargin += margin;
+      monthlyMarginsFromStock[monthKey].count += 1;
+    });
+    
+    const marginByMonth = Object.entries(monthlyMarginsFromStock)
+      .map(([month, stats]) => ({ 
+        name: month, 
+        value: stats.count > 0 ? stats.totalMargin / stats.count : 0,
+        count: stats.count 
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+    
+    // NOUVEAU: Marge moyenne par catégorie (en utilisant pricingByUrl)
+    const categoryStats = {};
+    velos.forEach(v => {
+      const url = v?.URL;
+      const pricing = pricingByUrl?.[url];
+      const category = v?.["Catégorie"] || "Autres";
+      const bikeType = v?.["Type de vélo"] || "Musculaire"; // "Électrique" ou "Musculaire"
+      
+      if (!pricing || !pricing.purchase_date) return;
+      
+      const priceStr = String(v?.["Prix réduit"] || "0").replace(/[^\d.,]/g, "").replace(",", ".");
+      const sellPrice = parseFloat(priceStr) || 0;
+      const buyPrice = Number(pricing?.negotiated_buy_price) || 0;
+      const parts = Number(pricing?.parts_cost_actual) || 0;
+      const logistics = Number(pricing?.logistics_cost) || 0;
+      const margin = sellPrice - buyPrice - parts - logistics;
+      
+      if (!categoryStats[category]) {
+        categoryStats[category] = { 
+          electric: { totalMargin: 0, totalSellPrice: 0, count: 0 },
+          muscle: { totalMargin: 0, totalSellPrice: 0, count: 0 }
+        };
+      }
+      
+      if (bikeType === "Électrique") {
+        categoryStats[category].electric.totalMargin += margin;
+        categoryStats[category].electric.totalSellPrice += sellPrice;
+        categoryStats[category].electric.count += 1;
+      } else {
+        categoryStats[category].muscle.totalMargin += margin;
+        categoryStats[category].muscle.totalSellPrice += sellPrice;
+        categoryStats[category].muscle.count += 1;
+      }
+    });
+    
+    const marginByCategory = Object.entries(categoryStats)
+      .map(([cat, stats]) => ({
+        name: cat,
+        electrique: stats.electric.count > 0 ? stats.electric.totalMargin / stats.electric.count : 0,
+        musculaire: stats.muscle.count > 0 ? stats.muscle.totalMargin / stats.muscle.count : 0,
+        electriquePct: stats.electric.totalSellPrice > 0 ? (stats.electric.totalMargin / stats.electric.totalSellPrice) * 100 : 0,
+        musculairePct: stats.muscle.totalSellPrice > 0 ? (stats.muscle.totalMargin / stats.muscle.totalSellPrice) * 100 : 0
+      }))
+      .sort((a, b) => (b.electrique + b.musculaire) - (a.electrique + a.musculaire));
+
+    // Marge moyenne par acheteur (buyer)
+    const sellerStats = {};
+    velos.forEach(v => {
+      const url = v?.URL;
+      const pricing = pricingByUrl?.[url];
+      
+      if (!pricing || !pricing.buyer) return;
+      
+      const seller = pricing.buyer;
+      const priceStr = String(v?.["Prix réduit"] || "0").replace(/[^\d.,]/g, "").replace(",", ".");
+      const sellPrice = parseFloat(priceStr) || 0;
+      const buyPrice = Number(pricing?.negotiated_buy_price) || 0;
+      const parts = Number(pricing?.parts_cost_actual) || 0;
+      const logistics = Number(pricing?.logistics_cost) || 0;
+      const margin = sellPrice - buyPrice - parts - logistics;
+      
+      if (!sellerStats[seller]) {
+        sellerStats[seller] = { totalMargin: 0, count: 0 };
+      }
+      
+      sellerStats[seller].totalMargin += margin;
+      sellerStats[seller].count += 1;
+    });
+    
+    const marginBySeller = Object.entries(sellerStats)
+      .map(([seller, stats]) => ({
+        name: seller,
+        value: stats.count > 0 ? stats.totalMargin / stats.count : 0,
+        count: stats.count
+      }))
+      .sort((a, b) => b.value - a.value);
+
+    return { purchasesByMonth, marginByMonth, availableMonths, monthlyKPIs, marginByCategory, marginBySeller };
+  }, [inventoryData, velos, pricingByUrl]);
+
+  if (!isOpen) return null;
+
+  // =========================
+  // 🎨 Styles & couleurs
+  // =========================
+  const COLORS = {
+    primary: "#2563eb",
+    good: "#16a34a",
+    warn: "#f59e0b",
+    bad: "#dc2626",
+    gray: "#6b7280",
+    purple: "#7c3aed",
+    teal: "#0d9488",
+    pink: "#db2777",
+    mint: "#10b981",
+    blue: "#3b82f6",
+  };
+
+  const cardStyle = {
+    padding: 16,
+    border: "1px solid #e5e7eb",
+    borderRadius: 12,
+    background: "#fff",
+    boxShadow: "0 1px 3px rgba(0,0,0,0.05)",
+  };
+
+  const sectionHeaderStyle = {
+    fontSize: 16,
+    fontWeight: 800,
+    marginBottom: 16,
+    color: "#111827",
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+  };
+
+  const kpiCardStyle = {
+    padding: 12,
+    borderRadius: 8,
+    background: "#f9fafb",
+    border: "1px solid #e5e7eb",
+  };
+
+  const chartContainerStyle = {
+    padding: 16,
+    borderRadius: 8,
+    background: "#fff",
+    border: "1px solid #e5e7eb",
+  };
+
+  const noDataStyle = {
+    opacity: 0.6,
+    fontSize: 13,
+    textAlign: "center",
+    padding: 40,
+  };
+
+  const fmtEur = (v) => {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return "—";
+    return new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR", minimumFractionDigits: 0 }).format(n);
+  };
+
+  // Safe data
+  const kpi = statsData?.kpi || {};
+  const totalUnits = kpi.totalUnits || 0;
+  const stockValueEur = statsData?.stockValueEur || 0;
+  const avgBenefitPerUnit = statsData?.avgBenefitPerUnit || 0;
+
+  // Pie palette
+  const piePalette = [COLORS.primary, COLORS.teal, COLORS.purple, COLORS.warn, COLORS.pink, COLORS.gray];
+
+  // Custom tooltip for pies
+  const CustomPieTooltip = ({ active, payload }) => {
+    if (!active || !payload?.length) return null;
+    const data = payload[0];
+    return (
+      <div style={{
+        background: "#fff",
+        border: "1px solid #e5e7eb",
+        borderRadius: 8,
+        padding: 10,
+        boxShadow: "0 4px 12px rgba(0,0,0,0.1)",
+      }}>
+        <div style={{ fontWeight: 700, marginBottom: 4 }}>{data.name}</div>
+        <div style={{ fontSize: 13, color: "#6b7280" }}>
+          {data.value} unités ({data.payload.__pct || "0%"})
+        </div>
+      </div>
+    );
+  };
+
+  // Attach percentage to pie data
+  const attachPiePct = (arr, key) => {
+    const total = (arr || []).reduce((s, x) => s + (Number(x?.[key]) || 0), 0);
+    return (arr || []).map((x) => ({
+      ...x,
+      __pct: total > 0 ? `${Math.round((x[key] / total) * 100)}%` : "0%",
+    }));
+  };
+
+  // Utiliser les données simples calculées
+  const locationPie = attachPiePct(statsData?.locationPie || [], "units");
+  const elecMuscu = attachPiePct(simpleData.typeData || [], "value");
+
+  // Données additionnelles pour graphiques - SIMPLIFIÉES
+  const listingAgeDist = simpleData.ageData || [];
+  const priceHisto = simpleData.priceData || [];
+  const benefitHisto = simpleData.marginData || [];
+  const mixTypology = simpleData.categoryData || [];
+  const scatterData = statsData?.scatterBenefitAge || [];
+  const brandData = simpleData.brandData || [];
+
+  // Helper pour ajouter __pctLabel aux bar charts
+  const withPctLabel = (arr, key = "value") => {
+    const total = (arr || []).reduce((s, x) => s + (Number(x?.[key]) || 0), 0);
+    return (arr || []).map((x) => ({
+      ...x,
+      __pctLabel: total > 0 ? `${Math.round((x[key] / total) * 100)}%` : "0%",
+    }));
+  };
+
+  // Custom tooltip for bar charts
+  const CustomBarTooltip = ({ active, payload }) => {
+    if (!active || !payload?.length) return null;
+    const data = payload[0];
+    return (
+      <div style={{
+        background: "#fff",
+        border: "1px solid #e5e7eb",
+        borderRadius: 8,
+        padding: 10,
+        boxShadow: "0 4px 12px rgba(0,0,0,0.1)",
+      }}>
+        <div style={{ fontWeight: 700, marginBottom: 4 }}>{data.payload.label}</div>
+        <div style={{ fontSize: 13, color: "#6b7280" }}>
+          {data.value} unités ({data.payload.__pctLabel || "0%"})
+        </div>
+      </div>
+    );
+  };
+
+  // Label pour les barres (affiche %)
+  const BarLabelContent = (props) => {
+    const { x, y, width, height, payload } = props;
+    const pct = payload?.__pctLabel;
+    if (!pct) return null;
+    return (
+      <text
+        x={x + width / 2}
+        y={y + height / 2}
+        fill="#111827"
+        textAnchor="middle"
+        dominantBaseline="middle"
+        fontSize={11}
+        fontWeight={700}
+      >
+        {pct}
+      </text>
+    );
+  };
+
+  // Couleur dynamique pour barres
+  const makeDynamicFill = (baseColor) => {
+    const hexToRgb = (hex) => {
+      const h = String(hex || "").replace("#", "").trim();
+      const full = h.length === 3 ? h.split("").map((c) => c + c).join("") : h;
+      const r = parseInt(full.substr(0, 2), 16) || 0;
+      const g = parseInt(full.substr(2, 2), 16) || 0;
+      const b = parseInt(full.substr(4, 2), 16) || 0;
+      return { r, g, b };
+    };
+    
+    const { r, g, b } = hexToRgb(baseColor);
+    return (data, index) => {
+      const totalBars = data.length;
+      const step = index / Math.max(totalBars - 1, 1);
+      const factor = 1 - step * 0.4;
+      const rr = Math.round(r * factor);
+      const gg = Math.round(g * factor);
+      const bb = Math.round(b * factor);
+      return `rgb(${rr}, ${gg}, ${bb})`;
+    };
+  };
+
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(0,0,0,0.5)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        zIndex: 9999,
+        padding: 20,
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          width: "min(1400px, 98vw)",
+          maxHeight: "95vh",
+          overflow: "auto",
+          background: "#fff",
+          borderRadius: 16,
+          boxShadow: "0 20px 60px rgba(0,0,0,0.3)",
+        }}
+      >
+        {/* Header */}
+        <div style={{
+          position: "sticky",
+          top: 0,
+          zIndex: 10,
+          background: "#fff",
+          borderBottom: "1px solid #e5e7eb",
+          padding: 20,
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+        }}>
+          <div>
+            <h2 style={{ margin: 0, fontSize: 24, fontWeight: 900 }}>📊 Tableau de Bord KPI</h2>
+            <div style={{ opacity: 0.7, marginTop: 6, fontSize: 14 }}>
+              {filteredVelosCount} fiches · {totalUnits} unités en stock
+            </div>
+          </div>
+          <button
+            onClick={onClose}
+            style={{
+              border: "1px solid #e5e7eb",
+              background: "#fff",
+              borderRadius: 10,
+              padding: "10px 14px",
+              cursor: "pointer",
+              fontWeight: 800,
+              fontSize: 16,
+            }}
+          >
+            ✕
+          </button>
+        </div>
+
+        {/* Content */}
+        <div style={{ padding: 20 }}>
+          {/* ===== KPI STOCK ===== */}
+          <div style={{ marginBottom: 32 }}>
+            <div style={sectionHeaderStyle}>
+              <span>📦</span>
+              <span>KPI Stock</span>
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 12 }}>
+              <div style={kpiCardStyle}>
+                <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 4 }}>Unités en stock</div>
+                <div style={{ fontSize: 28, fontWeight: 900, color: COLORS.primary }}>{totalUnits}</div>
+                <div style={{ fontSize: 11, opacity: 0.6, marginTop: 4 }}>{kpi.nRows || 0} fiches</div>
+              </div>
+
+              <div style={kpiCardStyle}>
+                <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 4 }}>Valeur du stock</div>
+                <div style={{ fontSize: 28, fontWeight: 900, color: COLORS.teal }}>{fmtEur(stockValueEur)}</div>
+                <div style={{ fontSize: 11, opacity: 0.6, marginTop: 4 }}>prix réduit × unités</div>
+              </div>
+
+              <div style={kpiCardStyle}>
+                <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 4 }}>Durée moy. en ligne</div>
+                <div style={{ fontSize: 28, fontWeight: 900, color: COLORS.purple }}>
+                  {statsData?.avgListingDays ? `${Math.round(statsData.avgListingDays)}j` : "—"}
+                </div>
+                <div style={{ fontSize: 11, opacity: 0.6, marginTop: 4 }}>pondéré par unités</div>
+              </div>
+
+              <div style={kpiCardStyle}>
+                <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 4 }}>Valeur totale du stock</div>
+                <div style={{ fontSize: 28, fontWeight: 900, color: COLORS.purple }}>
+                  {(() => {
+                    let totalBuyValue = 0;
+                    velos.forEach(v => {
+                      const url = v?.URL;
+                      const pricing = pricingByUrl?.[url];
+                      if (pricing) {
+                        const buyPrice = Number(pricing.negotiated_buy_price) || 0;
+                        const units = (() => {
+                          let total = 0;
+                          for (let i = 1; i <= 6; i++) {
+                            const stock = parseInt(v?.[`Stock variant ${i}`]) || 0;
+                            total += stock;
+                          }
+                          return total;
+                        })();
+                        totalBuyValue += buyPrice * units;
+                      }
+                    });
+                    return totalBuyValue > 0 ? `${Math.round(totalBuyValue).toLocaleString()}€` : "—";
+                  })()}
+                </div>
+                <div style={{ fontSize: 11, opacity: 0.6, marginTop: 4 }}>prix d'achat × unités</div>
+              </div>
+            </div>
+
+            {/* Graphiques Stock */}
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 16, marginTop: 16 }}>
+              {/* Répartition Fleeta vs Mint */}
+              <div style={cardStyle}>
+                <div style={{ fontWeight: 700, marginBottom: 12, fontSize: 14 }}>Répartition du stock</div>
+                {locationPie.length > 0 ? (
+                  <>
+                    <div style={{ height: 200 }}>
+                      <ResponsiveContainer>
+                        <PieChart>
+                          <Tooltip content={<CustomPieTooltip />} />
+                          <Pie
+                            data={locationPie}
+                            dataKey="units"
+                            nameKey="name"
+                            innerRadius={50}
+                            outerRadius={80}
+                            paddingAngle={3}
+                            label={(entry) => entry.__pct}
+                          >
+                            {locationPie.map((_, idx) => (
+                              <Cell key={`loc-${idx}`} fill={piePalette[idx % piePalette.length]} />
+                            ))}
+                          </Pie>
+                        </PieChart>
+                      </ResponsiveContainer>
+                    </div>
+                    <div style={{ display: "flex", gap: 12, fontSize: 12, marginTop: 8 }}>
+                      {locationPie.map((x, idx) => (
+                        <div key={x.name} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                          <span style={{
+                            width: 10,
+                            height: 10,
+                            borderRadius: 2,
+                            background: piePalette[idx % piePalette.length],
+                          }} />
+                          <span>{x.name}: <b>{x.units}</b></span>
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                ) : (
+                  <div style={{ opacity: 0.6, fontSize: 13 }}>Aucune donnée disponible</div>
+                )}
+              </div>
+
+              {/* Électrique vs Musculaire */}
+              <div style={cardStyle}>
+                <div style={{ fontWeight: 700, marginBottom: 12, fontSize: 14 }}>Électrique vs Musculaire</div>
+                {elecMuscu.length > 0 ? (
+                  <>
+                    <div style={{ height: 200 }}>
+                      <ResponsiveContainer>
+                        <PieChart>
+                          <Tooltip content={<CustomPieTooltip />} />
+                          <Pie
+                            data={elecMuscu}
+                            dataKey="value"
+                            nameKey="name"
+                            innerRadius={50}
+                            outerRadius={80}
+                            paddingAngle={3}
+                            label={(entry) => entry.__pct}
+                          >
+                            {elecMuscu.map((_, idx) => (
+                              <Cell key={`elec-${idx}`} fill={idx === 0 ? COLORS.mint : COLORS.gray} />
+                            ))}
+                          </Pie>
+                        </PieChart>
+                      </ResponsiveContainer>
+                    </div>
+                    <div style={{ display: "flex", gap: 12, fontSize: 12, marginTop: 8 }}>
+                      {elecMuscu.map((x, idx) => (
+                        <div key={x.name} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                          <span style={{
+                            width: 10,
+                            height: 10,
+                            borderRadius: 2,
+                            background: idx === 0 ? COLORS.mint : COLORS.gray,
+                          }} />
+                          <span>{x.name}: <b>{x.value}</b></span>
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                ) : (
+                  <div style={{ opacity: 0.6, fontSize: 13 }}>Aucune donnée disponible</div>
+                )}
+              </div>
+
+              {/* Top 10 Marques */}
+              <div style={cardStyle}>
+                <div style={{ fontWeight: 700, marginBottom: 12, fontSize: 14 }}>Top 10 Marques</div>
+                {brandData.length > 0 ? (
+                  <div style={{ height: 220 }}>
+                    <ResponsiveContainer>
+                      <BarChart data={withPctLabel(brandData, "value")} layout="vertical">
+                        <XAxis type="number" hide />
+                        <YAxis dataKey="name" type="category" width={100} tick={{ fontSize: 10 }} />
+                        <Tooltip />
+                        <Bar dataKey="value" radius={[0, 6, 6, 0]} label={{ position: 'right', fontSize: 11, fill: '#374151', dataKey: '__pctLabel' }}>
+                          {brandData.map((_, idx) => (
+                            <Cell key={`brand-${idx}`} fill={COLORS.teal} />
+                          ))}
+                        </Bar>
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                ) : (
+                  <div style={{ opacity: 0.6, fontSize: 13 }}>Aucune donnée marque</div>
+                )}
+              </div>
+
+              {/* Par Catégorie */}
+              <div style={cardStyle}>
+                <div style={{ fontWeight: 700, marginBottom: 12, fontSize: 14 }}>Par Catégorie</div>
+                {mixTypology.length > 0 ? (
+                  <div style={{ height: 220 }}>
+                    <ResponsiveContainer>
+                      <BarChart data={withPctLabel(mixTypology, "value")} layout="vertical">
+                        <XAxis type="number" hide />
+                        <YAxis dataKey="name" type="category" width={120} tick={{ fontSize: 10 }} />
+                        <Tooltip />
+                        <Bar dataKey="value" radius={[0, 6, 6, 0]} label={{ position: 'right', fontSize: 11, fill: '#374151', dataKey: '__pctLabel' }}>
+                          {mixTypology.map((_, idx) => (
+                            <Cell key={`typo-${idx}`} fill={COLORS.purple} />
+                          ))}
+                        </Bar>
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                ) : (
+                  <div style={{ opacity: 0.6, fontSize: 13 }}>Aucune donnée catégorie</div>
+                )}
+              </div>
+
+              {/* Durée de mise en ligne */}
+              <div style={cardStyle}>
+                <div style={{ fontWeight: 700, marginBottom: 12, fontSize: 14 }}>Durée de mise en ligne (jours)</div>
+                {listingAgeDist.length > 0 ? (
+                  <div style={{ height: 220 }}>
+                    <ResponsiveContainer>
+                      <BarChart data={withPctLabel(listingAgeDist, "value")}>
+                        <XAxis dataKey="name" tick={{ fontSize: 10 }} />
+                        <YAxis hide />
+                        <Tooltip />
+                        <Bar dataKey="value" radius={[6, 6, 0, 0]} label={{ position: 'top', fontSize: 11, fill: '#374151', dataKey: '__pctLabel' }}>
+                          {listingAgeDist.map((_, idx) => (
+                            <Cell key={`listing-${idx}`} fill={COLORS.primary} />
+                          ))}
+                        </Bar>
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                ) : (
+                  <div style={{ opacity: 0.6, fontSize: 13 }}>Aucune donnée durée</div>
+                )}
+              </div>
+
+              {/* Prix moyen par catégorie */}
+              <div style={cardStyle}>
+                <div style={{ fontWeight: 700, marginBottom: 12, fontSize: 14 }}>Prix moyen par catégorie (€)</div>
+                {statsData?.categoryPrice?.length > 0 ? (
+                  <div style={{ height: 220 }}>
+                    <ResponsiveContainer>
+                      <BarChart data={statsData.categoryPrice} layout="vertical">
+                        <XAxis type="number" tick={{ fontSize: 10 }} />
+                        <YAxis dataKey="category" type="category" width={80} tick={{ fontSize: 10 }} />
+                        <Tooltip
+                          content={({ active, payload }) => {
+                            if (!active || !payload?.length) return null;
+                            return (
+                              <div style={{
+                                background: "#fff",
+                                border: "1px solid #e5e7eb",
+                                borderRadius: 8,
+                                padding: 10,
+                                boxShadow: "0 4px 12px rgba(0,0,0,0.1)",
+                              }}>
+                                <div style={{ fontWeight: 700 }}>{payload[0].payload.category}</div>
+                                <div style={{ fontSize: 13, color: "#6b7280" }}>
+                                  Prix moy: {fmtEur(payload[0].value)}
+                                </div>
+                              </div>
+                            );
+                          }}
+                        />
+                        <Bar dataKey="avgPrice" radius={[0, 6, 6, 0]}>
+                          {(statsData.categoryPrice || []).map((entry, idx) => (
+                            <Cell key={`cat-price-${idx}`} fill={COLORS.blue} />
+                          ))}
+                        </Bar>
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                ) : (
+                  <div style={{ opacity: 0.6, fontSize: 13 }}>Aucune donnée prix par catégorie</div>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* ===== KPI PROMO ===== */}
+          <div style={{ marginBottom: 32 }}>
+            <div style={sectionHeaderStyle}>
+              <span>🏷️</span>
+              <span>KPI Promo</span>
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 12 }}>
+              <div style={kpiCardStyle}>
+                <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 4 }}>Part en promo</div>
+                <div style={{ fontSize: 28, fontWeight: 900, color: COLORS.warn }}>
+                  {kpi.promoPctUnits || 0}%
+                </div>
+                <div style={{ fontSize: 11, opacity: 0.6, marginTop: 4 }}>
+                  {kpi.promoUnits || 0} unités
+                </div>
+              </div>
+
+              <div style={kpiCardStyle}>
+                <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 4 }}>Montant total promos</div>
+                <div style={{ fontSize: 28, fontWeight: 900, color: COLORS.bad }}>
+                  {fmtEur(kpi.promoTotalEur || 0)}
+                </div>
+                <div style={{ fontSize: 11, opacity: 0.6, marginTop: 4 }}>total des réductions</div>
+              </div>
+
+              <div style={kpiCardStyle}>
+                <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 4 }}>Réduc moyenne</div>
+                <div style={{ fontSize: 28, fontWeight: 900, color: COLORS.purple }}>
+                  {fmtEur(kpi.promoAvgEur || 0)}
+                </div>
+                <div style={{ fontSize: 11, opacity: 0.6, marginTop: 4 }}>
+                  max: {fmtEur(kpi.promoMaxEur || 0)}
+                </div>
+              </div>
+            </div>
+
+            {/* Graphiques KPI Promo */}
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 16, marginTop: 16 }}>
+              {/* Moyenne promo par catégorie */}
+              <div style={{ ...chartContainerStyle, minHeight: 300 }}>
+                <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 12, color: "#374151" }}>
+                  Moyenne promo par catégorie
+                </div>
+                {simpleData.promoCategoryData?.length > 0 ? (
+                  <ResponsiveContainer width="100%" height={250}>
+                    <BarChart data={withPctLabel(simpleData.promoCategoryData, "value")} layout="vertical" margin={{ left: 80, right: 60, top: 5, bottom: 5 }}>
+                      <XAxis type="number" tickFormatter={fmtEur} />
+                      <YAxis type="category" dataKey="name" width={70} style={{ fontSize: 11 }} />
+                      <Tooltip formatter={(v, name, props) => `${fmtEur(v)} (${props.payload.units} unités)`} />
+                      <Bar dataKey="value" fill={COLORS.warn} radius={[0, 4, 4, 0]} label={{ position: "right", fontSize: 11, fill: "#374151", dataKey: "__pctLabel" }} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <div style={noDataStyle}>Aucune donnée disponible</div>
+                )}
+              </div>
+
+              {/* Répartition des promos par montant */}
+              <div style={{ ...chartContainerStyle, minHeight: 300 }}>
+                <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 12, color: "#374151" }}>
+                  Répartition des promos par montant
+                </div>
+                {simpleData.promoDistributionData?.length > 0 ? (
+                  <ResponsiveContainer width="100%" height={250}>
+                    <BarChart data={withPctLabel(simpleData.promoDistributionData, "value")} margin={{ top: 20, right: 30, left: 20, bottom: 5 }}>
+                      <XAxis dataKey="name" style={{ fontSize: 11 }} />
+                      <YAxis />
+                      <Tooltip formatter={v => `${v} unités`} />
+                      <Bar dataKey="value" fill={COLORS.purple} radius={[4, 4, 0, 0]} label={{ position: "top", fontSize: 11, fill: "#374151", dataKey: "__pctLabel" }} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <div style={noDataStyle}>Aucune donnée disponible</div>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* ===== KPI PRICING ===== */}
+          <div style={{ marginBottom: 32 }}>
+            <div style={sectionHeaderStyle}>
+              <span>💰</span>
+              <span>KPI Pricing</span>
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 12 }}>
+              <div style={kpiCardStyle}>
+                <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 4 }}>Marge moy. par unité</div>
+                <div style={{
+                  fontSize: 28,
+                  fontWeight: 900,
+                  color: avgBenefitPerUnit < 0 ? COLORS.bad : COLORS.good,
+                }}>
+                  {fmtEur(avgBenefitPerUnit)}
+                </div>
+                <div style={{ fontSize: 11, opacity: 0.6, marginTop: 4 }}>bénéfice pondéré</div>
+              </div>
+
+              <div style={kpiCardStyle}>
+                <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 4 }}>Marge négative</div>
+                <div style={{ fontSize: 28, fontWeight: 900, color: COLORS.bad }}>
+                  {kpi.negPctUnits || 0}%
+                </div>
+                <div style={{ fontSize: 11, opacity: 0.6, marginTop: 4 }}>
+                  {(() => {
+                    let negUnits = 0;
+                    velos.forEach(v => {
+                      const url = v?.URL;
+                      const pricing = pricingByUrl?.[url];
+                      let units = 0;
+                      for (let i = 1; i <= 6; i++) {
+                        units += parseInt(v?.[`Stock variant ${i}`]) || 0;
+                      }
+                      if (pricing && units > 0) {
+                        const priceStr = String(v?.["Prix réduit"] || "0").replace(/[^\d.,]/g, "").replace(",", ".");
+                        const price = parseFloat(priceStr) || 0;
+                        const buy = Number(pricing.negotiated_buy_price) || 0;
+                        const parts = Number(pricing.parts_cost_actual) || 0;
+                        const logistics = Number(pricing.logistics_cost) || 0;
+                        const margin = price - buy - parts - logistics;
+                        if (price > 0 && margin < 0) {
+                          negUnits += units;
+                        }
+                      }
+                    });
+                    return negUnits;
+                  })()} unités
+                </div>
+              </div>
+
+              <div style={kpiCardStyle}>
+                <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 4 }}>Médiane marge</div>
+                <div style={{ fontSize: 28, fontWeight: 900, color: COLORS.teal }}>
+                  {fmtEur(kpi.medBenefit || 0)}
+                </div>
+                <div style={{ fontSize: 11, opacity: 0.6, marginTop: 4 }}>par fiche (non pondéré)</div>
+              </div>
+
+              <div style={kpiCardStyle}>
+                <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 4 }}>Vélos Pricés</div>
+                <div style={{ fontSize: 28, fontWeight: 900, color: COLORS.good }}>
+                  {(() => {
+                    let pricedCount = 0;
+                    let totalCount = 0;
+                    velos.forEach(v => {
+                      const url = v?.URL;
+                      const pricing = pricingByUrl?.[url];
+                      totalCount += 1; // 1 fiche
+                      if (pricing?.best_used_url) {
+                        pricedCount += 1; // 1 fiche
+                      }
+                    });
+                    return totalCount > 0 ? Math.round((pricedCount / totalCount) * 100) : 0;
+                  })()}%
+                </div>
+                <div style={{ fontSize: 11, opacity: 0.6, marginTop: 4 }}>
+                  {(() => {
+                    let pricedCount = 0;
+                    velos.forEach(v => {
+                      const url = v?.URL;
+                      const pricing = pricingByUrl?.[url];
+                      if (pricing?.best_used_url) {
+                        pricedCount += 1; // 1 fiche
+                      }
+                    });
+                    return pricedCount;
+                  })()} fiches avec prix de référence
+                </div>
+              </div>
+            </div>
+
+            {/* Graphiques Pricing */}
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 16, marginTop: 16 }}>
+              {/* Distribution des prix */}
+              <div style={cardStyle}>
+                <div style={{ fontWeight: 700, marginBottom: 12, fontSize: 14 }}>Distribution des prix (€)</div>
+                {priceHisto.length > 0 ? (
+                  <div style={{ height: 220 }}>
+                    <ResponsiveContainer>
+                      <BarChart data={withPctLabel(priceHisto, "value")}>
+                        <XAxis dataKey="name" tick={{ fontSize: 10 }} />
+                        <YAxis hide />
+                        <Tooltip />
+                        <Bar dataKey="value" radius={[6, 6, 0, 0]} label={{ position: 'top', fontSize: 11, fill: '#374151', dataKey: '__pctLabel' }}>
+                          {priceHisto.map((_, idx) => (
+                            <Cell key={`price-${idx}`} fill={COLORS.primary} />
+                          ))}
+                        </Bar>
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                ) : (
+                  <div style={{ opacity: 0.6, fontSize: 13 }}>Aucune donnée prix</div>
+                )}
+              </div>
+
+              {/* Distribution des marges */}
+              <div style={cardStyle}>
+                <div style={{ fontWeight: 700, marginBottom: 12, fontSize: 14 }}>Distribution des marges (€)</div>
+                {benefitHisto.length > 0 ? (
+                  <div style={{ height: 220 }}>
+                    <ResponsiveContainer>
+                      <BarChart data={withPctLabel(benefitHisto, "value")}>
+                        <XAxis dataKey="name" tick={{ fontSize: 10 }} />
+                        <YAxis hide />
+                        <Tooltip />
+                        <Bar dataKey="value" radius={[6, 6, 0, 0]} label={{ position: 'top', fontSize: 11, fill: '#374151', dataKey: '__pctLabel' }}>
+                          {benefitHisto.map((entry, idx) => {
+                            const isNeg = entry.name.includes("-");
+                            return <Cell key={`ben-${idx}`} fill={isNeg ? COLORS.bad : COLORS.good} />;
+                          })}
+                        </Bar>
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                ) : (
+                  <div style={{ opacity: 0.6, fontSize: 13 }}>Aucune donnée marge</div>
+                )}
+              </div>
+
+              {/* Scatter: Marge vs Âge annonce */}
+              <div style={cardStyle}>
+                <div style={{ fontWeight: 700, marginBottom: 12, fontSize: 14 }}>Marge vs Âge de l'annonce (jours)</div>
+                {scatterData.length > 0 ? (
+                  <div style={{ height: 400 }}>
+                    <ResponsiveContainer>
+                      <ComposedChart margin={{ top: 10, right: 10, bottom: 10, left: 10 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                        <XAxis type="number" dataKey="age" name="Âge (j)" tick={{ fontSize: 10 }} domain={[0, 'dataMax']} />
+                        <YAxis type="number" dataKey="benefit" name="Marge (€)" tick={{ fontSize: 10 }} />
+                        <ZAxis range={[20, 100]} />
+                        <Tooltip
+                          cursor={{ strokeDasharray: "3 3" }}
+                          content={({ active, payload }) => {
+                            if (!active || !payload?.length) return null;
+                            const d = payload[0].payload;
+                            if (!d.brand) return null; // Skip target line points
+                            return (
+                              <div style={{
+                                background: "#fff",
+                                border: "1px solid #e5e7eb",
+                                borderRadius: 8,
+                                padding: 10,
+                                boxShadow: "0 4px 12px rgba(0,0,0,0.1)",
+                              }}>
+                                <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 4 }}>
+                                  {d.brand} {d.model} {d.year}
+                                </div>
+                                <div style={{ fontSize: 12, color: "#6b7280" }}>
+                                  Prix: {fmtEur(d.price)}
+                                </div>
+                                <div style={{ fontSize: 12, color: "#6b7280" }}>
+                                  Âge: {d.age}j · Marge: {fmtEur(d.benefit)}
+                                </div>
+                              </div>
+                            );
+                          }}
+                        />
+                        <Line 
+                          data={[
+                            { age: 0, target: 800 },
+                            { age: 90, target: 300 }
+                          ]} 
+                          dataKey="target" 
+                          stroke={COLORS.warn} 
+                          strokeWidth={2} 
+                          dot={false}
+                          name="Objectif marge"
+                          strokeDasharray="5 5"
+                        />
+                        <Scatter data={scatterData} fill={COLORS.purple} />
+                      </ComposedChart>
+                    </ResponsiveContainer>
+                  </div>
+                ) : (
+                  <div style={{ opacity: 0.6, fontSize: 13 }}>Aucune donnée scatter</div>
+                )}
+              </div>
+
+              {/* NOUVEAU: Marge moyenne par marque */}
+              <div style={cardStyle}>
+                <div style={{ fontWeight: 700, marginBottom: 12, fontSize: 14 }}>Marge moyenne par marque (€) - {simpleData.brandMarginData?.length || 0} marques</div>
+                {simpleData.brandMarginData?.length > 0 ? (
+                  <div style={{ height: 400, overflowY: 'auto', overflowX: 'hidden' }}>
+                    <div style={{ height: Math.max(400, simpleData.brandMarginData.length * 30) }}>
+                      <ResponsiveContainer>
+                        <BarChart data={simpleData.brandMarginData} layout="vertical">
+                          <XAxis type="number" tick={{ fontSize: 10 }} />
+                          <YAxis dataKey="name" type="category" width={100} tick={{ fontSize: 10 }} />
+                          <Tooltip 
+                            content={({ active, payload }) => {
+                              if (!active || !payload?.length) return null;
+                              const data = payload[0].payload;
+                              return (
+                                <div style={{
+                                  background: "#fff",
+                                  border: "1px solid #e5e7eb",
+                                  borderRadius: 8,
+                                  padding: 10,
+                                  boxShadow: "0 4px 12px rgba(0,0,0,0.1)",
+                                }}>
+                                  <div style={{ fontWeight: 700 }}>{data.name}</div>
+                                  <div style={{ fontSize: 13, color: "#6b7280" }}>
+                                    Marge moy: {fmtEur(data.avgMargin)}
+                                  </div>
+                                  <div style={{ fontSize: 12, color: "#9ca3af" }}>
+                                    Unités: {data.units}
+                                  </div>
+                                </div>
+                              );
+                            }}
+                          />
+                          <Bar dataKey="avgMargin" radius={[0, 6, 6, 0]}>
+                            {simpleData.brandMarginData.map((entry, idx) => (
+                              <Cell key={`brand-margin-${idx}`} fill={entry.avgMargin < 0 ? COLORS.bad : COLORS.good} />
+                            ))}
+                          </Bar>
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </div>
+                ) : (
+                  <div style={{ opacity: 0.6, fontSize: 13 }}>Aucune donnée de marge disponible</div>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* ===== KPI ACHAT ===== */}
+          <div style={{ marginBottom: 0 }}>
+            <div style={{ ...sectionHeaderStyle, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span>🛒</span>
+                <span>KPI Achat</span>
+              </div>
+              {achatData.availableMonths?.length > 0 && (
+                <select
+                  value={selectedMonth}
+                  onChange={(e) => setSelectedMonth(e.target.value)}
+                  style={{
+                    padding: "6px 12px",
+                    borderRadius: 6,
+                    border: "1px solid #e5e7eb",
+                    fontSize: 13,
+                    fontWeight: 600,
+                    background: "#fff",
+                    cursor: "pointer",
+                    outline: "none"
+                  }}
+                >
+                  {achatData.availableMonths.map(month => {
+                    const [year, monthNum] = month.split('-');
+                    const monthName = new Date(parseInt(year), parseInt(monthNum) - 1, 1).toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' });
+                    return (
+                      <option key={month} value={month}>
+                        {monthName.charAt(0).toUpperCase() + monthName.slice(1)}
+                      </option>
+                    );
+                  })}
+                </select>
+              )}
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 12, marginBottom: 16 }}>
+              <div style={kpiCardStyle}>
+                <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 4 }}>Total achats</div>
+                <div style={{ fontSize: 28, fontWeight: 900, color: COLORS.primary }}>
+                  {achatData.monthlyKPIs[selectedMonth]?.totalAchats || 0}
+                </div>
+                <div style={{ fontSize: 11, opacity: 0.6, marginTop: 4 }}>vélos achetés ce mois</div>
+              </div>
+
+              <div style={kpiCardStyle}>
+                <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 4 }}>Valeur achats</div>
+                <div style={{ fontSize: 28, fontWeight: 900, color: COLORS.teal }}>
+                  {fmtEur(achatData.monthlyKPIs[selectedMonth]?.valeurAchats || 0)}
+                </div>
+                <div style={{ fontSize: 11, opacity: 0.6, marginTop: 4 }}>prix d'achat total</div>
+              </div>
+
+              <div style={kpiCardStyle}>
+                <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 4 }}>Prix moyen d'achat</div>
+                <div style={{ fontSize: 28, fontWeight: 900, color: COLORS.purple }}>
+                  {achatData.monthlyKPIs[selectedMonth]?.prixMoyenAchat 
+                    ? fmtEur(achatData.monthlyKPIs[selectedMonth].prixMoyenAchat)
+                    : "—"}
+                </div>
+                <div style={{ fontSize: 11, opacity: 0.6, marginTop: 4 }}>par vélo</div>
+              </div>
+            </div>
+
+            {/* Graphiques KPI Achat */}
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 16 }}>
+              {/* Nombre d'achats par mois */}
+              <div style={{ ...chartContainerStyle, minHeight: 300 }}>
+                <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 12, color: "#374151" }}>
+                  Nombre d'achats par mois
+                </div>
+                {achatData.purchasesByMonth?.length > 0 ? (
+                  <ResponsiveContainer width="100%" height={250}>
+                    <BarChart data={achatData.purchasesByMonth} margin={{ top: 20, right: 30, left: 20, bottom: 5 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                      <XAxis dataKey="name" style={{ fontSize: 10 }} />
+                      <YAxis />
+                      <Tooltip formatter={v => `${v} achats`} />
+                      <Bar dataKey="value" fill={COLORS.primary} radius={[4, 4, 0, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <div style={noDataStyle}>Aucune donnée disponible</div>
+                )}
+              </div>
+
+              {/* Marge moyenne par mois d'achat */}
+              <div style={{ ...chartContainerStyle, minHeight: 300 }}>
+                <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 12, color: "#374151" }}>
+                  Marge moyenne par mois d'achat
+                </div>
+                {achatData.marginByMonth?.length > 0 ? (
+                  <ResponsiveContainer width="100%" height={250}>
+                    <BarChart data={achatData.marginByMonth} margin={{ top: 20, right: 30, left: 20, bottom: 5 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                      <XAxis dataKey="name" style={{ fontSize: 10 }} />
+                      <YAxis tickFormatter={fmtEur} />
+                      <Tooltip 
+                        formatter={(v, name, props) => `${fmtEur(v)} (${props.payload.count} vélos)`}
+                      />
+                      <Bar dataKey="value" radius={[4, 4, 0, 0]}>
+                        {achatData.marginByMonth.map((entry, idx) => (
+                          <Cell key={`margin-month-${idx}`} fill={entry.value < 0 ? COLORS.bad : COLORS.good} />
+                        ))}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <div style={noDataStyle}>Aucune donnée disponible</div>
+                )}
+              </div>
+
+              {/* NOUVEAU: Marge moyenne par catégorie */}
+              <div style={{ ...chartContainerStyle, minHeight: 300, gridColumn: "1 / -1" }}>
+                <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 12, color: "#374151" }}>
+                  Marge moyenne par catégorie
+                </div>
+                {achatData.marginByCategory?.length > 0 ? (
+                  <ResponsiveContainer width="100%" height={250}>
+                    <BarChart data={achatData.marginByCategory} margin={{ top: 20, right: 30, left: 20, bottom: 5 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                      <XAxis dataKey="name" style={{ fontSize: 10 }} />
+                      <YAxis tickFormatter={fmtEur} />
+                      <Tooltip 
+                        formatter={(value, name, props) => {
+                          const pct = name === "Électrique" ? props.payload.electriquePct : props.payload.musculairePct;
+                          return `${fmtEur(value)} (${pct.toFixed(1)}%)`;
+                        }}
+                      />
+                      <Legend />
+                      <Bar dataKey="electrique" fill="#3b82f6" radius={[4, 4, 0, 0]} name="Électrique">
+                        <LabelList 
+                          dataKey="electriquePct" 
+                          position="top" 
+                          formatter={(value) => `${value.toFixed(1)}%`}
+                          style={{ fontSize: 10, fontWeight: 600, fill: "#3b82f6" }}
+                        />
+                      </Bar>
+                      <Bar dataKey="musculaire" fill="#10b981" radius={[4, 4, 0, 0]} name="Musculaire">
+                        <LabelList 
+                          dataKey="musculairePct" 
+                          position="top" 
+                          formatter={(value) => `${value.toFixed(1)}%`}
+                          style={{ fontSize: 10, fontWeight: 600, fill: "#10b981" }}
+                        />
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <div style={noDataStyle}>Aucune donnée disponible</div>
+                )}
+              </div>
+
+              {/* Marge moyenne par acheteur */}
+              <div style={{ ...chartContainerStyle, minHeight: 300, gridColumn: "1 / -1" }}>
+                <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 12, color: "#374151" }}>
+                  Marge moyenne par acheteur
+                </div>
+                {achatData.marginBySeller?.length > 0 ? (
+                  <ResponsiveContainer width="100%" height={250}>
+                    <BarChart data={achatData.marginBySeller} margin={{ top: 20, right: 30, left: 20, bottom: 5 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                      <XAxis dataKey="name" style={{ fontSize: 10 }} />
+                      <YAxis tickFormatter={fmtEur} />
+                      <Tooltip 
+                        formatter={(v, name, props) => `${fmtEur(v)} (${props.payload.count} vélos)`}
+                      />
+                      <Bar dataKey="value" radius={[4, 4, 0, 0]}>
+                        {achatData.marginBySeller.map((entry, idx) => {
+                          // Couleurs variées pour chaque acheteur
+                          const colors = [COLORS.primary, COLORS.good, COLORS.teal, COLORS.purple, COLORS.pink, COLORS.mint, COLORS.blue, COLORS.warn];
+                          return (
+                            <Cell key={`margin-seller-${idx}`} fill={colors[idx % colors.length]} />
+                          );
+                        })}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <div style={noDataStyle}>Aucune donnée disponible</div>
+                )}
+              </div>
+
+              {/* Marge moyenne par tranche de date de publication */}
+              <div style={{ ...chartContainerStyle, minHeight: 300, gridColumn: "1 / -1" }}>
+                <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 12, color: "#374151" }}>
+                  Marge moyenne par tranche de date de publication
+                </div>
+                {simpleData.publicationMarginData?.length > 0 ? (
+                  <ResponsiveContainer width="100%" height={250}>
+                    <BarChart data={simpleData.publicationMarginData} margin={{ top: 20, right: 30, left: 20, bottom: 5 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                      <XAxis dataKey="name" style={{ fontSize: 10 }} />
+                      <YAxis tickFormatter={fmtEur} />
+                      <Tooltip 
+                        content={(props) => {
+                          if (props.active && props.payload && props.payload.length > 0) {
+                            const data = props.payload[0].payload;
+                            return (
+                              <div style={{
+                                backgroundColor: 'white',
+                                padding: '12px',
+                                border: '1px solid #ccc',
+                                borderRadius: '4px',
+                                boxShadow: '0 2px 8px rgba(0,0,0,0.1)'
+                              }}>
+                                <div style={{ fontWeight: 'bold', marginBottom: '8px' }}>
+                                  Tranche: {props.label}
+                                </div>
+                                <div>Marge moyenne: {fmtEur(data.avgMargin)}</div>
+                                <div>Quantité: {data.units} unités</div>
+                                <div>Part: {data.percentage}%</div>
+                                <div>Valeur totale: {fmtEur(data.sellValue)}</div>
+                                <div>Prix achat moyen: {fmtEur(data.avgBuyPrice)}</div>
+                                <div>Frais pièce moyen: {fmtEur(data.avgParts)}</div>
+                              </div>
+                            );
+                          }
+                          return null;
+                        }}
+                      />
+                      <Bar dataKey="avgMargin" radius={[4, 4, 0, 0]}>
+                        <LabelList 
+                          dataKey="units" 
+                          position="top" 
+                          formatter={(value) => `${value} u.`}
+                          style={{ fontSize: 10, fontWeight: 600, fill: "#000" }}
+                        />
+                        {simpleData.publicationMarginData.map((entry, idx) => {
+                          // Dégradé du vert au rouge selon l'âge (plus vieux = plus rouge)
+                          const greenToRed = (index, total) => {
+                            const ratio = index / (total - 1);
+                            const red = Math.round(ratio * 255);
+                            const green = Math.round((1 - ratio) * 255);
+                            return `rgb(${red}, ${green}, 0)`;
+                          };
+                          return (
+                            <Cell 
+                              key={`pub-margin-${idx}`} 
+                              fill={greenToRed(idx, simpleData.publicationMarginData.length)} 
+                            />
+                          );
+                        })}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <div style={noDataStyle}>Aucune donnée disponible</div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default KPIDashboard;
