@@ -824,6 +824,44 @@ const KPIDashboard = ({ isOpen, onClose, statsData, velos = [], pricingByUrl = {
                 </div>
                 <div style={{ fontSize: 11, opacity: 0.6, marginTop: 4 }}>prix d'achat × unités</div>
               </div>
+
+              <div style={kpiCardStyle}>
+                <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 4 }}>Taux de marge moyen</div>
+                <div style={{ fontSize: 28, fontWeight: 900, color: COLORS.green }}>
+                  {(() => {
+                    let totalMarginWeighted = 0;
+                    let totalSellValueWeighted = 0;
+                    velos.forEach(v => {
+                      const url = v?.URL;
+                      const pricing = pricingByUrl?.[url];
+                      if (pricing) {
+                        const priceStr = String(v?.["Prix réduit"] || "0").replace(/[^\d.,]/g, "").replace(",", ".");
+                        const sellPrice = parseFloat(priceStr) || 0;
+                        const buyPrice = Number(pricing.negotiated_buy_price) || 0;
+                        const parts = Number(pricing.parts_cost_actual) || 0;
+                        const logistics = Number(pricing.logistics_cost) || 0;
+                        const units = (() => {
+                          let total = 0;
+                          for (let i = 1; i <= 6; i++) {
+                            const stock = parseInt(v?.[`Stock variant ${i}`]) || 0;
+                            total += stock;
+                          }
+                          return total;
+                        })();
+                        
+                        if (sellPrice > 0 && units > 0) {
+                          const margin = sellPrice - buyPrice - parts - logistics;
+                          totalMarginWeighted += margin * units;
+                          totalSellValueWeighted += sellPrice * units;
+                        }
+                      }
+                    });
+                    const avgMarginRate = totalSellValueWeighted > 0 ? (totalMarginWeighted / totalSellValueWeighted) * 100 : 0;
+                    return avgMarginRate > 0 ? `${Math.round(avgMarginRate)}%` : "—";
+                  })()}
+                </div>
+                <div style={{ fontSize: 11, opacity: 0.6, marginTop: 4 }}>pondéré par unités</div>
+              </div>
             </div>
 
             {/* Graphiques Stock */}
@@ -1061,6 +1099,118 @@ const KPIDashboard = ({ isOpen, onClose, statsData, velos = [], pricingByUrl = {
                 </div>
                 <div style={{ fontSize: 11, opacity: 0.6, marginTop: 4 }}>
                   max: {fmtEur(kpi.promoMaxEur || 0)}
+                </div>
+              </div>
+
+              <div style={kpiCardStyle}>
+                <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 4 }}>Marge moy. sans promo</div>
+                <div style={{ fontSize: 28, fontWeight: 900, color: (() => {
+                  let totalMarginWeighted = 0;
+                  let totalUnitsWeighted = 0;
+                  velos.forEach(v => {
+                    const url = v?.URL;
+                    const pricing = pricingByUrl?.[url];
+                    if (pricing) {
+                      const priceStr = String(v?.["Prix réduit"] || "0").replace(/[^\d.,]/g, "").replace(",", ".");
+                      const sellPrice = parseFloat(priceStr) || 0;
+                      const mintPromoAmount = Number(pricing.mint_promo_amount) || 0;
+                      const originalPrice = sellPrice + mintPromoAmount; // Prix original avant promos
+                      
+                      const buyPrice = Number(pricing.negotiated_buy_price) || 0;
+                      const parts = Number(pricing.parts_cost_actual) || 0;
+                      const logistics = Number(pricing.logistics_cost) || 0;
+                      
+                      const units = (() => {
+                        let total = 0;
+                        for (let i = 1; i <= 6; i++) {
+                          const stock = parseInt(v?.[`Stock variant ${i}`]) || 0;
+                          total += stock;
+                        }
+                        return total;
+                      })();
+                      
+                      if (originalPrice > 0 && units > 0) {
+                        const margin = originalPrice - buyPrice - parts - logistics;
+                        totalMarginWeighted += margin * units;
+                        totalUnitsWeighted += units;
+                      }
+                    }
+                  });
+                  const avgMarginWithoutPromo = totalUnitsWeighted > 0 ? totalMarginWeighted / totalUnitsWeighted : 0;
+                  return avgMarginWithoutPromo < 0 ? COLORS.bad : COLORS.good;
+                })()} }>
+                  {(() => {
+                    let totalMarginWeighted = 0;
+                    let totalUnitsWeighted = 0;
+                    velos.forEach(v => {
+                      const url = v?.URL;
+                      const pricing = pricingByUrl?.[url];
+                      if (pricing) {
+                        const priceStr = String(v?.["Prix réduit"] || "0").replace(/[^\d.,]/g, "").replace(",", ".");
+                        const sellPrice = parseFloat(priceStr) || 0;
+                        const mintPromoAmount = Number(pricing.mint_promo_amount) || 0;
+                        const originalPrice = sellPrice + mintPromoAmount; // Prix original avant promos
+                        
+                        const buyPrice = Number(pricing.negotiated_buy_price) || 0;
+                        const parts = Number(pricing.parts_cost_actual) || 0;
+                        const logistics = Number(pricing.logistics_cost) || 0;
+                        
+                        const units = (() => {
+                          let total = 0;
+                          for (let i = 1; i <= 6; i++) {
+                            const stock = parseInt(v?.[`Stock variant ${i}`]) || 0;
+                            total += stock;
+                          }
+                          return total;
+                        })();
+                        
+                        if (originalPrice > 0 && units > 0) {
+                          const margin = originalPrice - buyPrice - parts - logistics;
+                          totalMarginWeighted += margin * units;
+                          totalUnitsWeighted += units;
+                        }
+                      }
+                    });
+                    const avgMarginWithoutPromo = totalUnitsWeighted > 0 ? totalMarginWeighted / totalUnitsWeighted : 0;
+                    return `${Math.round(avgMarginWithoutPromo)}€`;
+                  })()}
+                </div>
+                <div style={{ fontSize: 11, opacity: 0.6, marginTop: 4 }}>
+                  prix original avant promo | {(() => {
+                    let totalMarginWeighted = 0;
+                    let totalSellValueWeighted = 0;
+                    velos.forEach(v => {
+                      const url = v?.URL;
+                      const pricing = pricingByUrl?.[url];
+                      if (pricing) {
+                        const priceStr = String(v?.["Prix réduit"] || "0").replace(/[^\d.,]/g, "").replace(",", ".");
+                        const sellPrice = parseFloat(priceStr) || 0;
+                        const mintPromoAmount = Number(pricing.mint_promo_amount) || 0;
+                        const originalPrice = sellPrice + mintPromoAmount;
+                        
+                        const buyPrice = Number(pricing.negotiated_buy_price) || 0;
+                        const parts = Number(pricing.parts_cost_actual) || 0;
+                        const logistics = Number(pricing.logistics_cost) || 0;
+                        
+                        const units = (() => {
+                          let total = 0;
+                          for (let i = 1; i <= 6; i++) {
+                            const stock = parseInt(v?.[`Stock variant ${i}`]) || 0;
+                            total += stock;
+                          }
+                          return total;
+                        })();
+                        
+                        if (originalPrice > 0 && units > 0) {
+                          const margin = originalPrice - buyPrice - parts - logistics;
+                          totalMarginWeighted += margin * units;
+                          totalSellValueWeighted += originalPrice * units;
+                        }
+                      }
+                    });
+                    const avgMarginRate = totalSellValueWeighted > 0 ? (totalMarginWeighted / totalSellValueWeighted) * 100 : 0;
+                    return `${Math.round(avgMarginRate)}%`;
+                  })()}
                 </div>
               </div>
             </div>
