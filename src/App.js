@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
+import React, { useState, useEffect, useMemo, useCallback, useRef, startTransition, useDeferredValue } from "react";
 import { supabase } from "./supabaseClient";
 import Login from "./Login";
 import InventoryList from "./InventoryList";
@@ -252,6 +252,28 @@ const formatPrice = (value) => {
   if (value >= 1000) return (value / 1000).toFixed(1).replace(".0", "") + "k €";
   return value + " €";
 };
+
+// Constantes pour le mode pricing
+const BUYERS = [
+  "",               // permet "vide"
+  "Thibault",
+  "François",
+  "Pierre",
+  "Tom",
+  "Victor",
+  "Hugo",
+  "Gregory",
+  "Autre",
+];
+
+const SELLER_TYPES = [
+  "",               // permet "vide"
+  "Vélociste",
+  "Particulier",
+  "Partenaire",
+  "Fabricant",
+  "Autre",
+];
 
 /** Liste à cocher déroulante réutilisable */
 function MultiSelect({
@@ -1630,6 +1652,18 @@ function App() {
 
   const currentUser = session?.user?.email || "Anonyme";
 
+  // ===== OPTIMISATION PERFORMANCE =====
+  // Détecte si l'onglet est visible pour éviter les calculs lourds en arrière-plan
+  const [isTabVisible, setIsTabVisible] = useState(!document.hidden);
+  
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      setIsTabVisible(!document.hidden);
+    };
+    
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+  }, []);
 
   // Données
   const [velos, setVelos] = useState([]);
@@ -1917,9 +1951,22 @@ useEffect(() => {
 
     // Texte libres
     advanced: {},
+
+    // === FILTRES PRICING ===
+    pricingBuyers: [],           // Liste acheteurs
+    pricingSellerTypes: [],      // Types de vendeur
+    pricingMarginMin: -2000, // Marge minimum (€)
+    pricingMarginMax: 2500, // Marge maximum (€)
+    pricingDateAchatMin: undefined, // Date achat minimum (ISO string)
+    pricingDateAchatMax: undefined, // Date achat maximum (ISO string)
+    pricingBestUsedUrlEmpty: false, // Vélos dont best_used_url est vide
   };
   const [filters, setFilters] = useState(defaultFilters);
   const [sortConfig, setSortConfig] = useState({ key: null, direction: "asc" });
+  
+  // ===== OPTIMISATION: filtre différé pour éviter freeze UI =====
+  const deferredFilters = useDeferredValue(filters);
+  
   const handleShowAlert = useCallback((a) => {
   if (!a) return;
 
@@ -3453,7 +3500,12 @@ const fetchPricingForUrls = async (urls = []) => {
 // ============================
 // MODE PRICING – helpers fiche
 // ============================
+const pricingLoadedRef = useRef(false); // Cache pour éviter les rechargements
+
 useEffect(() => {
+  // Ne charge le pricing que si on est en mode pricing et qu'on ne l'a pas déjà chargé
+  if (!pricingMode || pricingLoadedRef.current) return;
+  
   const loadAllPricing = async () => {
     const { data, error } = await supabase
       .from("mode_pricing")
@@ -3463,11 +3515,12 @@ useEffect(() => {
       const map = {};
       data.forEach((r) => (map[r.mint_url] = r));
       setPricingByUrl(map);
+      pricingLoadedRef.current = true; // Marque comme chargé
     }
   };
 
   loadAllPricing();
-}, []);
+}, [pricingMode]);
 
 // 🔗 Récupère le premier Variant ID dispo (pour lien ERP)
 const getFirstVariantId = (row) => {
@@ -4031,12 +4084,87 @@ const applyAllFilters = (sourceVelos, f = {}) => {
     }
   }
 
+  // === 6) FILTRES PRICING ===
+  // Filtre par acheteur (multi-select)
+  if (f.pricingBuyers && f.pricingBuyers.length > 0) {
+    items = items.filter((v) => {
+      const mintUrl = v?.URL;
+      if (!mintUrl) return false;
+      const pRow = pricingByUrl[mintUrl];
+      if (!pRow) return false;
+      return f.pricingBuyers.includes(pRow.buyer || "");
+    });
+  }
+
+  // Filtre par type de vendeur (multi-select)
+  if (f.pricingSellerTypes && f.pricingSellerTypes.length > 0) {
+    items = items.filter((v) => {
+      const mintUrl = v?.URL;
+      if (!mintUrl) return false;
+      const pRow = pricingByUrl[mintUrl];
+      if (!pRow) return false;
+      return f.pricingSellerTypes.includes(pRow.seller_type || "");
+    });
+  }
+
+  // Filtre par montant de marge (utilise la même fonction que les cartes)
+  if (f.pricingMarginMin !== undefined || f.pricingMarginMax !== undefined) {
+    items = items.filter((v) => {
+      const mintUrl = v?.URL;
+      if (!mintUrl) return true;
+      const pRow = pricingByUrl[mintUrl];
+      if (!pRow) return true;
+      
+      // Utilise la même fonction que l'affichage des cartes
+      const marge = computeCardBenefit(v, pRow);
+      if (marge === null) return true;
+      
+      if (f.pricingMarginMin !== undefined && marge < f.pricingMarginMin) return false;
+      if (f.pricingMarginMax !== undefined && marge > f.pricingMarginMax) return false;
+      return true;
+    });
+  }
+
+  // Filtre par date d'achat (intervalle)
+  if (f.pricingDateAchatMin || f.pricingDateAchatMax) {
+    items = items.filter((v) => {
+      const mintUrl = v?.URL;
+      if (!mintUrl) return true;
+      const pRow = pricingByUrl[mintUrl];
+      if (!pRow || !pRow.purchase_date) return true;
+      
+      const purchaseDate = new Date(pRow.purchase_date).getTime();
+      if (isNaN(purchaseDate)) return true;
+      
+      if (f.pricingDateAchatMin) {
+        const minDate = new Date(f.pricingDateAchatMin).getTime();
+        if (purchaseDate < minDate) return false;
+      }
+      if (f.pricingDateAchatMax) {
+        const maxDate = new Date(f.pricingDateAchatMax).getTime();
+        if (purchaseDate > maxDate) return false;
+      }
+      return true;
+    });
+  }
+
+  // Filtre best_used_url vide
+  if (f.pricingBestUsedUrlEmpty) {
+    items = items.filter((v) => {
+      const mintUrl = v?.URL;
+      if (!mintUrl) return false;
+      const pRow = pricingByUrl[mintUrl];
+      if (!pRow) return false;
+      return !pRow.best_used_url || pRow.best_used_url.trim() === "";
+    });
+  }
+
   return items;
 };
 
   /* -------- Filtrer + Trier (PIPELINE UNIQUE) -------- */
   const filteredAndSortedVelos = useMemo(() => {
-  let items = applyAllFilters(velos, filters); // ← filtrage réutilisable
+  let items = applyAllFilters(velos, deferredFilters); // ← utilise les filtres différés
   
 
   // Tri (on garde ta logique)
@@ -4106,7 +4234,7 @@ if (key === "PRICING_UPDATED_AT") {
   }
 
   return items;
-}, [velos, filters, sortConfig]);
+}, [velos, deferredFilters, sortConfig]);
 
 const pricingDisplayedStockUnits = useMemo(() => {
   return sumTotalStock(filteredAndSortedVelos);
@@ -4117,6 +4245,9 @@ const pricingTotalStockUnits = useMemo(() => {
 }, [velos]);
 
 const statsData = useMemo(() => {
+  // Ne calcule les stats que si l'onglet est visible
+  if (!isTabVisible) return null;
+  
   const list = filteredAndSortedVelos || [];
 // =====================
 // ✅ NOUVELLES MÉTRIQUES (base = unités 📦)
@@ -4507,7 +4638,7 @@ console.log("📊 Stats Debug:", {
 });
 
 return statsResult;
-}, [filteredAndSortedVelos, pricingByUrl]);
+}, [filteredAndSortedVelos, pricingByUrl, isTabVisible]);
 
   /* -------- Utilitaires sélection -------- */
   const toggleSelect = (url) => setSelected((prev) => ({ ...prev, [url]: !prev[url] }));
@@ -6236,27 +6367,6 @@ ${Object.entries(v)
       const logisticsCost = n(pricingRow?.logistics_cost);
       const marketingCost = n(pricingRow?.marketing_cost);
 
-      const BUYERS = [
-  "",               // permet "vide"
-  "Thibault",
-  "François",
-  "Pierre",
-  "Tom",
-  "Victor",
-  "Hugo",
-  "Gregory",
-  "Autre",
-];
-
-      const SELLER_TYPES = [
-  "",               // permet "vide"
-  "Vélociste",            // Vélociste
-  "Particulier",
-  "Partenaire",
-  "Fabricant",
-  "Autre",
-];
-
       const totalCosts =
         (buyPrice ?? 0) + (partsCost ?? 0) + (logisticsCost ?? 0) + (marketingCost ?? 0);
       // =====================================================
@@ -7253,6 +7363,113 @@ ${Object.entries(v)
 
       {/* Contenu scrollable */}
       <div className="advanced-filters-drawer-content">
+
+        {/* === FILTRES PRICING === */}
+        {pricingMode && (
+          <div className="advanced-group group-pricing" style={{
+            background: "linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 100%)",
+            border: "2px solid #0ea5e9",
+            borderRadius: "12px",
+            padding: "16px",
+            marginBottom: "24px"
+          }}>
+            <h3 style={{
+              color: "#0369a1",
+              fontSize: "16px",
+              fontWeight: "800",
+              marginBottom: "16px",
+              display: "flex",
+              alignItems: "center",
+              gap: "8px"
+            }}>
+              <FaPercent /> Filtres Pricing
+            </h3>
+            <div className="advanced-grid">
+
+              {/* Acheteur */}
+              <MultiSelect
+                key="pricing-acheteur"
+                label="Acheteur"
+                options={BUYERS}
+                values={filters.pricingBuyers || []}
+                onChange={(vals) => setFilters({ ...filters, pricingBuyers: vals })}
+              />
+
+              {/* Type de vendeur */}
+              <MultiSelect
+                key="pricing-seller-type"
+                label="Type de vendeur"
+                options={SELLER_TYPES}
+                values={filters.pricingSellerTypes || []}
+                onChange={(vals) => setFilters({ ...filters, pricingSellerTypes: vals })}
+              />
+
+              {/* Marge (slider) */}
+              <div className="filter-block" style={{ minWidth: "240px" }}>
+                <label>Marge commerciale (€)</label>
+                <div style={{ padding: "0 10px" }}>
+                  <Slider
+                    range
+                    min={-2000}
+                    max={2500}
+                    step={50}
+                    value={[
+                      filters.pricingMarginMin ?? -2000,
+                      filters.pricingMarginMax ?? 2500
+                    ]}
+                    onChange={([min, max]) =>
+                      setFilters({ ...filters, pricingMarginMin: min, pricingMarginMax: max })
+                    }
+                  />
+                  <div style={{ display: "flex", justifyContent: "space-between", marginTop: 8 }}>
+                    <span>{filters.pricingMarginMin ?? -2000} €</span>
+                    <span>{filters.pricingMarginMax ?? 2500} €</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Date d'achat - Min */}
+              <div className="filter-adv-item">
+                <label>Date d'achat (min)</label>
+                <input
+                  type="date"
+                  value={filters.pricingDateAchatMin || ""}
+                  onChange={(e) =>
+                    setFilters({ ...filters, pricingDateAchatMin: e.target.value })
+                  }
+                />
+              </div>
+
+              {/* Date d'achat - Max */}
+              <div className="filter-adv-item">
+                <label>Date d'achat (max)</label>
+                <input
+                  type="date"
+                  value={filters.pricingDateAchatMax || ""}
+                  onChange={(e) =>
+                    setFilters({ ...filters, pricingDateAchatMax: e.target.value })
+                  }
+                />
+              </div>
+
+              {/* Best-used-url vide */}
+              <div className="filter-adv-item" style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                <input
+                  type="checkbox"
+                  id="pricing-best-used-empty"
+                  checked={filters.pricingBestUsedUrlEmpty || false}
+                  onChange={(e) =>
+                    setFilters({ ...filters, pricingBestUsedUrlEmpty: e.target.checked })
+                  }
+                />
+                <label htmlFor="pricing-best-used-empty" style={{ margin: 0, cursor: "pointer" }}>
+                  Best-used-url vide
+                </label>
+              </div>
+
+            </div>
+          </div>
+        )}
 
         {/* === Infos générales === */}
         <div className="advanced-group group-infos">
