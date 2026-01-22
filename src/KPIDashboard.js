@@ -2,7 +2,7 @@ import React, { useMemo, useState, useEffect } from "react";
 import { PieChart, Pie, BarChart, Bar, ScatterChart, Scatter, Cell, XAxis, YAxis, Tooltip, ResponsiveContainer, Legend, ZAxis, CartesianGrid, Line, ComposedChart, LabelList } from "recharts";
 import { supabase } from "./supabaseClient";
 
-const KPIDashboard = ({ isOpen, onClose, statsData, velos = [], pricingByUrl = {}, filteredVelosCount }) => {
+const KPIDashboard = ({ isOpen, onClose, statsData, velos = [], inventoryVelos = [], pricingByUrl = {}, filteredVelosCount, stockMode, setStockMode }) => {
   const [inventoryData, setInventoryData] = useState([]);
   const [selectedMonth, setSelectedMonth] = useState("");
 
@@ -44,6 +44,9 @@ const KPIDashboard = ({ isOpen, onClose, statsData, velos = [], pricingByUrl = {
   const simpleData = useMemo(() => {
     // Helper pour compter les unités en stock d'un vélo
     const getStockUnits = (v) => {
+      // Si c'est un vélo inventory, retourner 1
+      if (v._isInventory) return 1;
+      
       let total = 0;
       for (let i = 1; i <= 6; i++) {
         const stock = parseInt(v?.[`Stock variant ${i}`]) || 0;
@@ -52,6 +55,7 @@ const KPIDashboard = ({ isOpen, onClose, statsData, velos = [], pricingByUrl = {
       return total;
     };
 
+    // Note : velos contient déjà les données filtrées selon stockMode via App.js
     // Count par catégorie (en unités)
     const categoryCount = {};
     velos.forEach(v => {
@@ -60,6 +64,81 @@ const KPIDashboard = ({ isOpen, onClose, statsData, velos = [], pricingByUrl = {
       categoryCount[cat] = (categoryCount[cat] || 0) + units;
     });
     const categoryData = Object.entries(categoryCount).map(([name, value]) => ({ name, value }));
+
+    // Count par catégorie avec séparation électrique/musculaire
+    // Lire directement les colonnes Catégorie et Type de vélo depuis velos (combinedVelosForStats)
+    const categoryElecMuscu = {};
+    
+    velos.forEach(v => {
+      const cat = v?.["Catégorie"] || "Non classé";
+      const typeVelo = v?.["Type de vélo"]; // "Électrique" ou "Musculaire"
+      const units = getStockUnits(v);
+      
+      if (!categoryElecMuscu[cat]) {
+        categoryElecMuscu[cat] = { electrique: 0, musculaire: 0 };
+      }
+      
+      if (typeVelo === "Électrique") {
+        categoryElecMuscu[cat].electrique += units;
+      } else if (typeVelo === "Musculaire") {
+        categoryElecMuscu[cat].musculaire += units;
+      }
+    });
+    
+    // Calculer le total général pour les pourcentages
+    const totalGeneral = Object.values(categoryElecMuscu).reduce((sum, counts) => 
+      sum + counts.electrique + counts.musculaire, 0
+    );
+    
+    const categoryElecMuscuData = Object.entries(categoryElecMuscu).map(([name, counts]) => {
+      return {
+        name,
+        electrique: counts.electrique,
+        musculaire: counts.musculaire,
+        electriquePct: totalGeneral > 0 ? (counts.electrique / totalGeneral) * 100 : 0,
+        musculairePct: totalGeneral > 0 ? (counts.musculaire / totalGeneral) * 100 : 0
+      };
+    }).sort((a, b) => (b.electrique + b.musculaire) - (a.electrique + a.musculaire));
+
+    // Prix moyen par catégorie avec séparation électrique/musculaire
+    const categoryPriceElecMuscu = {};
+    
+    velos.forEach(v => {
+      const cat = v?.["Catégorie"] || "Non classé";
+      const typeVelo = v?.["Type de vélo"]; // "Électrique" ou "Musculaire"
+      const units = getStockUnits(v);
+      const priceStr = String(v?.["Prix réduit"] || "0").replace(/[^\d.,]/g, "").replace(",", ".");
+      const price = parseFloat(priceStr) || 0;
+      
+      if (price <= 0 || units <= 0) return;
+      
+      if (!categoryPriceElecMuscu[cat]) {
+        categoryPriceElecMuscu[cat] = { 
+          electrique: { sum: 0, units: 0 }, 
+          musculaire: { sum: 0, units: 0 } 
+        };
+      }
+      
+      if (typeVelo === "Électrique") {
+        categoryPriceElecMuscu[cat].electrique.sum += price * units;
+        categoryPriceElecMuscu[cat].electrique.units += units;
+      } else if (typeVelo === "Musculaire") {
+        categoryPriceElecMuscu[cat].musculaire.sum += price * units;
+        categoryPriceElecMuscu[cat].musculaire.units += units;
+      }
+    });
+    
+    const categoryPriceElecMuscuData = Object.entries(categoryPriceElecMuscu).map(([name, data]) => {
+      const avgElec = data.electrique.units > 0 ? data.electrique.sum / data.electrique.units : 0;
+      const avgMuscu = data.musculaire.units > 0 ? data.musculaire.sum / data.musculaire.units : 0;
+      
+      return {
+        name,
+        électrique: Math.round(avgElec),
+        musculaire: Math.round(avgMuscu)
+      };
+    }).filter(item => item.électrique > 0 || item.musculaire > 0)
+      .sort((a, b) => (b.électrique + b.musculaire) - (a.électrique + a.musculaire));
 
     // Count par marque (en unités)
     const brandCount = {};
@@ -308,6 +387,8 @@ const KPIDashboard = ({ isOpen, onClose, statsData, velos = [], pricingByUrl = {
 
     return { 
       categoryData, 
+      categoryElecMuscuData,
+      categoryPriceElecMuscuData,
       brandData, 
       priceData, 
       typeData, 
@@ -591,6 +672,7 @@ const KPIDashboard = ({ isOpen, onClose, statsData, velos = [], pricingByUrl = {
   const kpi = statsData?.kpi || {};
   const totalUnits = kpi.totalUnits || 0;
   const stockValueEur = statsData?.stockValueEur || 0;
+  const stockValueBuyEur = statsData?.stockValueBuyEur || 0;
   const avgBenefitPerUnit = statsData?.avgBenefitPerUnit || 0;
 
   // Pie palette
@@ -770,6 +852,63 @@ const KPIDashboard = ({ isOpen, onClose, statsData, velos = [], pricingByUrl = {
 
         {/* Content */}
         <div style={{ padding: 20 }}>
+          {/* ===== MODE SELECTOR ===== */}
+          <div style={{ marginBottom: 24, background: "#f9fafb", borderRadius: 12, padding: 16 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 12, opacity: 0.7 }}>
+              Mode d'affichage des KPI
+            </div>
+            <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+              <button
+                onClick={() => setStockMode("vente")}
+                style={{
+                  flex: "1 1 auto",
+                  padding: "12px 20px",
+                  borderRadius: 10,
+                  border: stockMode === "vente" ? "2px solid #2ca76a" : "1px solid #d1d5db",
+                  background: stockMode === "vente" ? "#d1fae5" : "#fff",
+                  cursor: "pointer",
+                  fontWeight: stockMode === "vente" ? 700 : 500,
+                  fontSize: 14,
+                  transition: "all 0.2s",
+                }}
+              >
+                🛒 Vélos en vente
+              </button>
+              <button
+                onClick={() => setStockMode("inventory")}
+                style={{
+                  flex: "1 1 auto",
+                  padding: "12px 20px",
+                  borderRadius: 10,
+                  border: stockMode === "inventory" ? "2px solid #2ca76a" : "1px solid #d1d5db",
+                  background: stockMode === "inventory" ? "#d1fae5" : "#fff",
+                  cursor: "pointer",
+                  fontWeight: stockMode === "inventory" ? 700 : 500,
+                  fontSize: 14,
+                  transition: "all 0.2s",
+                }}
+              >
+                📦 Vélos achetés non MEL
+              </button>
+              <button
+                onClick={() => setStockMode("tous")}
+                style={{
+                  flex: "1 1 auto",
+                  padding: "12px 20px",
+                  borderRadius: 10,
+                  border: stockMode === "tous" ? "2px solid #2ca76a" : "1px solid #d1d5db",
+                  background: stockMode === "tous" ? "#d1fae5" : "#fff",
+                  cursor: "pointer",
+                  fontWeight: stockMode === "tous" ? 700 : 500,
+                  fontSize: 14,
+                  transition: "all 0.2s",
+                }}
+              >
+                🔄 TOUS (vente + achetés)
+              </button>
+            </div>
+          </div>
+
           {/* ===== KPI STOCK ===== */}
           <div style={{ marginBottom: 32 }}>
             <div style={sectionHeaderStyle}>
@@ -785,79 +924,92 @@ const KPIDashboard = ({ isOpen, onClose, statsData, velos = [], pricingByUrl = {
               </div>
 
               <div style={kpiCardStyle}>
-                <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 4 }}>Valeur du stock</div>
+                <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 4 }}>Valeur stock (prix vente)</div>
                 <div style={{ fontSize: 28, fontWeight: 900, color: COLORS.teal }}>{fmtEur(stockValueEur)}</div>
                 <div style={{ fontSize: 11, opacity: 0.6, marginTop: 4 }}>prix réduit × unités</div>
               </div>
 
               <div style={kpiCardStyle}>
-                <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 4 }}>Durée moy. en ligne</div>
-                <div style={{ fontSize: 28, fontWeight: 900, color: COLORS.purple }}>
-                  {statsData?.avgListingDays ? `${Math.round(statsData.avgListingDays)}j` : "—"}
-                </div>
-                <div style={{ fontSize: 11, opacity: 0.6, marginTop: 4 }}>pondéré par unités</div>
+                <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 4 }}>Valeur stock (prix achat)</div>
+                <div style={{ fontSize: 28, fontWeight: 900, color: COLORS.orange }}>{fmtEur(stockValueBuyEur)}</div>
+                <div style={{ fontSize: 11, opacity: 0.6, marginTop: 4 }}>prix achat × unités</div>
               </div>
 
-              <div style={kpiCardStyle}>
-                <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 4 }}>Valeur totale du stock</div>
-                <div style={{ fontSize: 28, fontWeight: 900, color: COLORS.purple }}>
-                  {(() => {
-                    let totalBuyValue = 0;
-                    velos.forEach(v => {
-                      const url = v?.URL;
-                      const pricing = pricingByUrl?.[url];
-                      if (pricing) {
-                        const buyPrice = Number(pricing.negotiated_buy_price) || 0;
-                        const units = (() => {
-                          let total = 0;
-                          for (let i = 1; i <= 6; i++) {
-                            const stock = parseInt(v?.[`Stock variant ${i}`]) || 0;
-                            total += stock;
-                          }
-                          return total;
-                        })();
-                        totalBuyValue += buyPrice * units;
-                      }
-                    });
-                    return totalBuyValue > 0 ? `${Math.round(totalBuyValue).toLocaleString()}€` : "—";
-                  })()}
+              {stockMode === "vente" && (
+                <div style={kpiCardStyle}>
+                  <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 4 }}>Durée moy. en ligne</div>
+                  <div style={{ fontSize: 28, fontWeight: 900, color: COLORS.purple }}>
+                    {statsData?.avgListingDays ? `${Math.round(statsData.avgListingDays)}j` : "—"}
+                  </div>
+                  <div style={{ fontSize: 11, opacity: 0.6, marginTop: 4 }}>pondéré par unités</div>
                 </div>
-                <div style={{ fontSize: 11, opacity: 0.6, marginTop: 4 }}>prix d'achat × unités</div>
-              </div>
+              )}
 
               <div style={kpiCardStyle}>
                 <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 4 }}>Taux de marge moyen</div>
                 <div style={{ fontSize: 28, fontWeight: 900, color: COLORS.green }}>
                   {(() => {
-                    let totalMarginWeighted = 0;
-                    let totalSellValueWeighted = 0;
-                    velos.forEach(v => {
-                      const url = v?.URL;
-                      const pricing = pricingByUrl?.[url];
-                      if (pricing) {
-                        const priceStr = String(v?.["Prix réduit"] || "0").replace(/[^\d.,]/g, "").replace(",", ".");
-                        const sellPrice = parseFloat(priceStr) || 0;
-                        const buyPrice = Number(pricing.negotiated_buy_price) || 0;
-                        const parts = Number(pricing.parts_cost_actual) || 0;
-                        const logistics = Number(pricing.logistics_cost) || 0;
-                        const units = (() => {
-                          let total = 0;
-                          for (let i = 1; i <= 6; i++) {
-                            const stock = parseInt(v?.[`Stock variant ${i}`]) || 0;
-                            total += stock;
+                    // Calculer différemment selon le mode
+                    if (stockMode === "inventory" || stockMode === "tous") {
+                      // Pour inventory : Taux = (avgBenefitPerUnit / prix vente moyen) * 100
+                      let totalSellPrice = 0;
+                      let count = 0;
+                      
+                      velos.forEach(v => {
+                        if (v._isInventory && v._original) {
+                          const inv = v._original;
+                          const prixVente = Number(inv.prix_occasion_marche) || 0;
+                          
+                          if (prixVente > 0) {
+                            totalSellPrice += prixVente;
+                            count += 1;
                           }
-                          return total;
-                        })();
-                        
-                        if (sellPrice > 0 && units > 0) {
-                          const margin = sellPrice - buyPrice - parts - logistics;
-                          totalMarginWeighted += margin * units;
-                          totalSellValueWeighted += sellPrice * units;
+                        } else if (stockMode === "tous") {
+                          // Pour vélos en vente dans mode "tous"
+                          const priceStr = String(v?.["Prix réduit"] || "0").replace(/[^\d.,]/g, "").replace(",", ".");
+                          const sellPrice = parseFloat(priceStr) || 0;
+                          if (sellPrice > 0) {
+                            totalSellPrice += sellPrice;
+                            count += 1;
+                          }
                         }
-                      }
-                    });
-                    const avgMarginRate = totalSellValueWeighted > 0 ? (totalMarginWeighted / totalSellValueWeighted) * 100 : 0;
-                    return avgMarginRate > 0 ? `${Math.round(avgMarginRate)}%` : "—";
+                      });
+                      
+                      const avgSellPrice = count > 0 ? totalSellPrice / count : 0;
+                      const avgMarginRate = avgSellPrice > 0 && avgBenefitPerUnit !== 0 ? (avgBenefitPerUnit / avgSellPrice) * 100 : 0;
+                      return avgMarginRate !== 0 ? `${Math.round(avgMarginRate)}%` : "—";
+                    } else {
+                      // Mode vente : calcul pondéré par unités (logique existante)
+                      let totalMarginWeighted = 0;
+                      let totalSellValueWeighted = 0;
+                      velos.forEach(v => {
+                        const url = v?.URL;
+                        const pricing = pricingByUrl?.[url];
+                        if (pricing) {
+                          const priceStr = String(v?.["Prix réduit"] || "0").replace(/[^\d.,]/g, "").replace(",", ".");
+                          const sellPrice = parseFloat(priceStr) || 0;
+                          const buyPrice = Number(pricing.negotiated_buy_price) || 0;
+                          const parts = Number(pricing.parts_cost_actual) || 0;
+                          const logistics = Number(pricing.logistics_cost) || 0;
+                          const units = (() => {
+                            let total = 0;
+                            for (let i = 1; i <= 6; i++) {
+                              const stock = parseInt(v?.[`Stock variant ${i}`]) || 0;
+                              total += stock;
+                            }
+                            return total;
+                          })();
+                          
+                          if (sellPrice > 0 && units > 0) {
+                            const margin = sellPrice - buyPrice - parts - logistics;
+                            totalMarginWeighted += margin * units;
+                            totalSellValueWeighted += sellPrice * units;
+                          }
+                        }
+                      });
+                      const avgMarginRate = totalSellValueWeighted > 0 ? (totalMarginWeighted / totalSellValueWeighted) * 100 : 0;
+                      return avgMarginRate > 0 ? `${Math.round(avgMarginRate)}%` : "—";
+                    }
                   })()}
                 </div>
                 <div style={{ fontSize: 11, opacity: 0.6, marginTop: 4 }}>pondéré par unités</div>
@@ -979,18 +1131,32 @@ const KPIDashboard = ({ isOpen, onClose, statsData, velos = [], pricingByUrl = {
 
               {/* Par Catégorie */}
               <div style={cardStyle}>
-                <div style={{ fontWeight: 700, marginBottom: 12, fontSize: 14 }}>Par Catégorie</div>
-                {mixTypology.length > 0 ? (
+                <div style={{ fontWeight: 700, marginBottom: 12, fontSize: 14 }}>Quantité par catégorie (Électrique vs Musculaire)</div>
+                {simpleData.categoryElecMuscuData?.length > 0 ? (
                   <div style={{ height: 220 }}>
                     <ResponsiveContainer>
-                      <BarChart data={withPctLabel(mixTypology, "value")} layout="vertical">
+                      <BarChart data={simpleData.categoryElecMuscuData} layout="vertical">
                         <XAxis type="number" hide />
                         <YAxis dataKey="name" type="category" width={120} tick={{ fontSize: 10 }} />
-                        <Tooltip />
-                        <Bar dataKey="value" radius={[0, 6, 6, 0]} label={{ position: 'right', fontSize: 11, fill: '#374151', dataKey: '__pctLabel' }}>
-                          {mixTypology.map((_, idx) => (
-                            <Cell key={`typo-${idx}`} fill={COLORS.purple} />
-                          ))}
+                        <Tooltip 
+                          formatter={(value, name) => `${value} unités`}
+                        />
+                        <Legend />
+                        <Bar dataKey="electrique" fill="#3b82f6" radius={[0, 6, 6, 0]} name="Électrique">
+                          <LabelList 
+                            dataKey="electriquePct" 
+                            position="right" 
+                            formatter={(value) => value > 0 ? `${value.toFixed(0)}%` : ''}
+                            style={{ fontSize: 10, fontWeight: 600, fill: "#3b82f6" }}
+                          />
+                        </Bar>
+                        <Bar dataKey="musculaire" fill="#10b981" radius={[0, 6, 6, 0]} name="Musculaire">
+                          <LabelList 
+                            dataKey="musculairePct" 
+                            position="right" 
+                            formatter={(value) => value > 0 ? `${value.toFixed(0)}%` : ''}
+                            style={{ fontSize: 10, fontWeight: 600, fill: "#10b981" }}
+                          />
                         </Bar>
                       </BarChart>
                     </ResponsiveContainer>
@@ -1001,60 +1167,61 @@ const KPIDashboard = ({ isOpen, onClose, statsData, velos = [], pricingByUrl = {
               </div>
 
               {/* Durée de mise en ligne */}
-              <div style={cardStyle}>
-                <div style={{ fontWeight: 700, marginBottom: 12, fontSize: 14 }}>Durée de mise en ligne (jours)</div>
-                {listingAgeDist.length > 0 ? (
-                  <div style={{ height: 220 }}>
-                    <ResponsiveContainer>
-                      <BarChart data={withPctLabel(listingAgeDist, "value")}>
-                        <XAxis dataKey="name" tick={{ fontSize: 10 }} />
-                        <YAxis hide />
-                        <Tooltip />
-                        <Bar dataKey="value" radius={[6, 6, 0, 0]} label={{ position: 'top', fontSize: 11, fill: '#374151', dataKey: '__pctLabel' }}>
-                          {listingAgeDist.map((_, idx) => (
-                            <Cell key={`listing-${idx}`} fill={COLORS.primary} />
-                          ))}
-                        </Bar>
-                      </BarChart>
-                    </ResponsiveContainer>
-                  </div>
-                ) : (
-                  <div style={{ opacity: 0.6, fontSize: 13 }}>Aucune donnée durée</div>
-                )}
-              </div>
+              {stockMode === "vente" && (
+                <div style={cardStyle}>
+                  <div style={{ fontWeight: 700, marginBottom: 12, fontSize: 14 }}>Durée de mise en ligne (jours)</div>
+                  {listingAgeDist.length > 0 ? (
+                    <div style={{ height: 220 }}>
+                      <ResponsiveContainer>
+                        <BarChart data={withPctLabel(listingAgeDist, "value")}>
+                          <XAxis dataKey="name" tick={{ fontSize: 10 }} />
+                          <YAxis hide />
+                          <Tooltip />
+                          <Bar dataKey="value" radius={[6, 6, 0, 0]} label={{ position: 'top', fontSize: 11, fill: '#374151', dataKey: '__pctLabel' }}>
+                            {listingAgeDist.map((entry, idx) => {
+                              // Dégradé du vert au rouge (sobre)
+                              const colors = ['#10b981', '#34d399', '#fbbf24', '#fb923c', '#ef4444'];
+                              const colorIndex = Math.min(idx, colors.length - 1);
+                              return <Cell key={`listing-${idx}`} fill={colors[colorIndex]} />;
+                            })}
+                          </Bar>
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
+                  ) : (
+                    <div style={{ opacity: 0.6, fontSize: 13 }}>Aucune donnée durée</div>
+                  )}
+                </div>
+              )}
 
               {/* Prix moyen par catégorie */}
               <div style={cardStyle}>
-                <div style={{ fontWeight: 700, marginBottom: 12, fontSize: 14 }}>Prix moyen par catégorie (€)</div>
-                {statsData?.categoryPrice?.length > 0 ? (
+                <div style={{ fontWeight: 700, marginBottom: 12, fontSize: 14 }}>Prix moyen par catégorie (Électrique vs Musculaire)</div>
+                {simpleData.categoryPriceElecMuscuData?.length > 0 ? (
                   <div style={{ height: 220 }}>
                     <ResponsiveContainer>
-                      <BarChart data={statsData.categoryPrice} layout="vertical">
-                        <XAxis type="number" tick={{ fontSize: 10 }} />
-                        <YAxis dataKey="category" type="category" width={80} tick={{ fontSize: 10 }} />
-                        <Tooltip
-                          content={({ active, payload }) => {
-                            if (!active || !payload?.length) return null;
-                            return (
-                              <div style={{
-                                background: "#fff",
-                                border: "1px solid #e5e7eb",
-                                borderRadius: 8,
-                                padding: 10,
-                                boxShadow: "0 4px 12px rgba(0,0,0,0.1)",
-                              }}>
-                                <div style={{ fontWeight: 700 }}>{payload[0].payload.category}</div>
-                                <div style={{ fontSize: 13, color: "#6b7280" }}>
-                                  Prix moy: {fmtEur(payload[0].value)}
-                                </div>
-                              </div>
-                            );
-                          }}
+                      <BarChart data={simpleData.categoryPriceElecMuscuData} layout="vertical">
+                        <XAxis type="number" hide />
+                        <YAxis dataKey="name" type="category" width={120} tick={{ fontSize: 10 }} />
+                        <Tooltip 
+                          formatter={(value, name) => [`${value}€`, name]}
                         />
-                        <Bar dataKey="avgPrice" radius={[0, 6, 6, 0]}>
-                          {(statsData.categoryPrice || []).map((entry, idx) => (
-                            <Cell key={`cat-price-${idx}`} fill={COLORS.blue} />
-                          ))}
+                        <Legend />
+                        <Bar dataKey="électrique" fill="#3b82f6" radius={[0, 6, 6, 0]} name="Électrique">
+                          <LabelList 
+                            dataKey="électrique" 
+                            position="right" 
+                            formatter={(value) => value > 0 ? `${value}€` : ''}
+                            style={{ fontSize: 10, fontWeight: 600, fill: "#3b82f6" }}
+                          />
+                        </Bar>
+                        <Bar dataKey="musculaire" fill="#10b981" radius={[0, 6, 6, 0]} name="Musculaire">
+                          <LabelList 
+                            dataKey="musculaire" 
+                            position="right" 
+                            formatter={(value) => value > 0 ? `${value}€` : ''}
+                            style={{ fontSize: 10, fontWeight: 600, fill: "#10b981" }}
+                          />
                         </Bar>
                       </BarChart>
                     </ResponsiveContainer>
@@ -1067,11 +1234,12 @@ const KPIDashboard = ({ isOpen, onClose, statsData, velos = [], pricingByUrl = {
           </div>
 
           {/* ===== KPI PROMO ===== */}
-          <div style={{ marginBottom: 32 }}>
-            <div style={sectionHeaderStyle}>
-              <span>🏷️</span>
-              <span>KPI Promo</span>
-            </div>
+          {stockMode === "vente" && (
+            <div style={{ marginBottom: 32 }}>
+              <div style={sectionHeaderStyle}>
+                <span>🏷️</span>
+                <span>KPI Promo</span>
+              </div>
 
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 12 }}>
               <div style={kpiCardStyle}>
@@ -1256,6 +1424,7 @@ const KPIDashboard = ({ isOpen, onClose, statsData, velos = [], pricingByUrl = {
               </div>
             </div>
           </div>
+          )}
 
           {/* ===== KPI PRICING ===== */}
           <div style={{ marginBottom: 32 }}>
@@ -1307,14 +1476,6 @@ const KPIDashboard = ({ isOpen, onClose, statsData, velos = [], pricingByUrl = {
                     return negUnits;
                   })()} unités
                 </div>
-              </div>
-
-              <div style={kpiCardStyle}>
-                <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 4 }}>Médiane marge</div>
-                <div style={{ fontSize: 28, fontWeight: 900, color: COLORS.teal }}>
-                  {fmtEur(kpi.medBenefit || 0)}
-                </div>
-                <div style={{ fontSize: 11, opacity: 0.6, marginTop: 4 }}>par fiche (non pondéré)</div>
               </div>
 
               <div style={kpiCardStyle}>
@@ -1405,17 +1566,28 @@ const KPIDashboard = ({ isOpen, onClose, statsData, velos = [], pricingByUrl = {
                 {scatterData.length > 0 ? (
                   <div style={{ height: 400 }}>
                     <ResponsiveContainer>
-                      <ComposedChart margin={{ top: 10, right: 10, bottom: 10, left: 10 }}>
+                      <ScatterChart margin={{ top: 10, right: 10, bottom: 10, left: 10 }}>
                         <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-                        <XAxis type="number" dataKey="age" name="Âge (j)" tick={{ fontSize: 10 }} domain={[0, 'dataMax']} />
-                        <YAxis type="number" dataKey="benefit" name="Marge (€)" tick={{ fontSize: 10 }} />
-                        <ZAxis range={[20, 100]} />
+                        <XAxis 
+                          type="number" 
+                          dataKey="age" 
+                          name="Âge (j)" 
+                          tick={{ fontSize: 10 }}
+                          label={{ value: 'Âge (jours)', position: 'insideBottom', offset: -5, fontSize: 11 }}
+                        />
+                        <YAxis 
+                          type="number" 
+                          dataKey="benefit" 
+                          name="Marge (€)" 
+                          tick={{ fontSize: 10 }}
+                          label={{ value: 'Marge (€)', angle: -90, position: 'insideLeft', fontSize: 11 }}
+                        />
+                        <ZAxis type="number" dataKey="units" range={[20, 120]} name="Stock" />
                         <Tooltip
                           cursor={{ strokeDasharray: "3 3" }}
                           content={({ active, payload }) => {
                             if (!active || !payload?.length) return null;
                             const d = payload[0].payload;
-                            if (!d.brand) return null; // Skip target line points
                             return (
                               <div style={{
                                 background: "#fff",
@@ -1425,7 +1597,10 @@ const KPIDashboard = ({ isOpen, onClose, statsData, velos = [], pricingByUrl = {
                                 boxShadow: "0 4px 12px rgba(0,0,0,0.1)",
                               }}>
                                 <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 4 }}>
-                                  {d.brand} {d.model} {d.year}
+                                  {d.brand} {d.model}
+                                </div>
+                                <div style={{ fontSize: 12, color: "#6b7280" }}>
+                                  Année: {d.year}
                                 </div>
                                 <div style={{ fontSize: 12, color: "#6b7280" }}>
                                   Prix: {fmtEur(d.price)}
@@ -1437,20 +1612,36 @@ const KPIDashboard = ({ isOpen, onClose, statsData, velos = [], pricingByUrl = {
                             );
                           }}
                         />
-                        <Line 
-                          data={[
-                            { age: 0, target: 800 },
-                            { age: 90, target: 300 }
-                          ]} 
-                          dataKey="target" 
-                          stroke={COLORS.warn} 
-                          strokeWidth={2} 
-                          dot={false}
-                          name="Objectif marge"
-                          strokeDasharray="5 5"
-                        />
-                        <Scatter data={scatterData} fill={COLORS.purple} />
-                      </ComposedChart>
+                        <Scatter data={scatterData}>
+                          {scatterData.map((entry, index) => {
+                            // Calcul d'un score : haut gauche (jeune + bonne marge) = vert, bas droite (vieux + faible marge) = rouge
+                            // Normaliser age (0-150 jours) et benefit (-500 à +1500€)
+                            const ageNorm = Math.min(entry.age / 150, 1); // 0 = jeune, 1 = vieux
+                            const benefitNorm = Math.max(0, Math.min((entry.benefit + 500) / 2000, 1)); // 0 = mauvais, 1 = bon
+                            
+                            // Score combiné : 70% marge, 30% âge
+                            const score = (1 - ageNorm) * 0.3 + benefitNorm * 0.7;
+                            
+                            // Interpolation de couleur rouge -> orange -> jaune -> vert
+                            let color;
+                            if (score < 0.33) {
+                              // Rouge à orange
+                              const t = score / 0.33;
+                              color = `rgb(${239}, ${Math.round(68 + (146 * t))}, 68)`;
+                            } else if (score < 0.66) {
+                              // Orange à jaune/vert
+                              const t = (score - 0.33) / 0.33;
+                              color = `rgb(${Math.round(251 - (61 * t))}, ${Math.round(146 + (157 * t))}, ${Math.round(68 + (81 * t))})`;
+                            } else {
+                              // Vert
+                              const t = (score - 0.66) / 0.34;
+                              color = `rgb(${Math.round(190 - (174 * t))}, ${Math.round(303 - (92 * t))}, ${Math.round(149 - (65 * t))})`;
+                            }
+                            
+                            return <Cell key={`cell-${index}`} fill={color} />;
+                          })}
+                        </Scatter>
+                      </ScatterChart>
                     </ResponsiveContainer>
                   </div>
                 ) : (

@@ -408,7 +408,7 @@ const applyMulti = (list, field, selected) => {
   const realValues = new Set(
     selected
       .filter((v) => v !== EMPTY_TOKEN)
-      .map((s) => String(s).trim())
+      .map((s) => cleanText(s))
   );
 
   return list.filter((row) => {
@@ -420,7 +420,7 @@ const applyMulti = (list, field, selected) => {
 
     // Sinon, si des valeurs réelles sont cochées, on teste l’inclusion
     if (realValues.size > 0) {
-      const val = String(raw ?? "").trim();
+      const val = cleanText(raw);
       if (!val) return false;
       return realValues.has(val);
     }
@@ -1667,6 +1667,8 @@ function App() {
 
   // Données
   const [velos, setVelos] = useState([]);
+  const [inventoryVelos, setInventoryVelos] = useState([]); // Vélos achetés non MEL
+  const [stockMode, setStockMode] = useState("vente"); // "vente" | "inventory" | "tous"
 
   // Sélection / UI
   const [selected, setSelected] = useState({});
@@ -1946,6 +1948,12 @@ useEffect(() => {
   nbPlateaux: [],
   denturePlateaux: [],
   dentureCassette: [],
+  derailleursAvant: [],
+  derailleursArriere: [],
+  chaines: [],
+  vitessesMax: [],
+  autonomies: [],
+  cyclesBatterie: [],
   
     
 
@@ -3911,8 +3919,23 @@ useEffect(() => {
       }
       const velosFetched = data || [];
       setVelos(velosFetched);
-         };
+    };
+    
+    const fetchInventory = async () => {
+      const { data, error } = await supabase
+        .from("inventory")
+        .select("*")
+        .neq("status", "publie"); // Seulement les vélos non publiés
+      if (error) {
+        console.error("Erreur chargement inventory:", error);
+        setInventoryVelos([]);
+        return;
+      }
+      setInventoryVelos(data || []);
+    };
+    
     fetchVelos();
+    fetchInventory();
     fetchLastUpdate();
   }, []);
 
@@ -4236,6 +4259,40 @@ if (key === "PRICING_UPDATED_AT") {
   return items;
 }, [velos, deferredFilters, sortConfig]);
 
+// =========================
+// 📊 Liste combinée selon stockMode
+// =========================
+const combinedVelosForStats = useMemo(() => {
+  if (stockMode === "vente") {
+    return filteredAndSortedVelos;
+  } else if (stockMode === "inventory") {
+    // Convertir inventory au format velosmint
+    return inventoryVelos.map(inv => ({
+      "Catégorie": inv.type_velo,
+      "Type de vélo": inv.is_vae ? "Électrique" : "Musculaire",
+      "Marque": inv.marque,
+      "Modèle": inv.modele,
+      "Prix réduit": inv.prix_occasion_marche,
+      "Stock variant 1": 1,
+      "_isInventory": true,
+      "_original": inv
+    }));
+  } else {
+    // Mode "tous" : combiner filteredAndSortedVelos + inventory
+    const inventoryAsVelos = inventoryVelos.map(inv => ({
+      "Catégorie": inv.type_velo,
+      "Type de vélo": inv.is_vae ? "Électrique" : "Musculaire",
+      "Marque": inv.marque,
+      "Modèle": inv.modele,
+      "Prix réduit": inv.prix_occasion_marche,
+      "Stock variant 1": 1,
+      "_isInventory": true,
+      "_original": inv
+    }));
+    return [...filteredAndSortedVelos, ...inventoryAsVelos];
+  }
+}, [filteredAndSortedVelos, inventoryVelos, stockMode]);
+
 const pricingDisplayedStockUnits = useMemo(() => {
   return sumTotalStock(filteredAndSortedVelos);
 }, [filteredAndSortedVelos]);
@@ -4248,6 +4305,8 @@ const statsData = useMemo(() => {
   // Ne calcule les stats que si l'onglet est visible
   if (!isTabVisible) return null;
   
+  // Les stats détaillées ne fonctionnent que pour les vélos en vente
+  // car ils ont pricing, Published At, etc.
   const list = filteredAndSortedVelos || [];
 // =====================
 // ✅ NOUVELLES MÉTRIQUES (base = unités 📦)
@@ -4413,14 +4472,41 @@ const listingAgeDist = bucketizeWeighted(listingAges, listingAgeUnits, ageBins);
 // =====================
 // ✅ MIX TYPOLOGIE / ELEC-MUSCU (unités)
 // =====================
-const mixTypology = Object.entries(typologyUnits)
+// Recalculer pour le mode sélectionné
+let finalTypologyUnits = typologyUnits;
+let finalElecUnits = elecUnits;
+let finalMuscuUnits = muscuUnits;
+let finalUnknownPowerUnits = unknownPowerUnits;
+
+if (stockMode !== "vente") {
+  // Recalculer avec combinedVelosForStats
+  finalTypologyUnits = {};
+  finalElecUnits = 0;
+  finalMuscuUnits = 0;
+  finalUnknownPowerUnits = 0;
+  
+  for (const v of combinedVelosForStats) {
+    const units = getRowTotalStock(v);
+    if (!Number.isFinite(units) || units <= 0) continue;
+    
+    const typ = normalizeTypology(v?.["Catégorie"], v?.["Type de vélo"]);
+    finalTypologyUnits[typ] = (finalTypologyUnits[typ] ?? 0) + units;
+    
+    const power = String(v?.["Type de vélo"] ?? "").toUpperCase();
+    if (power.includes("ELECT")) finalElecUnits += units;
+    else if (power.includes("MUSC")) finalMuscuUnits += units;
+    else finalUnknownPowerUnits += units;
+  }
+}
+
+const mixTypology = Object.entries(finalTypologyUnits)
   .map(([name, units]) => ({ name, units }))
   .filter((x) => x.units > 0);
 
 const elecMuscu = [
-  { name: "Électrique", units: elecUnits },
-  { name: "Musculaire", units: muscuUnits },
-  { name: "Inconnu", units: unknownPowerUnits },
+  { name: "Électrique", units: finalElecUnits },
+  { name: "Musculaire", units: finalMuscuUnits },
+  { name: "Inconnu", units: finalUnknownPowerUnits },
 ].filter((x) => x.units > 0);
 
 // =====================
@@ -4490,24 +4576,40 @@ if (Number.isFinite(promo) && promo > 0) {
 
   const b = getSaleBreakdownFromModePricing(v, pr);
   if (!b) continue;
-// ✅ Scatter: X = jours depuis mise en ligne, Y = marge €/unité
-const dListing = daysSince(v?.["Published At"]);
-const mUnit = Number(b?.margin); // marge €/unité (ton breakdown est déjà par unité)
+  
+  // ✅ Scatter: X = jours depuis mise en ligne (Published At), Y = marge €/unité
+  const publishedAt = v?.["Published At"];
+  const dListing = daysSince(publishedAt);
+  const mUnit = b.margin; // marge €/unité
 
-if (Number.isFinite(dListing) && Number.isFinite(mUnit)) {
-  marginAgeScatter.push({
-    age: dListing,
-    benefit: mUnit,
-    units,
-    brand: v?.["Marque"] || "Inconnue",
-    model: v?.["Modèle"] || "",
-    year: v?.["Année"] || "",
-    title: v?.Title || v?.["Title"] || "",
-    url: v?.URL || "",
-    price: Number(v?.["Prix réduit"] ?? NaN),
-    promo: Number(pr?.mint_promo_amount ?? 0),
-  });
-}
+  if (Number.isFinite(dListing) && dListing >= 0 && Number.isFinite(mUnit)) {
+    const point = {
+      age: dListing,
+      benefit: mUnit,
+      units,
+      brand: v?.["Marque"] || "Inconnue",
+      model: v?.["Modèle"] || "",
+      year: v?.["Année"] || "",
+      title: v?.Title || v?.["Title"] || "",
+      url: v?.URL || "",
+      price: b.sale,
+      promo: Number(pr?.mint_promo_amount ?? 0),
+    };
+    
+    // Debug: afficher quelques points
+    if (marginAgeScatter.length < 5) {
+      console.log("📍 Scatter point:", {
+        publishedAt,
+        age: dListing,
+        benefit: mUnit,
+        brand: point.brand,
+        model: point.model,
+        url: point.url
+      });
+    }
+    
+    marginAgeScatter.push(point);
+  }
 
   saleTot += b.sale * units;
   buyTot += b.buy * units;
@@ -4533,12 +4635,40 @@ const saleBreakdownPie = saleTot > 0 ? [
   ...(marginNonNegTot > 0 ? [{ name: "Marge", value: marginNonNegTot }] : []),
 ] : [];
 
-
-const locationPie = [
-  { name: "Fleeta (MPE)", units: partnerUnits },
-  { name: "Mint Bikes", units: onsiteUnits },
-  { name: "Inconnu", units: unknownUnits },
-].filter((x) => x.units > 0);
+// Calculer locationPie selon le mode
+let locationPie = [];
+if (stockMode === "vente") {
+  locationPie = [
+    { name: "Fleeta (MPE)", units: partnerUnits },
+    { name: "Mint Bikes", units: onsiteUnits },
+    { name: "Inconnu", units: unknownUnits },
+  ].filter((x) => x.units > 0);
+} else if (stockMode === "inventory" || stockMode === "tous") {
+  // Pour inventory : compter les serial_number qui commencent par "MPE"
+  let inventoryPartnerUnits = 0;
+  let inventoryOnsiteUnits = 0;
+  
+  for (const v of combinedVelosForStats) {
+    if (v._isInventory && v._original) {
+      const serial = String(v._original.serial_number || "").trim().toUpperCase();
+      if (serial.startsWith("MPE")) {
+        inventoryPartnerUnits += 1;
+      } else if (serial) {
+        inventoryOnsiteUnits += 1;
+      }
+    } else if (stockMode === "tous") {
+      // Pour mode "tous", ajouter aussi les vélos en vente
+      const split = getRowLocationSplitUnits(v);
+      inventoryPartnerUnits += split.partner;
+      inventoryOnsiteUnits += split.onsite;
+    }
+  }
+  
+  locationPie = [
+    { name: "Fleeta (MPE)", units: inventoryPartnerUnits },
+    { name: "Mint Bikes", units: inventoryOnsiteUnits },
+  ].filter((x) => x.units > 0);
+}
 
 // NOUVEAU : Marge moyenne par marque
 const brandBenefitMap = {};
@@ -4567,7 +4697,8 @@ const brandBenefit = Object.entries(brandBenefitMap)
 
 // NOUVEAU : Prix moyen par catégorie
 const categoryPriceMap = {};
-for (const v of list) {
+const listForCategoryPrice = stockMode === "vente" ? list : combinedVelosForStats;
+for (const v of listForCategoryPrice) {
   const units = getRowTotalStock(v);
   if (!units || units <= 0) continue;
   
@@ -4594,35 +4725,92 @@ const categoryPrice = Object.entries(categoryPriceMap)
   const statsResult = {
   priceHisto,
   benefitHisto,
-  locationPie, // ✅ AJOUT : sinon le graph est toujours vide
+  locationPie, // Calculé dynamiquement selon stockMode
   kpi: {
-    totalUnits,
-    negPctUnits,
-    medBenefit,
-    repricingPctUnits,
-    nRows: list.length,
-    partnerUnits,
-    onsiteUnits,
-    unknownUnits,
-    promoPctUnits,
-promoUnits,
-promoTotalEur,
-promoAvgEur,
-promoMaxEur,
+    totalUnits: stockMode === "vente" ? totalUnits : sumTotalStock(combinedVelosForStats),
+    negPctUnits: stockMode === "vente" ? negPctUnits : 0,
+    medBenefit: stockMode === "vente" ? medBenefit : null,
+    repricingPctUnits: stockMode === "vente" ? repricingPctUnits : 0,
+    nRows: stockMode === "vente" ? list.length : combinedVelosForStats.length,
+    partnerUnits: stockMode === "vente" ? partnerUnits : 0,
+    onsiteUnits: stockMode === "vente" ? onsiteUnits : 0,
+    unknownUnits: stockMode === "vente" ? unknownUnits : 0,
+    promoPctUnits: stockMode === "vente" ? promoPctUnits : 0,
+    promoUnits: stockMode === "vente" ? promoUnits : 0,
+    promoTotalEur: stockMode === "vente" ? promoTotalEur : 0,
+    promoAvgEur: stockMode === "vente" ? promoAvgEur : 0,
+    promoMaxEur: stockMode === "vente" ? promoMaxEur : 0,
   },
-  saleBreakdownPie,
-saleTotals: { saleTot, buyTot, partsTot, logisticsTot, marginTot },
-stockValueEur,
-  avgListingDays,
-  avgBenefitPerUnit,
+  saleBreakdownPie: stockMode === "vente" ? saleBreakdownPie : [],
+saleTotals: stockMode === "vente" ? { saleTot, buyTot, partsTot, logisticsTot, marginTot } : { saleTot: 0, buyTot: 0, partsTot: 0, logisticsTot: 0, marginTot: 0 },
+stockValueEur: stockMode === "vente" ? stockValueEur : (() => {
+  // Calculer stockValue pour inventory/tous : somme des prix_occasion_marche (prix de vente estimé)
+  let total = 0;
+  for (const v of combinedVelosForStats) {
+    if (v._isInventory && v._original) {
+      // Pour inventory : utiliser prix_occasion_marche (prix de vente estimé)
+      const prixVente = Number(v._original.prix_occasion_marche) || 0;
+      total += prixVente; // Chaque ligne = 1 unité
+    } else {
+      // Pour vélos en vente (mode "tous")
+      const units = getRowTotalStock(v);
+      const price = parseNumericValue(v?.["Prix réduit"]);
+      if (Number.isFinite(price) && Number.isFinite(units)) {
+        total += price * units;
+      }
+    }
+  }
+  return total;
+})(),
+stockValueBuyEur: stockMode === "vente" ? buyTot : (() => {
+  // Calculer valeur au prix d'achat pour inventory/tous
+  let total = 0;
+  for (const v of combinedVelosForStats) {
+    if (v._isInventory && v._original) {
+      // Pour inventory : utiliser prix_achat_negocie (prix d'achat)
+      const prixAchat = Number(v._original.prix_achat_negocie) || 0;
+      total += prixAchat; // Chaque ligne = 1 unité
+    } else {
+      // Pour vélos en vente : utiliser buyTot si disponible via pricing
+      const units = getRowTotalStock(v);
+      const pr = pricingByUrl?.[v?.URL];
+      const b = getSaleBreakdownFromModePricing(v, pr);
+      if (b && Number.isFinite(b.buy) && Number.isFinite(units)) {
+        total += b.buy * units;
+      }
+    }
+  }
+  return total;
+})(),
+  avgListingDays: stockMode === "vente" ? avgListingDays : null,
+  avgBenefitPerUnit: stockMode === "vente" ? avgBenefitPerUnit : (() => {
+    // Pour inventory : marge = prix_occasion_marche - prix_achat_negocie - frais_pieces_estimes
+    if (stockMode === "inventory" || stockMode === "tous") {
+      let totalBenefit = 0;
+      let totalUnits = 0;
+      for (const v of combinedVelosForStats) {
+        if (v._isInventory) {
+          const inv = v._original;
+          const prixVente = Number(inv.prix_occasion_marche) || 0;
+          const prixAchat = Number(inv.prix_achat_negocie) || 0;
+          const fraisPieces = Number(inv.frais_pieces_estimes) || 0;
+          const marge = prixVente - prixAchat - fraisPieces;
+          totalBenefit += marge;
+          totalUnits += 1;
+        }
+      }
+      return totalUnits > 0 ? totalBenefit / totalUnits : null;
+    }
+    return null;
+  })(),
 
-  listingAgeDist,
+  listingAgeDist: stockMode === "vente" ? listingAgeDist : [],
   mixTypology,
   elecMuscu,
-  marginAgeScatter,
-  brandBenefit,
+  marginAgeScatter: stockMode === "vente" ? marginAgeScatter : [],
+  brandBenefit: stockMode === "vente" ? brandBenefit : [],
   categoryPrice,
-  scatterBenefitAge: marginAgeScatter,
+  scatterBenefitAge: stockMode === "vente" ? marginAgeScatter : [],
 };
 
 console.log("📊 Stats Debug:", {
@@ -4638,7 +4826,7 @@ console.log("📊 Stats Debug:", {
 });
 
 return statsResult;
-}, [filteredAndSortedVelos, pricingByUrl, isTabVisible]);
+}, [filteredAndSortedVelos, pricingByUrl, isTabVisible, stockMode, combinedVelosForStats]);
 
   /* -------- Utilitaires sélection -------- */
   const toggleSelect = (url) => setSelected((prev) => ({ ...prev, [url]: !prev[url] }));
@@ -10097,9 +10285,12 @@ const objTotalForCatMar = objectiveTotal * multCategory * multSize;
     isOpen={statsOpen}
     onClose={() => setStatsOpen(false)}
     statsData={statsData}
-    velos={filteredAndSortedVelos}
+    velos={combinedVelosForStats}
+    inventoryVelos={inventoryVelos}
     pricingByUrl={pricingByUrl}
     filteredVelosCount={filteredAndSortedVelos.length}
+    stockMode={stockMode}
+    setStockMode={setStockMode}
   />
   </>
   );

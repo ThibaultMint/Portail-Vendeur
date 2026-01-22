@@ -8,6 +8,9 @@ const InventoryList = ({ isOpen, onClose, onCountChange }) => {
   const [loading, setLoading] = useState(true);
   const [showPublished, setShowPublished] = useState(false);
   const [copiedSerial, setCopiedSerial] = useState(null);
+  const [editingSerial, setEditingSerial] = useState(null);
+  const [editingData, setEditingData] = useState({});
+  const [hoveredRow, setHoveredRow] = useState(null);
   const [filters, setFilters] = useState({
     marque: "",
     type_velo: "",
@@ -78,8 +81,12 @@ const InventoryList = ({ isOpen, onClose, onCountChange }) => {
       const serialsToUpdate = [];
       (data || []).forEach(item => {
         const serial = item.serial_number ? String(item.serial_number).trim() : null;
-        if (serial && publishedSerialsSet.has(serial) && item.status !== 'publie') {
-          serialsToUpdate.push(serial);
+        if (serial && item.status !== 'publie') {
+          // Vérifier si le numéro de série existe tel quel OU avec "MPE" devant
+          const serialWithMPE = `MPE${serial}`;
+          if (publishedSerialsSet.has(serial) || publishedSerialsSet.has(serialWithMPE)) {
+            serialsToUpdate.push(serial);
+          }
         }
       });
       
@@ -97,8 +104,12 @@ const InventoryList = ({ isOpen, onClose, onCountChange }) => {
       // Mettre à jour le statut localement
       const updatedData = (data || []).map(item => {
         const serial = item.serial_number ? String(item.serial_number).trim() : null;
-        if (serial && publishedSerialsSet.has(serial)) {
-          return { ...item, status: 'publie' };
+        if (serial) {
+          // Vérifier si le numéro de série existe tel quel OU avec "MPE" devant
+          const serialWithMPE = `MPE${serial}`;
+          if (publishedSerialsSet.has(serial) || publishedSerialsSet.has(serialWithMPE)) {
+            return { ...item, status: 'publie' };
+          }
         }
         return item;
       });
@@ -133,6 +144,53 @@ const InventoryList = ({ isOpen, onClose, onCountChange }) => {
       console.error("Erreur mise à jour statut:", error);
       alert("Erreur lors de la mise à jour du statut");
     }
+  };
+
+  const startEditing = (item) => {
+    setEditingSerial(item.serial_number);
+    setEditingData({ ...item });
+  };
+
+  const saveEdit = async () => {
+    try {
+      const { error } = await supabase
+        .from("inventory")
+        .update({
+          marque: editingData.marque,
+          modele: editingData.modele,
+          taille: editingData.taille,
+          annee_affichee: editingData.annee_affichee,
+          type_velo: editingData.type_velo,
+          is_vae: editingData.is_vae,
+          vae_kilometrage: editingData.vae_kilometrage,
+          prix_achat_negocie: editingData.prix_achat_negocie,
+          date_achat: editingData.date_achat,
+          prix_occasion_marche: editingData.prix_occasion_marche,
+        })
+        .eq("serial_number", editingSerial);
+
+      if (error) throw error;
+
+      // Mettre à jour l'état local
+      setInventory(prev =>
+        prev.map(item =>
+          item.serial_number === editingSerial
+            ? { ...item, ...editingData }
+            : item
+        )
+      );
+      
+      setEditingSerial(null);
+      setEditingData({});
+    } catch (error) {
+      console.error("Erreur mise à jour:", error);
+      alert("Erreur lors de la mise à jour");
+    }
+  };
+
+  const cancelEdit = () => {
+    setEditingSerial(null);
+    setEditingData({});
   };
 
   const filteredInventory = inventory.filter((item) => {
@@ -288,57 +346,222 @@ const InventoryList = ({ isOpen, onClose, onCountChange }) => {
                 </tr>
               </thead>
               <tbody>
-                {filteredInventory.map((item, idx) => (
-                  <tr key={idx}>
-                    <td 
-                      className="serial-number"
-                      onClick={() => {
-                        if (item.serial_number) {
-                          navigator.clipboard.writeText(item.serial_number);
-                          setCopiedSerial(item.serial_number);
-                          setTimeout(() => setCopiedSerial(null), 800);
-                        }
-                      }}
-                      style={{ cursor: item.serial_number ? 'pointer' : 'default' }}
-                      title="Cliquer pour copier"
+                {filteredInventory.map((item, idx) => {
+                  const isEditing = editingSerial === item.serial_number;
+                  const isHovered = hoveredRow === idx;
+                  
+                  return (
+                    <tr 
+                      key={idx}
+                      onMouseEnter={() => setHoveredRow(idx)}
+                      onMouseLeave={() => setHoveredRow(null)}
+                      style={{ position: 'relative' }}
                     >
-                      {copiedSerial === item.serial_number ? '✓ Copié !' : (item.serial_number || "-")}
-                    </td>
-                    <td>{item.marque || "-"}</td>
-                    <td>{item.modele || "-"}</td>
-                    <td>{item.taille || "-"}</td>
-                    <td>{item.annee_affichee || "-"}</td>
-                    <td>{item.type_velo || "-"}</td>
-                    <td>
-                      {item.is_vae ? (
-                        <span style={{ color: "var(--mint-green)", fontWeight: 700 }}>⚡ Oui</span>
-                      ) : (
-                        <span style={{ opacity: 0.6 }}>Non</span>
-                      )}
-                    </td>
-                    <td>{item.vae_kilometrage ? `${item.vae_kilometrage} km` : "-"}</td>
-                    <td>{item.prix_achat_negocie ? `${item.prix_achat_negocie.toFixed(2)} €` : "-"}</td>
-                    <td>{item.date_achat ? new Date(item.date_achat).toLocaleDateString("fr-FR") : "-"}</td>
-                    <td>{item.prix_occasion_marche ? `${item.prix_occasion_marche.toFixed(2)} €` : "-"}</td>
-                    <td>
-                      <select
-                        value={item.status || "achat_confirme"}
-                        onChange={(e) => updateStatus(item.serial_number, e.target.value)}
-                        style={{
-                          padding: "4px 8px",
-                          borderRadius: 6,
-                          border: "1px solid #d1d5db",
-                          fontSize: 13,
-                          cursor: "pointer",
-                          background: item.status === "publie" ? "#d1fae5" : "#fef3c7",
+                      <td 
+                        className="serial-number"
+                        onClick={() => {
+                          if (item.serial_number && !isEditing) {
+                            navigator.clipboard.writeText(item.serial_number);
+                            setCopiedSerial(item.serial_number);
+                            setTimeout(() => setCopiedSerial(null), 800);
+                          }
                         }}
+                        style={{ cursor: item.serial_number && !isEditing ? 'pointer' : 'default' }}
+                        title={!isEditing ? "Cliquer pour copier" : ""}
                       >
-                        <option value="achat_confirme">Achat confirmé</option>
-                        <option value="publie">Publié</option>
-                      </select>
-                    </td>
-                  </tr>
-                ))}
+                        {copiedSerial === item.serial_number ? '✓ Copié !' : (item.serial_number || "-")}
+                      </td>
+                      <td>
+                        {isEditing ? (
+                          <input
+                            type="text"
+                            value={editingData.marque || ""}
+                            onChange={(e) => setEditingData({ ...editingData, marque: e.target.value })}
+                            style={{ width: "100%", padding: "4px", border: "1px solid #d1d5db", borderRadius: 4 }}
+                          />
+                        ) : (item.marque || "-")}
+                      </td>
+                      <td>
+                        {isEditing ? (
+                          <input
+                            type="text"
+                            value={editingData.modele || ""}
+                            onChange={(e) => setEditingData({ ...editingData, modele: e.target.value })}
+                            style={{ width: "100%", padding: "4px", border: "1px solid #d1d5db", borderRadius: 4 }}
+                          />
+                        ) : (item.modele || "-")}
+                      </td>
+                      <td>
+                        {isEditing ? (
+                          <input
+                            type="text"
+                            value={editingData.taille || ""}
+                            onChange={(e) => setEditingData({ ...editingData, taille: e.target.value })}
+                            style={{ width: "100%", padding: "4px", border: "1px solid #d1d5db", borderRadius: 4 }}
+                          />
+                        ) : (item.taille || "-")}
+                      </td>
+                      <td>
+                        {isEditing ? (
+                          <input
+                            type="number"
+                            value={editingData.annee_affichee || ""}
+                            onChange={(e) => setEditingData({ ...editingData, annee_affichee: parseInt(e.target.value) || null })}
+                            style={{ width: "100%", padding: "4px", border: "1px solid #d1d5db", borderRadius: 4 }}
+                          />
+                        ) : (item.annee_affichee || "-")}
+                      </td>
+                      <td>
+                        {isEditing ? (
+                          <select
+                            value={editingData.type_velo || ""}
+                            onChange={(e) => setEditingData({ ...editingData, type_velo: e.target.value })}
+                            style={{ width: "100%", padding: "4px", border: "1px solid #d1d5db", borderRadius: 4 }}
+                          >
+                            <option value="">-</option>
+                            <option value="VTT">VTT</option>
+                            <option value="VTC">VTC</option>
+                            <option value="Vélo de ville">Vélo de ville</option>
+                            <option value="Vélo De Route">Vélo De Route</option>
+                            <option value="Gravel">Gravel</option>
+                            <option value="Cargo">Cargo</option>
+                          </select>
+                        ) : (item.type_velo || "-")}
+                      </td>
+                      <td>
+                        {isEditing ? (
+                          <select
+                            value={editingData.is_vae ? "true" : "false"}
+                            onChange={(e) => setEditingData({ ...editingData, is_vae: e.target.value === "true" })}
+                            style={{ width: "100%", padding: "4px", border: "1px solid #d1d5db", borderRadius: 4 }}
+                          >
+                            <option value="true">⚡ Oui</option>
+                            <option value="false">Non</option>
+                          </select>
+                        ) : item.is_vae ? (
+                          <span style={{ color: "var(--mint-green)", fontWeight: 700 }}>⚡ Oui</span>
+                        ) : (
+                          <span style={{ opacity: 0.6 }}>Non</span>
+                        )}
+                      </td>
+                      <td>
+                        {isEditing ? (
+                          <input
+                            type="number"
+                            value={editingData.vae_kilometrage || ""}
+                            onChange={(e) => setEditingData({ ...editingData, vae_kilometrage: parseInt(e.target.value) || null })}
+                            style={{ width: "100%", padding: "4px", border: "1px solid #d1d5db", borderRadius: 4 }}
+                          />
+                        ) : (item.vae_kilometrage ? `${item.vae_kilometrage} km` : "-")}
+                      </td>
+                      <td>
+                        {isEditing ? (
+                          <input
+                            type="number"
+                            step="0.01"
+                            value={editingData.prix_achat_negocie || ""}
+                            onChange={(e) => setEditingData({ ...editingData, prix_achat_negocie: parseFloat(e.target.value) || null })}
+                            style={{ width: "100%", padding: "4px", border: "1px solid #d1d5db", borderRadius: 4 }}
+                          />
+                        ) : (item.prix_achat_negocie ? `${item.prix_achat_negocie.toFixed(2)} €` : "-")}
+                      </td>
+                      <td>
+                        {isEditing ? (
+                          <input
+                            type="date"
+                            value={editingData.date_achat || ""}
+                            onChange={(e) => setEditingData({ ...editingData, date_achat: e.target.value })}
+                            style={{ width: "100%", padding: "4px", border: "1px solid #d1d5db", borderRadius: 4 }}
+                          />
+                        ) : (item.date_achat ? new Date(item.date_achat).toLocaleDateString("fr-FR") : "-")}
+                      </td>
+                      <td>
+                        {isEditing ? (
+                          <input
+                            type="number"
+                            step="0.01"
+                            value={editingData.prix_occasion_marche || ""}
+                            onChange={(e) => setEditingData({ ...editingData, prix_occasion_marche: parseFloat(e.target.value) || null })}
+                            style={{ width: "100%", padding: "4px", border: "1px solid #d1d5db", borderRadius: 4 }}
+                          />
+                        ) : (item.prix_occasion_marche ? `${item.prix_occasion_marche.toFixed(2)} €` : "-")}
+                      </td>
+                      <td style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        {isEditing ? (
+                          <>
+                            <button
+                              onClick={saveEdit}
+                              style={{
+                                padding: "4px 8px",
+                                borderRadius: 6,
+                                border: "1px solid #10b981",
+                                background: "#d1fae5",
+                                color: "#065f46",
+                                fontSize: 13,
+                                cursor: "pointer",
+                                fontWeight: 600,
+                              }}
+                            >
+                              ✓ Sauver
+                            </button>
+                            <button
+                              onClick={cancelEdit}
+                              style={{
+                                padding: "4px 8px",
+                                borderRadius: 6,
+                                border: "1px solid #ef4444",
+                                background: "#fee2e2",
+                                color: "#991b1b",
+                                fontSize: 13,
+                                cursor: "pointer",
+                                fontWeight: 600,
+                              }}
+                            >
+                              ✕ Annuler
+                            </button>
+                          </>
+                        ) : (
+                          <>
+                            <select
+                              value={item.status || "achat_confirme"}
+                              onChange={(e) => updateStatus(item.serial_number, e.target.value)}
+                              style={{
+                                padding: "4px 8px",
+                                borderRadius: 6,
+                                border: "1px solid #d1d5db",
+                                fontSize: 13,
+                                cursor: "pointer",
+                                background: item.status === "publie" ? "#d1fae5" : "#fef3c7",
+                              }}
+                            >
+                              <option value="achat_confirme">Achat confirmé</option>
+                              <option value="publie">Publié</option>
+                            </select>
+                            {isHovered && (
+                              <button
+                                onClick={() => startEditing(item)}
+                                style={{
+                                  background: "transparent",
+                                  border: "none",
+                                  cursor: "pointer",
+                                  fontSize: 16,
+                                  padding: 4,
+                                  opacity: 0.6,
+                                  transition: "opacity 0.2s",
+                                }}
+                                onMouseEnter={(e) => e.target.style.opacity = 1}
+                                onMouseLeave={(e) => e.target.style.opacity = 0.6}
+                                title="Éditer cette ligne"
+                              >
+                                ✏️
+                              </button>
+                            )}
+                          </>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           )}
