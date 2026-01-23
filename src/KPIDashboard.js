@@ -5,6 +5,8 @@ import { supabase } from "./supabaseClient";
 const KPIDashboard = ({ isOpen, onClose, statsData, velos = [], inventoryVelos = [], pricingByUrl = {}, filteredVelosCount, stockMode, setStockMode }) => {
   const [inventoryData, setInventoryData] = useState([]);
   const [selectedMonth, setSelectedMonth] = useState("");
+  const [waterfallTypeFilter, setWaterfallTypeFilter] = useState("tous");
+  const [waterfallCategoryFilter, setWaterfallCategoryFilter] = useState("tous");
 
   // Charger les données inventory
   useEffect(() => {
@@ -140,16 +142,31 @@ const KPIDashboard = ({ isOpen, onClose, statsData, velos = [], inventoryVelos =
     }).filter(item => item.électrique > 0 || item.musculaire > 0)
       .sort((a, b) => (b.électrique + b.musculaire) - (a.électrique + a.musculaire));
 
-    // Count par marque (en unités)
+    // Count par marque (en unités) avec distinction électrique/musculaire
     const brandCount = {};
     velos.forEach(v => {
       const brand = v?.["Marque"] || "Inconnue";
+      const typeVelo = v?.["Type de vélo"];
       const units = getStockUnits(v);
-      brandCount[brand] = (brandCount[brand] || 0) + units;
+      
+      if (!brandCount[brand]) {
+        brandCount[brand] = { electrique: 0, musculaire: 0 };
+      }
+      
+      if (typeVelo === "Électrique") {
+        brandCount[brand].electrique += units;
+      } else if (typeVelo === "Musculaire") {
+        brandCount[brand].musculaire += units;
+      }
     });
     const brandData = Object.entries(brandCount)
-      .map(([name, value]) => ({ name, value }))
-      .sort((a, b) => b.value - a.value)
+      .map(([name, counts]) => ({
+        name,
+        électrique: counts.electrique,
+        musculaire: counts.musculaire,
+        total: counts.electrique + counts.musculaire
+      }))
+      .sort((a, b) => b.total - a.total)
       .slice(0, 10);
 
     // Distribution des prix (en unités)
@@ -605,6 +622,117 @@ const KPIDashboard = ({ isOpen, onClose, statsData, velos = [], inventoryVelos =
     return { purchasesByMonth, marginByMonth, availableMonths, monthlyKPIs, marginByCategory, marginBySeller };
   }, [inventoryData, velos, pricingByUrl]);
 
+  // Calcul des données pour le waterfall
+  const waterfallData = useMemo(() => {
+    let totalBuyPrice = 0;
+    let totalParts = 0;
+    let totalLogistics = 0;
+    let totalSellPrice = 0;
+    let count = 0;
+
+    velos.forEach(v => {
+      // Appliquer les filtres
+      const typeVelo = v?.["Type de vélo"];
+      const categorie = v?.["Catégorie"] || "Non classé";
+      
+      if (waterfallTypeFilter !== "tous" && typeVelo !== waterfallTypeFilter) return;
+      if (waterfallCategoryFilter !== "tous" && categorie !== waterfallCategoryFilter) return;
+      
+      const url = v?.URL;
+      let buyPrice = 0;
+      let parts = 0;
+      let logistics = 0;
+      let sellPrice = 0;
+      let units = 1;
+
+      if (v._isInventory && v._original) {
+        // Vélos inventory
+        const inv = v._original;
+        buyPrice = Number(inv.prix_achat_negocie) || 0;
+        parts = Number(inv.frais_pieces_estimes) || 0;
+        logistics = Number(inv.cout_logistique) || 0;
+        sellPrice = Number(inv.prix_occasion_marche) || 0;
+        units = 1;
+      } else {
+        // Vélos en vente
+        const pricing = pricingByUrl?.[url];
+        if (pricing) {
+          buyPrice = Number(pricing.negotiated_buy_price) || 0;
+          parts = Number(pricing.parts_cost_actual) || 0;
+          logistics = Number(pricing.logistics_cost) || 0;
+          const priceStr = String(v?.["Prix réduit"] || "0").replace(/[^\d.,]/g, "").replace(",", ".");
+          sellPrice = parseFloat(priceStr) || 0;
+          
+          // Compter les unités
+          units = 0;
+          for (let i = 1; i <= 6; i++) {
+            const stock = parseInt(v?.[`Stock variant ${i}`]) || 0;
+            units += stock;
+          }
+        }
+      }
+
+      if (sellPrice > 0 && units > 0) {
+        totalBuyPrice += buyPrice * units;
+        totalParts += parts * units;
+        totalLogistics += logistics * units;
+        totalSellPrice += sellPrice * units;
+        count += units;
+      }
+    });
+
+    if (count === 0) return { chart: [], totals: {} };
+
+    const avgBuy = totalBuyPrice / count;
+    const avgParts = totalParts / count;
+    const avgLogistics = totalLogistics / count;
+    const avgSell = totalSellPrice / count;
+    const avgMargin = avgSell - avgBuy - avgParts - avgLogistics;
+    const totalMargin = totalSellPrice - totalBuyPrice - totalParts - totalLogistics;
+
+    // Construction des données waterfall avec moyennes et totaux
+    return {
+      chart: [
+        { name: "Prix d'achat", value: avgBuy, start: 0, end: avgBuy, color: "#f59e0b" },
+        { name: "Pièces", value: avgParts, start: avgBuy, end: avgBuy + avgParts, color: "#db2777" },
+        { name: "Transport", value: avgLogistics, start: avgBuy + avgParts, end: avgBuy + avgParts + avgLogistics, color: "#7c3aed" },
+        { name: "Marge", value: avgMargin, start: avgBuy + avgParts + avgLogistics, end: avgSell, color: "#16a34a" },
+        { name: "Prix de vente", value: avgSell, start: 0, end: avgSell, color: "#0d9488", isTotal: true }
+      ],
+      totals: {
+        totalSellPrice,
+        totalBuyPrice,
+        totalParts,
+        totalLogistics,
+        totalMargin,
+        avgSell,
+        avgBuy,
+        avgParts,
+        avgLogistics,
+        avgMargin
+      }
+    };
+  }, [velos, pricingByUrl, waterfallTypeFilter, waterfallCategoryFilter]);
+
+  // Récupérer les catégories et types disponibles pour les filtres waterfall
+  const availableCategories = useMemo(() => {
+    const cats = new Set();
+    velos.forEach(v => {
+      const cat = v?.["Catégorie"] || "Non classé";
+      cats.add(cat);
+    });
+    return Array.from(cats).sort();
+  }, [velos]);
+
+  const availableTypes = useMemo(() => {
+    const types = new Set();
+    velos.forEach(v => {
+      const type = v?.["Type de vélo"];
+      if (type) types.add(type);
+    });
+    return Array.from(types).sort();
+  }, [velos]);
+
   if (!isOpen) return null;
 
   // =========================
@@ -949,40 +1077,26 @@ const KPIDashboard = ({ isOpen, onClose, statsData, velos = [], inventoryVelos =
                 <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 4 }}>Taux de marge moyen</div>
                 <div style={{ fontSize: 28, fontWeight: 900, color: COLORS.green }}>
                   {(() => {
-                    // Calculer différemment selon le mode
-                    if (stockMode === "inventory" || stockMode === "tous") {
-                      // Pour inventory : Taux = (avgBenefitPerUnit / prix vente moyen) * 100
-                      let totalSellPrice = 0;
-                      let count = 0;
-                      
-                      velos.forEach(v => {
-                        if (v._isInventory && v._original) {
-                          const inv = v._original;
-                          const prixVente = Number(inv.prix_occasion_marche) || 0;
-                          
-                          if (prixVente > 0) {
-                            totalSellPrice += prixVente;
-                            count += 1;
-                          }
-                        } else if (stockMode === "tous") {
-                          // Pour vélos en vente dans mode "tous"
-                          const priceStr = String(v?.["Prix réduit"] || "0").replace(/[^\d.,]/g, "").replace(",", ".");
-                          const sellPrice = parseFloat(priceStr) || 0;
-                          if (sellPrice > 0) {
-                            totalSellPrice += sellPrice;
-                            count += 1;
-                          }
+                    // Calculer le taux de marge pondéré par unités pour tous les modes
+                    let totalMarginWeighted = 0;
+                    let totalSellValueWeighted = 0;
+                    
+                    velos.forEach(v => {
+                      if (v._isInventory && v._original) {
+                        // Vélos inventory
+                        const inv = v._original;
+                        const prixVente = Number(inv.prix_occasion_marche) || 0;
+                        const prixAchat = Number(inv.prix_achat_negocie) || 0;
+                        const pieces = Number(inv.frais_pieces_estimes) || 0;
+                        const logistique = Number(inv.cout_logistique) || 0;
+                        
+                        if (prixVente > 0) {
+                          const margin = prixVente - prixAchat - pieces - logistique;
+                          totalMarginWeighted += margin; // 1 unité par vélo inventory
+                          totalSellValueWeighted += prixVente;
                         }
-                      });
-                      
-                      const avgSellPrice = count > 0 ? totalSellPrice / count : 0;
-                      const avgMarginRate = avgSellPrice > 0 && avgBenefitPerUnit !== 0 ? (avgBenefitPerUnit / avgSellPrice) * 100 : 0;
-                      return avgMarginRate !== 0 ? `${Math.round(avgMarginRate)}%` : "—";
-                    } else {
-                      // Mode vente : calcul pondéré par unités (logique existante)
-                      let totalMarginWeighted = 0;
-                      let totalSellValueWeighted = 0;
-                      velos.forEach(v => {
+                      } else {
+                        // Vélos en vente
                         const url = v?.URL;
                         const pricing = pricingByUrl?.[url];
                         if (pricing) {
@@ -1006,13 +1120,233 @@ const KPIDashboard = ({ isOpen, onClose, statsData, velos = [], inventoryVelos =
                             totalSellValueWeighted += sellPrice * units;
                           }
                         }
-                      });
-                      const avgMarginRate = totalSellValueWeighted > 0 ? (totalMarginWeighted / totalSellValueWeighted) * 100 : 0;
-                      return avgMarginRate > 0 ? `${Math.round(avgMarginRate)}%` : "—";
-                    }
+                      }
+                    });
+                    
+                    const avgMarginRate = totalSellValueWeighted > 0 ? (totalMarginWeighted / totalSellValueWeighted) * 100 : 0;
+                    return avgMarginRate > 0 ? `${Math.round(avgMarginRate)}%` : "—";
                   })()}
                 </div>
                 <div style={{ fontSize: 11, opacity: 0.6, marginTop: 4 }}>pondéré par unités</div>
+              </div>
+            </div>
+
+            {/* Composition du prix - Tableau et Waterfall combinés */}
+            <div style={{ ...cardStyle, marginTop: 20 }}>
+              {/* Header avec titre et filtres */}
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, gap: 12, flexWrap: "wrap", borderBottom: "1px solid #e5e7eb", paddingBottom: 12 }}>
+                <div style={{ fontWeight: 700, fontSize: 14 }}>
+                  💰 Décomposition du prix
+                </div>
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <select
+                    value={waterfallTypeFilter}
+                    onChange={(e) => setWaterfallTypeFilter(e.target.value)}
+                    style={{
+                      padding: "4px 8px",
+                      borderRadius: 6,
+                      border: "1px solid #d1d5db",
+                      fontSize: 11,
+                      background: "#fff",
+                      cursor: "pointer"
+                    }}
+                  >
+                    <option value="tous">Tous types</option>
+                    {availableTypes.map(type => (
+                      <option key={type} value={type}>{type}</option>
+                    ))}
+                  </select>
+                  <select
+                    value={waterfallCategoryFilter}
+                    onChange={(e) => setWaterfallCategoryFilter(e.target.value)}
+                    style={{
+                      padding: "4px 8px",
+                      borderRadius: 6,
+                      border: "1px solid #d1d5db",
+                      fontSize: 11,
+                      background: "#fff",
+                      cursor: "pointer"
+                    }}
+                  >
+                    <option value="tous">Toutes catégories</option>
+                    {availableCategories.map(cat => (
+                      <option key={cat} value={cat}>{cat}</option>
+                    ))}
+                  </select>
+                  {(waterfallTypeFilter !== "tous" || waterfallCategoryFilter !== "tous") && (
+                    <button
+                      onClick={() => {
+                        setWaterfallTypeFilter("tous");
+                        setWaterfallCategoryFilter("tous");
+                      }}
+                      style={{
+                        padding: "4px 8px",
+                        borderRadius: 6,
+                        border: "1px solid #d1d5db",
+                        background: "#fff",
+                        fontSize: 11,
+                        fontWeight: 600,
+                        cursor: "pointer",
+                        color: "#6b7280"
+                      }}
+                    >
+                      ✕
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Contenu : Tableau et Graphique côte à côte */}
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 16 }}>
+                {/* Tableau de décomposition */}
+                <div>
+                {waterfallData.chart?.length > 0 ? (
+                  <div style={{ fontSize: 13, overflowX: "auto" }}>
+                    <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                      <thead>
+                        <tr style={{ borderBottom: "2px solid #d1d5db" }}>
+                          <th style={{ padding: "8px 8px", textAlign: "left", fontSize: 11, fontWeight: 600, opacity: 0.7 }}></th>
+                          <th style={{ padding: "8px 8px", textAlign: "right", fontSize: 11, fontWeight: 600, opacity: 0.7 }}>Prix moyen</th>
+                          <th style={{ padding: "8px 8px", textAlign: "right", fontSize: 11, fontWeight: 600, opacity: 0.7 }}>Total</th>
+                          <th style={{ padding: "8px 8px", textAlign: "right", fontSize: 11, fontWeight: 600, opacity: 0.7 }}>%</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr style={{ borderBottom: "2px solid #e5e7eb" }}>
+                          <td style={{ padding: "12px 8px", fontWeight: 700, fontSize: 14 }}>Prix de vente</td>
+                          <td style={{ padding: "12px 8px", textAlign: "right", fontWeight: 700, fontSize: 14 }}>
+                            {fmtEur(waterfallData.totals.avgSell)}
+                          </td>
+                          <td style={{ padding: "12px 8px", textAlign: "right", fontWeight: 700, fontSize: 14 }}>
+                            {fmtEur(waterfallData.totals.totalSellPrice)}
+                          </td>
+                          <td style={{ padding: "12px 8px", textAlign: "right", fontWeight: 700, fontSize: 14 }}>
+                            100%
+                          </td>
+                        </tr>
+                        <tr style={{ background: "#fef3c7", borderBottom: "1px solid #e5e7eb" }}>
+                          <td style={{ padding: "8px 8px 8px 20px", color: "#92400e" }}>Prix d'achat</td>
+                          <td style={{ padding: "8px", textAlign: "right", color: "#92400e" }}>
+                            - {fmtEur(waterfallData.totals.avgBuy)}
+                          </td>
+                          <td style={{ padding: "8px", textAlign: "right", color: "#92400e" }}>
+                            - {fmtEur(waterfallData.totals.totalBuyPrice)}
+                          </td>
+                          <td style={{ padding: "8px", textAlign: "right", color: "#92400e", fontSize: 12 }}>
+                            {waterfallData.totals.totalSellPrice > 0 ? `${((waterfallData.totals.totalBuyPrice / waterfallData.totals.totalSellPrice) * 100).toFixed(1)}%` : "0%"}
+                          </td>
+                        </tr>
+                        <tr style={{ background: "#fce7f3", borderBottom: "1px solid #e5e7eb" }}>
+                          <td style={{ padding: "8px 8px 8px 20px", color: "#831843" }}>Frais pièces</td>
+                          <td style={{ padding: "8px", textAlign: "right", color: "#831843" }}>
+                            - {fmtEur(waterfallData.totals.avgParts)}
+                          </td>
+                          <td style={{ padding: "8px", textAlign: "right", color: "#831843" }}>
+                            - {fmtEur(waterfallData.totals.totalParts)}
+                          </td>
+                          <td style={{ padding: "8px", textAlign: "right", color: "#831843", fontSize: 12 }}>
+                            {waterfallData.totals.totalSellPrice > 0 ? `${((waterfallData.totals.totalParts / waterfallData.totals.totalSellPrice) * 100).toFixed(1)}%` : "0%"}
+                          </td>
+                        </tr>
+                        <tr style={{ background: "#f3e8ff", borderBottom: "1px solid #e5e7eb" }}>
+                          <td style={{ padding: "8px 8px 8px 20px", color: "#581c87" }}>Transport</td>
+                          <td style={{ padding: "8px", textAlign: "right", color: "#581c87" }}>
+                            - {fmtEur(waterfallData.totals.avgLogistics)}
+                          </td>
+                          <td style={{ padding: "8px", textAlign: "right", color: "#581c87" }}>
+                            - {fmtEur(waterfallData.totals.totalLogistics)}
+                          </td>
+                          <td style={{ padding: "8px", textAlign: "right", color: "#581c87", fontSize: 12 }}>
+                            {waterfallData.totals.totalSellPrice > 0 ? `${((waterfallData.totals.totalLogistics / waterfallData.totals.totalSellPrice) * 100).toFixed(1)}%` : "0%"}
+                          </td>
+                        </tr>
+                        <tr style={{ borderBottom: "2px solid #d1d5db" }}>
+                          <td style={{ padding: "8px 8px 8px 20px", opacity: 0.6, fontSize: 12 }}>Total coûts</td>
+                          <td style={{ padding: "8px", textAlign: "right", opacity: 0.6, fontSize: 12 }}>
+                            - {fmtEur(waterfallData.totals.avgBuy + waterfallData.totals.avgParts + waterfallData.totals.avgLogistics)}
+                          </td>
+                          <td style={{ padding: "8px", textAlign: "right", opacity: 0.6, fontSize: 12 }}>
+                            - {fmtEur(waterfallData.totals.totalBuyPrice + waterfallData.totals.totalParts + waterfallData.totals.totalLogistics)}
+                          </td>
+                          <td style={{ padding: "8px", textAlign: "right", opacity: 0.6, fontSize: 12 }}>
+                            {waterfallData.totals.totalSellPrice > 0 ? `${(((waterfallData.totals.totalBuyPrice + waterfallData.totals.totalParts + waterfallData.totals.totalLogistics) / waterfallData.totals.totalSellPrice) * 100).toFixed(1)}%` : "0%"}
+                          </td>
+                        </tr>
+                        <tr style={{ background: "#d1fae5", borderBottom: "2px solid #10b981" }}>
+                          <td style={{ padding: "12px 8px", fontWeight: 700, color: "#065f46" }}>Marge</td>
+                          <td style={{ padding: "12px 8px", textAlign: "right", fontWeight: 700, color: "#065f46" }}>
+                            {fmtEur(waterfallData.totals.avgMargin)}
+                          </td>
+                          <td style={{ padding: "12px 8px", textAlign: "right", fontWeight: 700, color: "#065f46" }}>
+                            {fmtEur(waterfallData.totals.totalMargin)}
+                          </td>
+                          <td style={{ padding: "12px 8px", textAlign: "right", fontWeight: 700, color: "#065f46" }}>
+                            {waterfallData.totals.totalSellPrice > 0 ? `${((waterfallData.totals.totalMargin / waterfallData.totals.totalSellPrice) * 100).toFixed(1)}%` : "0%"}
+                          </td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <div style={noDataStyle}>Aucune donnée disponible</div>
+                )}
+                </div>
+
+                {/* Graphique Waterfall */}
+                <div>
+                {waterfallData.chart?.length > 0 ? (
+                  <div style={{ height: 300 }}>
+                    <ResponsiveContainer>
+                      <ComposedChart data={waterfallData.chart} margin={{ top: 20, right: 30, left: 20, bottom: 20 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                        <XAxis 
+                          dataKey="name" 
+                          tick={{ fontSize: 11 }}
+                          angle={-15}
+                          textAnchor="end"
+                          height={60}
+                        />
+                        <YAxis 
+                          tickFormatter={(v) => `${Math.round(v)}€`}
+                          tick={{ fontSize: 11 }}
+                        />
+                        <Tooltip 
+                          formatter={(value, name, props) => {
+                            const item = props.payload;
+                            if (item.isTotal) {
+                              return [`${Math.round(value)}€`, "Total"];
+                            }
+                            return [`${Math.round(value)}€`, name];
+                          }}
+                          labelFormatter={(label) => label}
+                        />
+                        <Bar dataKey="start" stackId="a" fill="transparent" />
+                        <Bar dataKey="value" stackId="a" radius={[4, 4, 0, 0]}>
+                          {waterfallData.chart.map((entry, index) => (
+                            <Cell key={`cell-${index}`} fill={entry.color} />
+                          ))}
+                          <LabelList 
+                            dataKey="value" 
+                            position="top"
+                            formatter={(value) => `${Math.round(value)}€`}
+                            style={{ fontSize: 10, fontWeight: 700, fill: "#111827" }}
+                          />
+                        </Bar>
+                        <Line 
+                          type="stepAfter" 
+                          dataKey="end" 
+                          stroke="#6b7280" 
+                          strokeWidth={2}
+                          strokeDasharray="5 5"
+                          dot={false}
+                        />
+                      </ComposedChart>
+                    </ResponsiveContainer>
+                  </div>
+                ) : (
+                  <div style={noDataStyle}>Aucune donnée disponible</div>
+                )}
+                </div>
               </div>
             </div>
 
@@ -1080,8 +1414,8 @@ const KPIDashboard = ({ isOpen, onClose, statsData, velos = [], inventoryVelos =
                             paddingAngle={3}
                             label={(entry) => entry.__pct}
                           >
-                            {elecMuscu.map((_, idx) => (
-                              <Cell key={`elec-${idx}`} fill={idx === 0 ? COLORS.mint : COLORS.gray} />
+                            {elecMuscu.map((entry, idx) => (
+                              <Cell key={`elec-${idx}`} fill={entry.name === "Électrique" ? COLORS.teal : COLORS.purple} />
                             ))}
                           </Pie>
                         </PieChart>
@@ -1094,7 +1428,7 @@ const KPIDashboard = ({ isOpen, onClose, statsData, velos = [], inventoryVelos =
                             width: 10,
                             height: 10,
                             borderRadius: 2,
-                            background: idx === 0 ? COLORS.mint : COLORS.gray,
+                            background: x.name === "Électrique" ? COLORS.teal : COLORS.purple,
                           }} />
                           <span>{x.name}: <b>{x.value}</b></span>
                         </div>
@@ -1108,19 +1442,54 @@ const KPIDashboard = ({ isOpen, onClose, statsData, velos = [], inventoryVelos =
 
               {/* Top 10 Marques */}
               <div style={cardStyle}>
-                <div style={{ fontWeight: 700, marginBottom: 12, fontSize: 14 }}>Top 10 Marques</div>
+                <div style={{ fontWeight: 700, marginBottom: 12, fontSize: 14 }}>Top 10 Marques (Électrique vs Musculaire)</div>
                 {brandData.length > 0 ? (
                   <div style={{ height: 220 }}>
                     <ResponsiveContainer>
-                      <BarChart data={withPctLabel(brandData, "value")} layout="vertical">
+                      <BarChart data={brandData} layout="vertical">
                         <XAxis type="number" hide />
                         <YAxis dataKey="name" type="category" width={100} tick={{ fontSize: 10 }} />
-                        <Tooltip />
-                        <Bar dataKey="value" radius={[0, 6, 6, 0]} label={{ position: 'right', fontSize: 11, fill: '#374151', dataKey: '__pctLabel' }}>
-                          {brandData.map((_, idx) => (
-                            <Cell key={`brand-${idx}`} fill={COLORS.teal} />
-                          ))}
-                        </Bar>
+                        <Tooltip content={({ active, payload }) => {
+                          if (!active || !payload?.length) return null;
+                          const data = payload[0].payload;
+                          return (
+                            <div style={{
+                              background: "#fff",
+                              border: "1px solid #e5e7eb",
+                              borderRadius: 8,
+                              padding: 10,
+                              boxShadow: "0 4px 12px rgba(0,0,0,0.1)",
+                            }}>
+                              <div style={{ fontWeight: 700, marginBottom: 4 }}>{data.name}</div>
+                              <div style={{ fontSize: 13, color: "#0d9488" }}>⚡ Électrique: {data.électrique}</div>
+                              <div style={{ fontSize: 13, color: "#7c3aed" }}>🚴 Musculaire: {data.musculaire}</div>
+                              <div style={{ fontSize: 13, color: "#6b7280", marginTop: 4 }}>Total: {data.total}</div>
+                            </div>
+                          );
+                        }} />
+                        <Legend 
+                          iconType="circle"
+                          wrapperStyle={{ fontSize: 12 }}
+                        />
+                        <Bar dataKey="électrique" stackId="a" fill={COLORS.teal} radius={[0, 0, 0, 0]} name="Électrique" />
+                        <Bar dataKey="musculaire" stackId="a" fill={COLORS.purple} radius={[0, 6, 6, 0]} name="Musculaire"
+                          label={({ x, y, width, height, payload }) => {
+                            if (!payload) return null;
+                            const total = payload.total || 0;
+                            return (
+                              <text
+                                x={x + width + 5}
+                                y={y + height / 2}
+                                fill="#374151"
+                                fontSize={11}
+                                textAnchor="start"
+                                dominantBaseline="middle"
+                              >
+                                {total}
+                              </text>
+                            );
+                          }}
+                        />
                       </BarChart>
                     </ResponsiveContainer>
                   </div>
@@ -1141,21 +1510,24 @@ const KPIDashboard = ({ isOpen, onClose, statsData, velos = [], inventoryVelos =
                         <Tooltip 
                           formatter={(value, name) => `${value} unités`}
                         />
-                        <Legend />
-                        <Bar dataKey="electrique" fill="#3b82f6" radius={[0, 6, 6, 0]} name="Électrique">
+                        <Legend 
+                          iconType="circle"
+                          wrapperStyle={{ fontSize: 12 }}
+                        />
+                        <Bar dataKey="electrique" fill={COLORS.teal} radius={[0, 6, 6, 0]} name="Électrique">
                           <LabelList 
                             dataKey="electriquePct" 
                             position="right" 
                             formatter={(value) => value > 0 ? `${value.toFixed(0)}%` : ''}
-                            style={{ fontSize: 10, fontWeight: 600, fill: "#3b82f6" }}
+                            style={{ fontSize: 10, fontWeight: 600, fill: COLORS.teal }}
                           />
                         </Bar>
-                        <Bar dataKey="musculaire" fill="#10b981" radius={[0, 6, 6, 0]} name="Musculaire">
+                        <Bar dataKey="musculaire" fill={COLORS.purple} radius={[0, 6, 6, 0]} name="Musculaire">
                           <LabelList 
                             dataKey="musculairePct" 
                             position="right" 
                             formatter={(value) => value > 0 ? `${value.toFixed(0)}%` : ''}
-                            style={{ fontSize: 10, fontWeight: 600, fill: "#10b981" }}
+                            style={{ fontSize: 10, fontWeight: 600, fill: COLORS.purple }}
                           />
                         </Bar>
                       </BarChart>
@@ -1206,21 +1578,24 @@ const KPIDashboard = ({ isOpen, onClose, statsData, velos = [], inventoryVelos =
                         <Tooltip 
                           formatter={(value, name) => [`${value}€`, name]}
                         />
-                        <Legend />
-                        <Bar dataKey="électrique" fill="#3b82f6" radius={[0, 6, 6, 0]} name="Électrique">
+                        <Legend 
+                          iconType="circle"
+                          wrapperStyle={{ fontSize: 12 }}
+                        />
+                        <Bar dataKey="électrique" fill={COLORS.teal} radius={[0, 6, 6, 0]} name="Électrique">
                           <LabelList 
                             dataKey="électrique" 
                             position="right" 
                             formatter={(value) => value > 0 ? `${value}€` : ''}
-                            style={{ fontSize: 10, fontWeight: 600, fill: "#3b82f6" }}
+                            style={{ fontSize: 10, fontWeight: 600, fill: COLORS.teal }}
                           />
                         </Bar>
-                        <Bar dataKey="musculaire" fill="#10b981" radius={[0, 6, 6, 0]} name="Musculaire">
+                        <Bar dataKey="musculaire" fill={COLORS.purple} radius={[0, 6, 6, 0]} name="Musculaire">
                           <LabelList 
                             dataKey="musculaire" 
                             position="right" 
                             formatter={(value) => value > 0 ? `${value}€` : ''}
-                            style={{ fontSize: 10, fontWeight: 600, fill: "#10b981" }}
+                            style={{ fontSize: 10, fontWeight: 600, fill: COLORS.purple }}
                           />
                         </Bar>
                       </BarChart>
@@ -1826,21 +2201,24 @@ const KPIDashboard = ({ isOpen, onClose, statsData, velos = [], inventoryVelos =
                           return `${fmtEur(value)} (${pct.toFixed(1)}%)`;
                         }}
                       />
-                      <Legend />
-                      <Bar dataKey="electrique" fill="#3b82f6" radius={[4, 4, 0, 0]} name="Électrique">
+                      <Legend 
+                        iconType="circle"
+                        wrapperStyle={{ fontSize: 12 }}
+                      />
+                      <Bar dataKey="electrique" fill={COLORS.teal} radius={[4, 4, 0, 0]} name="Électrique">
                         <LabelList 
                           dataKey="electriquePct" 
                           position="top" 
                           formatter={(value) => `${value.toFixed(1)}%`}
-                          style={{ fontSize: 10, fontWeight: 600, fill: "#3b82f6" }}
+                          style={{ fontSize: 10, fontWeight: 600, fill: COLORS.teal }}
                         />
                       </Bar>
-                      <Bar dataKey="musculaire" fill="#10b981" radius={[4, 4, 0, 0]} name="Musculaire">
+                      <Bar dataKey="musculaire" fill={COLORS.purple} radius={[4, 4, 0, 0]} name="Musculaire">
                         <LabelList 
                           dataKey="musculairePct" 
                           position="top" 
                           formatter={(value) => `${value.toFixed(1)}%`}
-                          style={{ fontSize: 10, fontWeight: 600, fill: "#10b981" }}
+                          style={{ fontSize: 10, fontWeight: 600, fill: COLORS.purple }}
                         />
                       </Bar>
                     </BarChart>
