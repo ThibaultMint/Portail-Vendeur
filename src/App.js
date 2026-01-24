@@ -3090,23 +3090,40 @@ const [parkingRules, setParkingRules] = useState({
 // Détails complets des tranches de prix pour pouvoir les éditer
 const [priceBands, setPriceBands] = useState([]);
 
-// Charger les catégories dynamiques depuis pv_categories pour categoryPct
+// Charger les objectifs de catégorie depuis Supabase au chargement
 useEffect(() => {
-  if (parkingCategoryTypeOptions.length > 0) {
-    const defaultPct = 1 / parkingCategoryTypeOptions.length;
-    const categoryPct = {};
-    parkingCategoryTypeOptions.forEach(opt => {
-      categoryPct[opt.label] = defaultPct;
-    });
-    // Remplacer complètement categoryPct pour éviter les anciennes valeurs
-    setParkingRules(prev => ({ 
-      ...prev, 
-      categoryPct // Remplace tout, pas de merge
-    }));
-  } else {
-    // Si pas de catégories, vider
-    setParkingRules(prev => ({ ...prev, categoryPct: {} }));
+  async function loadCategoryPct() {
+    if (parkingCategoryTypeOptions.length === 0) {
+      setParkingRules(prev => ({ ...prev, categoryPct: {} }));
+      return;
+    }
+    // Lire depuis la table pv_category_targets
+    const { data, error } = await supabase
+      .from("pv_category_targets")
+      .select("category, target_pct");
+    if (!error && data && data.length > 0) {
+      const categoryPct = {};
+      data.forEach(row => {
+        categoryPct[row.category] = (row.target_pct ?? 0) / 100;
+      });
+      // S'assurer que toutes les catégories sont présentes
+      parkingCategoryTypeOptions.forEach(opt => {
+        if (!(opt.label in categoryPct)) {
+          categoryPct[opt.label] = 1 / parkingCategoryTypeOptions.length;
+        }
+      });
+      setParkingRules(prev => ({ ...prev, categoryPct }));
+    } else {
+      // Si pas de données, initialiser par défaut
+      const defaultPct = 1 / parkingCategoryTypeOptions.length;
+      const categoryPct = {};
+      parkingCategoryTypeOptions.forEach(opt => {
+        categoryPct[opt.label] = defaultPct;
+      });
+      setParkingRules(prev => ({ ...prev, categoryPct }));
+    }
   }
+  loadCategoryPct();
 }, [parkingCategoryTypeOptions]);
 
 // Charger les prix depuis pv_price_bands - scopé par parkingCategory
@@ -3161,58 +3178,58 @@ useEffect(() => {
   loadPriceBands();
 }, [parkingCategory]);
 
-// Charger les tailles depuis le stock - mapper en lettres (XS, S, M, L, XL)
+// Charger les objectifs de taille depuis Supabase au chargement
 useEffect(() => {
-  // Toujours avoir les 5 tailles standards
-  const STANDARD_SIZES = ["XS", "S", "M", "L", "XL"];
-  
-  // Chercher si on a des tailles dans le stock
-  const tailles = velos
-    .flatMap(v => {
-      const sizeLetters = [];
-      // Chercher les colonnes "Taille cadre variant 1-4" (sans majuscule sur variant)
-      for (let i = 1; i <= 4; i++) {
-        const sizeCol = `Taille cadre variant ${i}`;
-        const sizeValue = v[sizeCol];
-        if (sizeValue && sizeValue !== "N/A") {
-          const letter = mapFrameSizeToLetter(sizeValue);
-          if (letter) sizeLetters.push(letter);
+  async function loadSizePct() {
+    // Toujours avoir les 5 tailles standards
+    const STANDARD_SIZES = ["XS", "S", "M", "L", "XL"];
+    // Chercher si on a des tailles dans le stock
+    const tailles = velos
+      .flatMap(v => {
+        const sizeLetters = [];
+        for (let i = 1; i <= 4; i++) {
+          const sizeCol = `Taille cadre variant ${i}`;
+          const sizeValue = v[sizeCol];
+          if (sizeValue && sizeValue !== "N/A") {
+            const letter = mapFrameSizeToLetter(sizeValue);
+            if (letter) sizeLetters.push(letter);
+          }
         }
-      }
-      return sizeLetters;
-    })
-    .filter(Boolean);
-  
-  const uniqueTailles = [...new Set(tailles)].length > 0 
-    ? [...new Set(tailles)].sort((a, b) => {
-        return STANDARD_SIZES.indexOf(a) - STANDARD_SIZES.indexOf(b);
+        return sizeLetters;
       })
-    : STANDARD_SIZES; // Fallback: utiliser les 5 tailles standard si rien trouvé
-  
-  // Toujours initialiser avec les 5 tailles
-  const defaultPct = 1 / uniqueTailles.length;
-  const sizePct = {};
-  uniqueTailles.forEach(taille => {
-    sizePct[taille] = defaultPct;
-  });
-  
-  setParkingRules(prev => {
-    // Ne pas écraser si on a déjà des tailles avec des pourcentages personnalisés
-    if (prev.sizePct && Object.keys(prev.sizePct).length > 0) {
-      return prev;
+      .filter(Boolean);
+    const uniqueTailles = [...new Set(tailles)].length > 0 
+      ? [...new Set(tailles)].sort((a, b) => {
+          return STANDARD_SIZES.indexOf(a) - STANDARD_SIZES.indexOf(b);
+        })
+      : STANDARD_SIZES;
+    // Lire depuis la table pv_size_targets
+    const { data, error } = await supabase
+      .from("pv_size_targets")
+      .select("size, target_pct");
+    if (!error && data && data.length > 0) {
+      const sizePct = {};
+      data.forEach(row => {
+        sizePct[row.size] = (row.target_pct ?? 0) / 100;
+      });
+      // S'assurer que toutes les tailles sont présentes
+      uniqueTailles.forEach(taille => {
+        if (!(taille in sizePct)) {
+          sizePct[taille] = 1 / uniqueTailles.length;
+        }
+      });
+      setParkingRules(prev => ({ ...prev, sizePct }));
+    } else {
+      // Si pas de données, initialiser par défaut
+      const defaultPct = 1 / uniqueTailles.length;
+      const sizePct = {};
+      uniqueTailles.forEach(taille => {
+        sizePct[taille] = defaultPct;
+      });
+      setParkingRules(prev => ({ ...prev, sizePct }));
     }
-    
-    // Sauvegarder les tailles par défaut si c'est la première fois (inline)
-    if (Object.keys(sizePct).length > 0) {
-      supabase.from("pv_settings").upsert({
-        id: "global",
-        size_pct: sizePct,
-        updated_at: new Date().toISOString(),
-      }, { onConflict: "id" });
-    }
-    
-    return { ...prev, sizePct };
-  });
+  }
+  loadSizePct();
 }, [velos]);
 
 // Mapping des tailles numériques ou texte vers lettres standardisées (XS, S, M, L, XL)
@@ -3282,34 +3299,58 @@ useEffect(() => {
 
 // Persiste les réglages parking dans pv_settings
 const saveParkingSettings = useCallback(
-  async (next) => {
-    // 1. Sauvegarder les paramètres GLOBAUX (objective_total, category_pct, size_pct)
-    if (next.objectiveTotal !== undefined || next.categoryPct !== undefined || next.sizePct !== undefined) {
-      const globalPayload = {
-        id: "global",
-        updated_at: new Date().toISOString(),
-      };
-      if (next.objectiveTotal !== undefined) globalPayload.objective_total = next.objectiveTotal;
-      if (next.categoryPct !== undefined) globalPayload.category_pct = next.categoryPct;
-      if (next.sizePct !== undefined) globalPayload.size_pct = next.sizePct;
+  async (updates) => {
+    try {
+      // Sauvegarder les catégories
+      if (updates.categoryPct) {
+        const rows = Object.entries(updates.categoryPct).map(([category, pct]) => ({
+          category,
+          target_pct: Math.round(pct * 100), // Convertir 0.4 → 40
+          updated_at: new Date().toISOString()
+        }));
+        
+        const { error } = await supabase
+          .from("pv_category_targets")
+          .upsert(rows, { onConflict: "category" });
+        
+        if (error) console.error("❌ Erreur catégories:", error);
+        else console.log("✅ Catégories sauvegardées:", rows);
+      }
       
-      await supabase.from("pv_settings").upsert(globalPayload, { onConflict: "id" });
-    }
-
-    // 2. Sauvegarder les paramètres SCOPÉS par catégorie (price_pct, cat_mar_pct)
-    if (next.pricePct !== undefined || next.tierPct !== undefined) {
-      const scope = parkingScopeId(parkingCategory, parkingType);
-      const scopedPayload = {
-        id: scope,
-        updated_at: new Date().toISOString(),
-      };
-      if (next.pricePct !== undefined) scopedPayload.price_pct = next.pricePct;
-      if (next.tierPct !== undefined) scopedPayload.cat_mar_pct = next.tierPct;
+      // Sauvegarder les tailles
+      if (updates.sizePct) {
+        const rows = Object.entries(updates.sizePct).map(([size, pct]) => ({
+          size,
+          target_pct: Math.round(pct * 100),
+          updated_at: new Date().toISOString()
+        }));
+        
+        const { error } = await supabase
+          .from("pv_size_targets")
+          .upsert(rows, { onConflict: "size" });
+        
+        if (error) console.error("❌ Erreur tailles:", error);
+        else console.log("✅ Tailles sauvegardées:", rows);
+      }
       
-      await supabase.from("pv_settings").upsert(scopedPayload, { onConflict: "id" });
+      // Objectif total (table simple avec une seule ligne)
+      if (updates.objectiveTotal !== undefined) {
+        const { error } = await supabase
+          .from("pv_settings")
+          .upsert({ 
+            id: "main", 
+            objective_total: Number(updates.objectiveTotal),
+            updated_at: new Date().toISOString()
+          }, { onConflict: "id" });
+        
+        if (error) console.error("❌ Erreur objectif:", error);
+        else console.log("✅ Objectif sauvegardé:", updates.objectiveTotal);
+      }
+    } catch (err) {
+      console.error("❌ Exception sauvegarde:", err);
     }
   },
-  [parkingCategory, parkingType]
+  []
 );
 
 const handleTierPctChange = useCallback(
@@ -3551,10 +3592,13 @@ const openPricingSearchTabs = (v) => {
   if (!v) return;
 
   const brand = (v?.Marque || v?.["Marque"] || "").toString().trim();
-  const model =
+  const modelRaw =
     (v?.["Modèle"] || v?.["Modele"] || v?.Modele || v?.Title || "").toString().trim();
   const year = (v?.["Année"] || v?.["Annee"] || v?.Annee || "").toString().trim();
   const category = (v?.["Catégorie"] || "").toString().toLowerCase();
+
+  // ✅ Nettoyer le modèle : enlever les patterns comme "750Wh", "500Wh", etc.
+  const model = modelRaw.replace(/\d+Wh/gi, "").trim();
 
   const queryNoYear = [brand, model].filter(Boolean).join(" ").trim();
   const queryWithYear = [brand, model, year].filter(Boolean).join(" ").trim();
@@ -3565,61 +3609,170 @@ const openPricingSearchTabs = (v) => {
   const typeVeloRaw = getFieldLoose(v, "Type de vélo"); // match même si accents/espaces diffèrent
 const typeVelo = stripDiacritics(String(typeVeloRaw)).toLowerCase().trim();
 
-const isEbike = typeVelo.includes("Électrique");
-const fallbackHay = stripDiacritics(`${v?.Title || ""} ${v?.["Catégorie"] || ""} ${v?.["Motorisation"] || ""}`)
-  .toLowerCase();
-
-const isEbikeFinal = isEbike || fallbackHay.includes("hybrid") || fallbackHay.includes("vae") || fallbackHay.includes("bosch");
+// ✅ Se baser uniquement sur "33Électrique" dans le type de vélo
+const isEbikeFinal = typeVelo.includes("electrique");
 
 
 
   const googleUrl = `https://www.google.com/search?q=${qWithYear}`;
   const y = year || "0";
   const buycycleUrl = `https://buycycle.com/fr-fr/shop/min-year/${encodeURIComponent(y)}/search/${qNoYear}/sort-by/lowest-price`;
-  const leboncoinUrl = `https://www.leboncoin.fr/recherche?category=55&text=${qWithYear}`;
+  const leboncoinUrl = `https://www.leboncoin.fr/recherche?category=55&text=${qNoYear}&sort=price&order=asc`;
   const upwayUrl = `https://upway.fr/search?q=${qWithYear}`;
+  const tuvalumUrl = `https://tuvalum.fr/search?sort_by=price-ascending&grid=default&q=${qWithYear}`;
+  const zycloraUrl = `https://zyclora.fr/#210c/fullscreen/m=or&q=${qWithYear}`;
+  const rebikeUrl = `https://rebike.fr/search?q=${qWithYear}`;
 
   const links = [
-    { label: "Google", url: googleUrl },
-    { label: "Buycycle", url: buycycleUrl },
-    { label: "Leboncoin", url: leboncoinUrl },
+    { label: "🔍 Google", url: googleUrl, color: "#4285F4" },
+    { label: "🚴 Buycycle", url: buycycleUrl, color: "#00A651" },
+    { label: "🛒 Leboncoin", url: leboncoinUrl, color: "#FF6E14" },
+    { label: "📦 Tuvalum", url: tuvalumUrl, color: "#7C3AED" },
+    { label: "🔄 Zyclora", url: zycloraUrl, color: "#0EA5E9" },
+    { label: "♻️ Rebike", url: rebikeUrl, color: "#10B981" },
   ];
-  if (isEbikeFinal) links.push({ label: "Upway", url: upwayUrl });
+  if (isEbikeFinal) links.push({ label: "⚡ Upway", url: upwayUrl, color: "#F59E0B" });
 
-  // ✅ IMPORTANT : pas de noopener ici sinon tu ne peux pas écrire dans la fenêtre
-  const w = window.open("about:blank", "_blank");
-  if (!w) {
+  // ✅ Créer une belle page intermédiaire avec tous les liens
+  const html = `
+    <!DOCTYPE html>
+    <html lang="fr">
+    <head>
+      <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <title>Recherches Concurrence - ${escapeHtml(queryWithYear)}</title>
+      <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+          background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+          min-height: 100vh;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          padding: 20px;
+        }
+        .container {
+          background: white;
+          border-radius: 20px;
+          padding: 40px;
+          max-width: 800px;
+          width: 100%;
+          box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+        }
+        h1 {
+          font-size: 28px;
+          color: #1f2937;
+          margin-bottom: 10px;
+          text-align: center;
+        }
+        .subtitle {
+          text-align: center;
+          color: #6b7280;
+          font-size: 16px;
+          margin-bottom: 30px;
+          padding: 12px;
+          background: #f3f4f6;
+          border-radius: 8px;
+          font-weight: 500;
+        }
+        .badge {
+          display: inline-block;
+          background: #fbbf24;
+          color: #78350f;
+          padding: 4px 12px;
+          border-radius: 12px;
+          font-size: 13px;
+          font-weight: 700;
+          margin-left: 8px;
+        }
+        .links-grid {
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+          gap: 16px;
+          margin-bottom: 24px;
+        }
+        .link-btn {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          gap: 10px;
+          padding: 18px 24px;
+          border: 2px solid #e5e7eb;
+          border-radius: 12px;
+          text-decoration: none;
+          color: white;
+          font-weight: 700;
+          font-size: 16px;
+          transition: all 0.2s;
+          position: relative;
+          overflow: hidden;
+        }
+        .link-btn:hover {
+          transform: translateY(-2px);
+          box-shadow: 0 8px 20px rgba(0,0,0,0.15);
+          border-color: currentColor;
+        }
+        .link-btn:active {
+          transform: translateY(0);
+        }
+        .footer {
+          text-align: center;
+          color: #9ca3af;
+          font-size: 13px;
+          margin-top: 20px;
+          padding-top: 20px;
+          border-top: 1px solid #e5e7eb;
+        }
+        .tip {
+          background: #dbeafe;
+          border-left: 4px solid #3b82f6;
+          padding: 12px 16px;
+          border-radius: 8px;
+          color: #1e40af;
+          font-size: 14px;
+          margin-top: 20px;
+        }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <h1>🔍 Recherches Concurrence</h1>
+        <div class="subtitle">
+          ${escapeHtml(queryWithYear)}
+          ${isEbikeFinal ? '<span class="badge">⚡ ÉLECTRIQUE</span>' : ''}
+        </div>
+        
+        <div class="links-grid">
+          ${links.map(link => `
+            <a href="${link.url}" target="_blank" class="link-btn" style="background: ${link.color};">
+              ${link.label}
+            </a>
+          `).join('')}
+        </div>
+
+        <div class="tip">
+          💡 <strong>Astuce :</strong> Faites glisser cet onglet hors de la fenêtre pour créer une nouvelle fenêtre dédiée à vos recherches !
+        </div>
+        
+        <div class="footer">
+          Mint Bikes - Comparaison de prix concurrents
+        </div>
+      </div>
+    </body>
+    </html>
+  `;
+
+  // Ouvrir dans un nouvel onglet simple (sans features)
+  const newTab = window.open('about:blank', '_blank');
+  
+  if (!newTab) {
     alert("Pop-up bloquée : autorise les pop-ups pour localhost:3000 puis réessaie.");
     return;
   }
 
-  // ✅ sécurité : on coupe l'opener après coup
-  try { w.opener = null; } catch (e) {}
-
-  w.document.title = "Recherches concurrence";
-  w.document.body.innerHTML = `
-    <div style="font-family:Arial,sans-serif;padding:18px;">
-      <h1 style="font-size:18px;margin:0 0 10px;">Recherches concurrence</h1>
-      <p style="margin:0 0 16px;color:#555;">
-        ${escapeHtml(queryWithYear)} ${isEbike ? "(électrique → Upway inclus)" : ""}
-      </p>
-      <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;">
-        ${links
-          .map(
-            (l) => `
-            <a href="${l.url}" target="_blank" rel="noopener noreferrer"
-               style="display:block;padding:12px 14px;border:1px solid #ddd;border-radius:12px;
-                      text-decoration:none;color:#111;font-weight:700;background:#fff;">
-              🔎 ${l.label}
-            </a>`
-          )
-          .join("")}
-      </div>
-      <div style="margin-top:14px;font-size:12px;color:#666;">
-        Clique sur chaque bouton pour ouvrir les onglets.
-      </div>
-    </div>
-  `;
+  newTab.document.write(html);
+  newTab.document.close();
 };
 
 const escapeHtml = (str) =>
@@ -8789,12 +8942,8 @@ const objTotalForCatMar = objectiveTotal * multCategory * multSize;
                               setParkingRules((p) => {
                                 const newObj = { ...(p[key] || {}), [k]: pct };
                                 const updated = { ...p, [key]: newObj };
-                                // Sauvegarder dans Supabase
-                                saveParkingSettings({ 
-                                  categoryPct: key === 'categoryPct' ? newObj : undefined,
-                                  sizePct: key === 'sizePct' ? newObj : undefined,
-                                  pricePct: key === 'pricePct' ? newObj : undefined 
-                                });
+                                // Sauvegarder dans Supabase - ne passer que la clé modifiée
+                                saveParkingSettings({ [key]: newObj });
                                 return updated;
                               });
                             }}
@@ -8890,9 +9039,35 @@ const objTotalForCatMar = objectiveTotal * multCategory * multSize;
               </div>
               </div>
 
-              {/* DROITE : MARQUES */}
-              <div style={{ minWidth: 0 }}>
-                <div className="parking-card" style={{ minHeight: 520 }}>
+              {/* DROITE : Paramètres liés à la catégorie/type */}
+              <div style={{ minWidth: 0, display: "flex", flexDirection: "column", gap: 24 }}>
+                {/* Sélecteur catégorie/type déplacé ici */}
+                <div className="parking-card" style={{ marginBottom: 0, paddingBottom: 0 }}>
+                  <div style={{ fontWeight: 800, fontSize: 16, marginBottom: 8 }}>Catégorie & Type de vélo</div>
+                  <select
+                    value={parkingCategory || ""}
+                    onChange={e => setParkingCategory(e.target.value)}
+                    style={{ width: "100%", padding: "8px 12px", borderRadius: 8, fontSize: 15, marginBottom: 8 }}
+                  >
+                    <option value="">Sélectionner…</option>
+                    {parkingCategories.map(opt => (
+                      <option key={opt} value={opt}>{opt}</option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Paramètres tranches de prix */}
+                <div className="parking-card" style={{ marginBottom: 0, paddingBottom: 0 }}>
+                  <div style={{ fontWeight: 800, fontSize: 16, marginBottom: 8 }}>Paramètres tranches de prix</div>
+                  {/* ...existing code for price bands UI... */}
+                  <div>
+                    {/* ...code d'affichage et édition des tranches de prix (déjà présent)... */}
+                  </div>
+                </div>
+
+                {/* Paramètres CAT MAR */}
+                <div className="parking-card" style={{ minHeight: 320 }}>
+                  <div style={{ fontWeight: 800, fontSize: 16, marginBottom: 8 }}>Paramètres CAT MAR</div>
                   <BrandTierBoard 
                     tierPct={parkingTierPct} 
                     onTierPctChange={handleTierPctChange}

@@ -4,29 +4,32 @@ import { supabase } from "./supabaseClient";
 
 const KPIDashboard = ({ isOpen, onClose, statsData, velos = [], inventoryVelos = [], pricingByUrl = {}, filteredVelosCount, stockMode, setStockMode }) => {
   const [inventoryData, setInventoryData] = useState([]);
+  const [upwayBikes, setUpwayBikes] = useState([]);
   const [selectedMonth, setSelectedMonth] = useState("");
   const [waterfallTypeFilter, setWaterfallTypeFilter] = useState("tous");
   const [waterfallCategoryFilter, setWaterfallCategoryFilter] = useState("tous");
+  const [hoveredKPI, setHoveredKPI] = useState(null);
+  const [showUpwayComparison, setShowUpwayComparison] = useState(false);
+  const [showUpwayPriceComparison, setShowUpwayPriceComparison] = useState(false);
+  const [showUpwayCategoryComparison, setShowUpwayCategoryComparison] = useState(false);
+  const [showUpwayCategoryPriceComparison, setShowUpwayCategoryPriceComparison] = useState(false);
+  const [showUpwayBrandComparison, setShowUpwayBrandComparison] = useState(false);
 
   // Charger les données inventory
   useEffect(() => {
     if (!isOpen) return;
-    
     const fetchInventory = async () => {
       try {
         const { data, error } = await supabase
           .from("inventory")
           .select("*")
           .order("date_achat", { ascending: true });
-        
         if (error) {
           console.error("Error loading inventory:", error);
           return;
         }
-        
         if (data) {
           setInventoryData(data);
-          
           // Définir le mois actuel par défaut
           const now = new Date();
           const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
@@ -36,9 +39,291 @@ const KPIDashboard = ({ isOpen, onClose, statsData, velos = [], inventoryVelos =
         console.error("Exception loading inventory:", err);
       }
     };
-    
+    const fetchUpwayBikes = async () => {
+      try {
+        // Récupérer tous les vélos avec pagination (Supabase limite à 1000 par défaut)
+        let allBikes = [];
+        let page = 0;
+        const pageSize = 1000;
+        let hasMore = true;
+
+        while (hasMore) {
+          const { data, error } = await supabase
+            .from("upway_bikes")
+            .select("*")
+            .range(page * pageSize, (page + 1) * pageSize - 1);
+
+          if (error) {
+            console.error("Error loading upway_bikes:", error);
+            break;
+          }
+
+          if (data && data.length > 0) {
+            allBikes = [...allBikes, ...data];
+            hasMore = data.length === pageSize;
+            page++;
+          } else {
+            hasMore = false;
+          }
+        }
+
+        console.log(`Chargé ${allBikes.length} vélos Upway`);
+        setUpwayBikes(allBikes);
+      } catch (err) {
+        console.error("Exception loading upway_bikes:", err);
+      }
+    };
     fetchInventory();
+    fetchUpwayBikes();
   }, [isOpen]);
+  // KPIs pour Upway (concurrent) - Vélos mis en ligne
+  const upwayKPIs = useMemo(() => {
+    if (!upwayBikes.length) return null;
+    // Nombre total de vélos
+    const total = upwayBikes.length;
+    // Prix total de vente (somme de tous les prix)
+    const prices = upwayBikes.map(b => parseFloat((b.price || '').replace(/[^\d.,]/g, '').replace(',', '.')) || 0).filter(p => p > 0);
+    const totalValue = prices.reduce((a, b) => a + b, 0);
+    // Date publication: uploadedDate ou "uploadedDate"
+    const now = new Date();
+    const daysOnline = upwayBikes.map(b => {
+      const d = b.uploadedDate || b["uploadedDate"];
+      if (!d) return null;
+      const date = new Date(d);
+      if (isNaN(date.getTime())) return null;
+      return Math.floor((now - date) / (1000 * 60 * 60 * 24));
+    }).filter(x => x !== null);
+    const avgDaysOnline = daysOnline.length ? daysOnline.reduce((a, b) => a + b, 0) / daysOnline.length : 0;
+    return {
+      total,
+      totalValue,
+      avgDaysOnline,
+      daysOnline
+    };
+  }, [upwayBikes]);
+
+  // Distribution d'âge pour Upway (pour comparaison graphique)
+  const upwayAgeDist = useMemo(() => {
+    if (!upwayKPIs?.daysOnline) return [];
+
+    const ageRanges = [
+      { range: "0-7j", min: 0, max: 7, count: 0 },
+      { range: "7-30j", min: 7, max: 30, count: 0 },
+      { range: "30-60j", min: 30, max: 60, count: 0 },
+      { range: "60-90j", min: 60, max: 90, count: 0 },
+      { range: "90-120j", min: 90, max: 120, count: 0 },
+      { range: "120-150j", min: 120, max: 150, count: 0 },
+      { range: "150j+", min: 150, max: Infinity, count: 0 },
+    ];
+
+    upwayKPIs.daysOnline.forEach(age => {
+      if (age >= 0) {
+        const bucket = ageRanges.find(r => age >= r.min && age < r.max);
+        if (bucket) bucket.count += 1;
+      }
+    });
+
+    return ageRanges.map(r => ({ name: r.range, value: r.count }));
+  }, [upwayKPIs]);
+
+  // Distribution des prix pour Upway (pour comparaison graphique)
+  const upwayPriceDist = useMemo(() => {
+    if (!upwayBikes.length) return [];
+
+    const priceRanges = [
+      { range: "0-500€", min: 0, max: 500, count: 0 },
+      { range: "500-750€", min: 500, max: 750, count: 0 },
+      { range: "750-1000€", min: 750, max: 1000, count: 0 },
+      { range: "1000-1250€", min: 1000, max: 1250, count: 0 },
+      { range: "1250-1500€", min: 1250, max: 1500, count: 0 },
+      { range: "1500-1750€", min: 1500, max: 1750, count: 0 },
+      { range: "1750-2000€", min: 1750, max: 2000, count: 0 },
+      { range: "2000-2250€", min: 2000, max: 2250, count: 0 },
+      { range: "2250-2500€", min: 2250, max: 2500, count: 0 },
+      { range: "2500-2750€", min: 2500, max: 2750, count: 0 },
+      { range: "2750-3000€", min: 2750, max: 3000, count: 0 },
+      { range: "3000-3250€", min: 3000, max: 3250, count: 0 },
+      { range: "3250-3500€", min: 3250, max: 3500, count: 0 },
+      { range: "3500-3750€", min: 3500, max: 3750, count: 0 },
+      { range: "3750-4000€", min: 3750, max: 4000, count: 0 },
+      { range: "4000-4250€", min: 4000, max: 4250, count: 0 },
+      { range: "4250-4500€", min: 4250, max: 4500, count: 0 },
+      { range: "4500€+", min: 4500, max: Infinity, count: 0 },
+    ];
+
+    upwayBikes.forEach(b => {
+      const price = parseFloat((b.price || '').replace(/[^\d.,]/g, '').replace(',', '.')) || 0;
+      if (price > 0) {
+        const bucket = priceRanges.find(r => price >= r.min && price < r.max);
+        if (bucket) bucket.count += 1;
+      }
+    });
+
+    return priceRanges.map(r => ({ name: r.range, value: r.count }));
+  }, [upwayBikes]);
+
+  // Distribution des catégories pour Upway (quantités)
+  const upwayCategoryDist = useMemo(() => {
+    if (!upwayBikes.length) return [];
+
+    const categoryElecMuscu = {};
+
+    upwayBikes.forEach(b => {
+      const cat = b["Catégorie"] || b.cargoCategory || "Non classé";
+      const typeVelo = b["Type de vélo"] || (b.assistanceType ? "Electrique" : "Musculaire");
+
+      if (!categoryElecMuscu[cat]) {
+        categoryElecMuscu[cat] = { electrique: 0, musculaire: 0 };
+      }
+
+      if (typeVelo === "Electrique") {
+        categoryElecMuscu[cat].electrique += 1;
+      } else if (typeVelo === "Musculaire") {
+        categoryElecMuscu[cat].musculaire += 1;
+      }
+    });
+
+    const totalGeneral = Object.values(categoryElecMuscu).reduce((sum, counts) =>
+      sum + counts.electrique + counts.musculaire, 0
+    );
+
+    return Object.entries(categoryElecMuscu).map(([name, counts]) => ({
+      name,
+      electrique: counts.electrique,
+      musculaire: counts.musculaire,
+      electriquePct: totalGeneral > 0 ? (counts.electrique / totalGeneral) * 100 : 0,
+      musculairePct: totalGeneral > 0 ? (counts.musculaire / totalGeneral) * 100 : 0
+    })).sort((a, b) => (b.electrique + b.musculaire) - (a.electrique + a.musculaire));
+  }, [upwayBikes]);
+
+  // Distribution des prix moyens par catégorie pour Upway
+  const upwayCategoryPriceDist = useMemo(() => {
+    if (!upwayBikes.length) return [];
+
+    const categoryPriceElecMuscu = {};
+
+    upwayBikes.forEach(b => {
+      const cat = b["Catégorie"] || b.cargoCategory || "Non classé";
+      const typeVelo = b["Type de vélo"] || (b.assistanceType ? "Electrique" : "Musculaire");
+      const price = parseFloat((b.price || '').replace(/[^\d.,]/g, '').replace(',', '.')) || 0;
+
+      if (price <= 0) return;
+
+      if (!categoryPriceElecMuscu[cat]) {
+        categoryPriceElecMuscu[cat] = {
+          electrique: { sum: 0, count: 0 },
+          musculaire: { sum: 0, count: 0 }
+        };
+      }
+
+      if (typeVelo === "Electrique") {
+        categoryPriceElecMuscu[cat].electrique.sum += price;
+        categoryPriceElecMuscu[cat].electrique.count += 1;
+      } else if (typeVelo === "Musculaire") {
+        categoryPriceElecMuscu[cat].musculaire.sum += price;
+        categoryPriceElecMuscu[cat].musculaire.count += 1;
+      }
+    });
+
+    return Object.entries(categoryPriceElecMuscu).map(([name, data]) => {
+      const avgElec = data.electrique.count > 0 ? data.electrique.sum / data.electrique.count : 0;
+      const avgMuscu = data.musculaire.count > 0 ? data.musculaire.sum / data.musculaire.count : 0;
+
+      return {
+        name,
+        électrique: Math.round(avgElec),
+        musculaire: Math.round(avgMuscu),
+        electriqueCount: data.electrique.count,
+        musculaireCount: data.musculaire.count
+      };
+    }).filter(item => item.électrique > 0 || item.musculaire > 0)
+      .sort((a, b) => (b.électrique + b.musculaire) - (a.électrique + a.musculaire));
+  }, [upwayBikes]);
+
+  // Top 10 marques pour Upway
+  const upwayBrandDist = useMemo(() => {
+    if (!upwayBikes.length) return [];
+
+    const brandCount = {};
+
+    upwayBikes.forEach(b => {
+      const brand = b.brand || b.vendor || "Inconnue";
+
+      if (!brandCount[brand]) {
+        brandCount[brand] = { electrique: 0, musculaire: 0 };
+      }
+
+      // Upway ne vend que de l'électrique
+      brandCount[brand].electrique += 1;
+    });
+
+    return Object.entries(brandCount)
+      .map(([name, counts]) => ({
+        name,
+        électrique: counts.electrique,
+        musculaire: counts.musculaire,
+        total: counts.electrique + counts.musculaire
+      }))
+      .sort((a, b) => b.total - a.total)
+      .slice(0, 10);
+  }, [upwayBikes]);
+
+  // Calcul des durées moyennes par catégorie pour Mint et Upway
+  const daysOnlineByCategoryComparison = useMemo(() => {
+    // Pour Mint
+    const mintByCategory = {};
+    velos.forEach(v => {
+      const publishedAt = v?.["Published At"];
+      if (!publishedAt) return;
+      const date = new Date(publishedAt);
+      if (isNaN(date.getTime())) return;
+      const age = Math.floor((new Date() - date) / (1000 * 60 * 60 * 24));
+      const cat = v?.["Catégorie"] || "Non classé";
+
+      if (!mintByCategory[cat]) {
+        mintByCategory[cat] = { sum: 0, count: 0 };
+      }
+      mintByCategory[cat].sum += age;
+      mintByCategory[cat].count += 1;
+    });
+
+    const mintData = Object.entries(mintByCategory)
+      .map(([cat, data]) => ({
+        category: cat,
+        avgDays: data.count > 0 ? data.sum / data.count : 0,
+        count: data.count
+      }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 5);
+
+    // Pour Upway
+    const upwayByCategory = {};
+    upwayBikes.forEach(b => {
+      const d = b.uploadedDate || b["uploadedDate"];
+      if (!d) return;
+      const date = new Date(d);
+      if (isNaN(date.getTime())) return;
+      const age = Math.floor((new Date() - date) / (1000 * 60 * 60 * 24));
+      const cat = b["Catégorie"] || b.cargoCategory || "Non classé";
+
+      if (!upwayByCategory[cat]) {
+        upwayByCategory[cat] = { sum: 0, count: 0 };
+      }
+      upwayByCategory[cat].sum += age;
+      upwayByCategory[cat].count += 1;
+    });
+
+    const upwayData = Object.entries(upwayByCategory)
+      .map(([cat, data]) => ({
+        category: cat,
+        avgDays: data.count > 0 ? data.sum / data.count : 0,
+        count: data.count
+      }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 5);
+
+    return { mint: mintData, upway: upwayData };
+  }, [velos, upwayBikes]);
 
   // =========================
   // 📊 Calculs simples directs
@@ -242,18 +527,30 @@ const KPIDashboard = ({ isOpen, onClose, statsData, velos = [], inventoryVelos =
     const brandMarginMap = {};
     velos.forEach(v => {
       const brand = v?.["Marque"] || "Inconnue";
-      const url = v?.URL;
-      const pricing = pricingByUrl?.[url];
       const units = getStockUnits(v);
       
-      if (pricing && units > 0) {
-        // Parser robuste pour Prix réduit (TEXT avec possiblement €, espaces, etc.)
-        const priceStr = String(v?.["Prix réduit"] || "0").replace(/[^\d.,]/g, "").replace(",", ".");
-        const price = parseFloat(priceStr) || 0;
+      if (units > 0) {
+        let buy = 0, parts = 0, logistics = 0, price = 0;
         
-        const buy = Number(pricing.negotiated_buy_price) || 0;
-        const parts = Number(pricing.parts_cost_actual) || 0;
-        const logistics = Number(pricing.logistics_cost) || 0;
+        if (v._isInventory && v._original) {
+          // Vélos inventory
+          const inv = v._original;
+          buy = Number(inv.prix_achat_negocie) || 0;
+          parts = Number(inv.frais_pieces_estimes) || 0;
+          logistics = Number(inv.cout_logistique) || 0;
+          price = Number(inv.prix_occasion_marche) || 0;
+        } else {
+          // Vélos en vente
+          const url = v?.URL;
+          const pricing = pricingByUrl?.[url];
+          if (pricing) {
+            buy = Number(pricing.negotiated_buy_price) || 0;
+            parts = Number(pricing.parts_cost_actual) || 0;
+            logistics = Number(pricing.logistics_cost) || 0;
+            const priceStr = String(v?.["Prix réduit"] || "0").replace(/[^\d.,]/g, "").replace(",", ".");
+            price = parseFloat(priceStr) || 0;
+          }
+        }
         
         // Marge = Prix de vente - Achat - Pièces - Logistique
         const margin = price - buy - parts - logistics;
@@ -263,7 +560,7 @@ const KPIDashboard = ({ isOpen, onClose, statsData, velos = [], inventoryVelos =
           if (!brandMarginMap[brand]) {
             brandMarginMap[brand] = { totalMargin: 0, totalUnits: 0 };
           }
-          brandMarginMap[brand].totalMargin += margin * units; // Marge totale pondérée par les unités
+          brandMarginMap[brand].totalMargin += margin * units;
           brandMarginMap[brand].totalUnits += units;
         }
       }
@@ -327,17 +624,30 @@ const KPIDashboard = ({ isOpen, onClose, statsData, velos = [], inventoryVelos =
       .sort((a, b) => a.sortKey - b.sortKey);
     
     velos.forEach(v => {
-      const url = v?.URL;
-      const pricing = pricingByUrl?.[url];
       const units = getStockUnits(v);
       
-      if (pricing && units > 0) {
-        const priceStr = String(v?.["Prix réduit"] || "0").replace(/[^\d.,]/g, "").replace(",", ".");
-        const price = parseFloat(priceStr) || 0;
+      if (units > 0) {
+        let buy = 0, parts = 0, logistics = 0, price = 0;
         
-        const buy = Number(pricing.negotiated_buy_price) || 0;
-        const parts = Number(pricing.parts_cost_actual) || 0;
-        const logistics = Number(pricing.logistics_cost) || 0;
+        if (v._isInventory && v._original) {
+          // Vélos inventory
+          const inv = v._original;
+          buy = Number(inv.prix_achat_negocie) || 0;
+          parts = Number(inv.frais_pieces_estimes) || 0;
+          logistics = Number(inv.cout_logistique) || 0;
+          price = Number(inv.prix_occasion_marche) || 0;
+        } else {
+          // Vélos en vente
+          const url = v?.URL;
+          const pricing = pricingByUrl?.[url];
+          if (pricing) {
+            buy = Number(pricing.negotiated_buy_price) || 0;
+            parts = Number(pricing.parts_cost_actual) || 0;
+            logistics = Number(pricing.logistics_cost) || 0;
+            const priceStr = String(v?.["Prix réduit"] || "0").replace(/[^\d.,]/g, "").replace(",", ".");
+            price = parseFloat(priceStr) || 0;
+          }
+        }
         
         const margin = price - buy - parts - logistics;
         
@@ -508,22 +818,39 @@ const KPIDashboard = ({ isOpen, onClose, statsData, velos = [], inventoryVelos =
       monthlyKPIs[monthKey] = { totalAchats, valeurAchats, prixMoyenAchat, margeMoyenne };
     });
 
-    // Marge par mois (basée sur purchase_date de pricingByUrl)
+    // Marge par mois (basée sur purchase_date de pricingByUrl ou date_achat inventory)
     const monthlyMarginsFromStock = {};
     velos.forEach(v => {
-      const url = v?.URL;
-      const pricing = pricingByUrl?.[url];
+      let purchaseDate = null;
+      let sellPrice = 0, buyPrice = 0, parts = 0, logistics = 0;
       
-      if (!pricing || !pricing.purchase_date) return;
+      if (v._isInventory && v._original) {
+        // Vélos inventory
+        const inv = v._original;
+        if (inv.date_achat) {
+          purchaseDate = new Date(inv.date_achat);
+          sellPrice = Number(inv.prix_occasion_marche) || 0;
+          buyPrice = Number(inv.prix_achat_negocie) || 0;
+          parts = Number(inv.frais_pieces_estimes) || 0;
+          logistics = Number(inv.cout_logistique) || 0;
+        }
+      } else {
+        // Vélos en vente
+        const url = v?.URL;
+        const pricing = pricingByUrl?.[url];
+        if (pricing && pricing.purchase_date) {
+          purchaseDate = new Date(pricing.purchase_date);
+          const priceStr = String(v?.["Prix réduit"] || "0").replace(/[^\d.,]/g, "").replace(",", ".");
+          sellPrice = parseFloat(priceStr) || 0;
+          buyPrice = Number(pricing?.negotiated_buy_price) || 0;
+          parts = Number(pricing?.parts_cost_actual) || 0;
+          logistics = Number(pricing?.logistics_cost) || 0;
+        }
+      }
       
-      const purchaseDate = new Date(pricing.purchase_date);
+      if (!purchaseDate) return;
+      
       const monthKey = `${purchaseDate.getFullYear()}-${String(purchaseDate.getMonth() + 1).padStart(2, '0')}`;
-      
-      const priceStr = String(v?.["Prix réduit"] || "0").replace(/[^\d.,]/g, "").replace(",", ".");
-      const sellPrice = parseFloat(priceStr) || 0;
-      const buyPrice = Number(pricing?.negotiated_buy_price) || 0;
-      const parts = Number(pricing?.parts_cost_actual) || 0;
-      const logistics = Number(pricing?.logistics_cost) || 0;
       const margin = sellPrice - buyPrice - parts - logistics;
       
       if (!monthlyMarginsFromStock[monthKey]) {
@@ -542,21 +869,39 @@ const KPIDashboard = ({ isOpen, onClose, statsData, velos = [], inventoryVelos =
       }))
       .sort((a, b) => a.name.localeCompare(b.name));
     
-    // NOUVEAU: Marge moyenne par catégorie (en utilisant pricingByUrl)
+    // NOUVEAU: Marge moyenne par catégorie (en utilisant pricingByUrl ou inventory)
     const categoryStats = {};
     velos.forEach(v => {
-      const url = v?.URL;
-      const pricing = pricingByUrl?.[url];
       const category = v?.["Catégorie"] || "Autres";
       const bikeType = v?.["Type de vélo"] || "Musculaire"; // "Électrique" ou "Musculaire"
       
-      if (!pricing || !pricing.purchase_date) return;
+      let sellPrice = 0, buyPrice = 0, parts = 0, logistics = 0;
+      let hasData = false;
       
-      const priceStr = String(v?.["Prix réduit"] || "0").replace(/[^\d.,]/g, "").replace(",", ".");
-      const sellPrice = parseFloat(priceStr) || 0;
-      const buyPrice = Number(pricing?.negotiated_buy_price) || 0;
-      const parts = Number(pricing?.parts_cost_actual) || 0;
-      const logistics = Number(pricing?.logistics_cost) || 0;
+      if (v._isInventory && v._original) {
+        // Vélos inventory
+        const inv = v._original;
+        sellPrice = Number(inv.prix_occasion_marche) || 0;
+        buyPrice = Number(inv.prix_achat_negocie) || 0;
+        parts = Number(inv.frais_pieces_estimes) || 0;
+        logistics = Number(inv.cout_logistique) || 0;
+        hasData = true;
+      } else {
+        // Vélos en vente
+        const url = v?.URL;
+        const pricing = pricingByUrl?.[url];
+        if (pricing && pricing.purchase_date) {
+          const priceStr = String(v?.["Prix réduit"] || "0").replace(/[^\d.,]/g, "").replace(",", ".");
+          sellPrice = parseFloat(priceStr) || 0;
+          buyPrice = Number(pricing?.negotiated_buy_price) || 0;
+          parts = Number(pricing?.parts_cost_actual) || 0;
+          logistics = Number(pricing?.logistics_cost) || 0;
+          hasData = true;
+        }
+      }
+      
+      if (!hasData) return;
+      
       const margin = sellPrice - buyPrice - parts - logistics;
       
       if (!categoryStats[category]) {
@@ -1043,18 +1388,87 @@ const KPIDashboard = ({ isOpen, onClose, statsData, velos = [], inventoryVelos =
               <span>📦</span>
               <span>KPI Stock</span>
             </div>
-
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 12 }}>
-              <div style={kpiCardStyle}>
+              <div
+                style={{...kpiCardStyle, cursor: 'help', position: 'relative'}}
+                onMouseEnter={() => setHoveredKPI('units')}
+                onMouseLeave={() => setHoveredKPI(null)}
+              >
                 <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 4 }}>Unités en stock</div>
                 <div style={{ fontSize: 28, fontWeight: 900, color: COLORS.primary }}>{totalUnits}</div>
                 <div style={{ fontSize: 11, opacity: 0.6, marginTop: 4 }}>{kpi.nRows || 0} fiches</div>
+                {hoveredKPI === 'units' && upwayKPIs && (
+                  <div style={{
+                    position: 'absolute',
+                    top: '-80px',
+                    left: '50%',
+                    transform: 'translateX(-50%)',
+                    background: 'linear-gradient(135deg, #0d9488 0%, #14b8a6 100%)',
+                    color: 'white',
+                    padding: '12px 16px',
+                    borderRadius: '8px',
+                    boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+                    zIndex: 1000,
+                    whiteSpace: 'nowrap',
+                    fontSize: '14px',
+                    fontWeight: 600,
+                  }}>
+                    <div style={{ marginBottom: 4, fontSize: 11, opacity: 0.9 }}>📊 Upway (concurrent)</div>
+                    <div style={{ fontSize: 18, fontWeight: 700 }}>{upwayKPIs.total} vélos en ligne</div>
+                    <div style={{
+                      position: 'absolute',
+                      bottom: '-6px',
+                      left: '50%',
+                      transform: 'translateX(-50%)',
+                      width: 0,
+                      height: 0,
+                      borderLeft: '6px solid transparent',
+                      borderRight: '6px solid transparent',
+                      borderTop: '6px solid #14b8a6',
+                    }} />
+                  </div>
+                )}
               </div>
 
-              <div style={kpiCardStyle}>
+              <div
+                style={{...kpiCardStyle, cursor: 'help', position: 'relative'}}
+                onMouseEnter={() => setHoveredKPI('value')}
+                onMouseLeave={() => setHoveredKPI(null)}
+              >
                 <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 4 }}>Valeur stock (prix vente)</div>
                 <div style={{ fontSize: 28, fontWeight: 900, color: COLORS.teal }}>{fmtEur(stockValueEur)}</div>
                 <div style={{ fontSize: 11, opacity: 0.6, marginTop: 4 }}>prix réduit × unités</div>
+                {hoveredKPI === 'value' && upwayKPIs && (
+                  <div style={{
+                    position: 'absolute',
+                    top: '-80px',
+                    left: '50%',
+                    transform: 'translateX(-50%)',
+                    background: 'linear-gradient(135deg, #0d9488 0%, #14b8a6 100%)',
+                    color: 'white',
+                    padding: '12px 16px',
+                    borderRadius: '8px',
+                    boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+                    zIndex: 1000,
+                    whiteSpace: 'nowrap',
+                    fontSize: '14px',
+                    fontWeight: 600,
+                  }}>
+                    <div style={{ marginBottom: 4, fontSize: 11, opacity: 0.9 }}>📊 Upway (concurrent)</div>
+                    <div style={{ fontSize: 18, fontWeight: 700 }}>{fmtEur(upwayKPIs.totalValue)} valeur totale</div>
+                    <div style={{
+                      position: 'absolute',
+                      bottom: '-6px',
+                      left: '50%',
+                      transform: 'translateX(-50%)',
+                      width: 0,
+                      height: 0,
+                      borderLeft: '6px solid transparent',
+                      borderRight: '6px solid transparent',
+                      borderTop: '6px solid #14b8a6',
+                    }} />
+                  </div>
+                )}
               </div>
 
               <div style={kpiCardStyle}>
@@ -1064,12 +1478,81 @@ const KPIDashboard = ({ isOpen, onClose, statsData, velos = [], inventoryVelos =
               </div>
 
               {stockMode === "vente" && (
-                <div style={kpiCardStyle}>
+                <div
+                  style={{...kpiCardStyle, cursor: 'help', position: 'relative'}}
+                  onMouseEnter={() => setHoveredKPI('days')}
+                  onMouseLeave={() => setHoveredKPI(null)}
+                >
                   <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 4 }}>Durée moy. en ligne</div>
                   <div style={{ fontSize: 28, fontWeight: 900, color: COLORS.purple }}>
                     {statsData?.avgListingDays ? `${Math.round(statsData.avgListingDays)}j` : "—"}
                   </div>
                   <div style={{ fontSize: 11, opacity: 0.6, marginTop: 4 }}>pondéré par unités</div>
+                  {hoveredKPI === 'days' && upwayKPIs && (
+                    <div style={{
+                      position: 'absolute',
+                      top: '-260px',
+                      left: '50%',
+                      transform: 'translateX(-50%)',
+                      background: 'white',
+                      color: '#1f2937',
+                      padding: '16px',
+                      borderRadius: '12px',
+                      boxShadow: '0 10px 25px rgba(0,0,0,0.2)',
+                      zIndex: 1000,
+                      minWidth: '320px',
+                      fontSize: '13px',
+                      border: '1px solid #e5e7eb'
+                    }}>
+                      {/* Mint */}
+                      <div style={{ marginBottom: 12 }}>
+                        <div style={{ color: '#10b981', fontWeight: 700, fontSize: 14, marginBottom: 6 }}>
+                          🟢 Mint: {statsData?.avgListingDays ? Math.round(statsData.avgListingDays) : '—'}j (moyenne)
+                        </div>
+                        <div style={{ fontSize: 11, color: '#6b7280', marginLeft: 16 }}>
+                          {daysOnlineByCategoryComparison.mint.length > 0 ? (
+                            daysOnlineByCategoryComparison.mint.map(item => (
+                              <div key={item.category} style={{ marginBottom: 2 }}>
+                                • {item.category}: {Math.round(item.avgDays)}j ({item.count} vélos)
+                              </div>
+                            ))
+                          ) : (
+                            <div>Pas de données</div>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Upway */}
+                      <div>
+                        <div style={{ color: '#2563eb', fontWeight: 700, fontSize: 14, marginBottom: 6 }}>
+                          🔵 Upway: {Math.round(upwayKPIs.avgDaysOnline)}j (moyenne)
+                        </div>
+                        <div style={{ fontSize: 11, color: '#6b7280', marginLeft: 16 }}>
+                          {daysOnlineByCategoryComparison.upway.length > 0 ? (
+                            daysOnlineByCategoryComparison.upway.map(item => (
+                              <div key={item.category} style={{ marginBottom: 2 }}>
+                                • {item.category}: {Math.round(item.avgDays)}j ({item.count} vélos)
+                              </div>
+                            ))
+                          ) : (
+                            <div>Pas de données</div>
+                          )}
+                        </div>
+                      </div>
+
+                      <div style={{
+                        position: 'absolute',
+                        bottom: '-8px',
+                        left: '50%',
+                        transform: 'translateX(-50%)',
+                        width: 0,
+                        height: 0,
+                        borderLeft: '8px solid transparent',
+                        borderRight: '8px solid transparent',
+                        borderTop: '8px solid white',
+                      }} />
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -1442,11 +1925,23 @@ const KPIDashboard = ({ isOpen, onClose, statsData, velos = [], inventoryVelos =
 
               {/* Top 10 Marques */}
               <div style={cardStyle}>
-                <div style={{ fontWeight: 700, marginBottom: 12, fontSize: 14 }}>Top 10 Marques (Électrique vs Musculaire)</div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                  <div style={{ fontWeight: 700, fontSize: 14 }}>Top 10 Marques (Électrique vs Musculaire)</div>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer', userSelect: 'none' }}>
+                    <input
+                      type="checkbox"
+                      checked={showUpwayBrandComparison}
+                      onChange={(e) => setShowUpwayBrandComparison(e.target.checked)}
+                      style={{ cursor: 'pointer' }}
+                    />
+                    <span style={{ color: '#0d9488', fontWeight: 600 }}>Comparer avec Upway</span>
+                  </label>
+                </div>
                 {brandData.length > 0 ? (
                   <div style={{ height: 220 }}>
                     <ResponsiveContainer>
-                      <BarChart data={brandData} layout="vertical">
+                      {!showUpwayBrandComparison ? (
+                        <BarChart data={brandData} layout="vertical">
                         <XAxis type="number" hide />
                         <YAxis dataKey="name" type="category" width={100} tick={{ fontSize: 10 }} />
                         <Tooltip content={({ active, payload }) => {
@@ -1491,6 +1986,52 @@ const KPIDashboard = ({ isOpen, onClose, statsData, velos = [], inventoryVelos =
                           }}
                         />
                       </BarChart>
+                      ) : (
+                        <BarChart data={(() => {
+                          // Combiner Mint et Upway
+                          const allBrands = [...new Set([
+                            ...brandData.map(d => d.name),
+                            ...upwayBrandDist.map(d => d.name)
+                          ])];
+
+                          return allBrands.slice(0, 10).map(brand => {
+                            const mintData = brandData.find(d => d.name === brand);
+                            const upwayData = upwayBrandDist.find(d => d.name === brand);
+
+                            return {
+                              name: brand,
+                              mintTotal: mintData?.total || 0,
+                              upwayTotal: upwayData?.total || 0
+                            };
+                          }).sort((a, b) => (b.mintTotal + b.upwayTotal) - (a.mintTotal + a.upwayTotal));
+                        })()} layout="vertical">
+                          <XAxis type="number" tick={{ fontSize: 10 }} />
+                          <YAxis dataKey="name" type="category" width={100} tick={{ fontSize: 9 }} />
+                          <Tooltip
+                            formatter={(value, name) => {
+                              if (name === "Mint") return [`${value} vélos`, name];
+                              else return [`${value} vélos`, name];
+                            }}
+                          />
+                          <Legend iconType="circle" wrapperStyle={{ fontSize: 12 }} />
+                          <Bar dataKey="mintTotal" fill="#10b981" radius={[0, 6, 6, 0]} name="Mint">
+                            <LabelList
+                              dataKey="mintTotal"
+                              position="right"
+                              formatter={(value) => value > 0 ? value : ''}
+                              style={{ fontSize: 10, fontWeight: 600, fill: '#10b981' }}
+                            />
+                          </Bar>
+                          <Bar dataKey="upwayTotal" fill="#2563eb" radius={[0, 6, 6, 0]} name="Upway">
+                            <LabelList
+                              dataKey="upwayTotal"
+                              position="right"
+                              formatter={(value) => value > 0 ? value : ''}
+                              style={{ fontSize: 10, fontWeight: 600, fill: '#2563eb' }}
+                            />
+                          </Bar>
+                        </BarChart>
+                      )}
                     </ResponsiveContainer>
                   </div>
                 ) : (
@@ -1500,37 +2041,117 @@ const KPIDashboard = ({ isOpen, onClose, statsData, velos = [], inventoryVelos =
 
               {/* Par Catégorie */}
               <div style={cardStyle}>
-                <div style={{ fontWeight: 700, marginBottom: 12, fontSize: 14 }}>Quantité par catégorie (Électrique vs Musculaire)</div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                  <div style={{ fontWeight: 700, fontSize: 14 }}>Quantité par catégorie (Électrique vs Musculaire)</div>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer', userSelect: 'none' }}>
+                    <input
+                      type="checkbox"
+                      checked={showUpwayCategoryComparison}
+                      onChange={(e) => setShowUpwayCategoryComparison(e.target.checked)}
+                      style={{ cursor: 'pointer' }}
+                    />
+                    <span style={{ color: '#0d9488', fontWeight: 600 }}>Comparer avec Upway</span>
+                  </label>
+                </div>
                 {simpleData.categoryElecMuscuData?.length > 0 ? (
                   <div style={{ height: 220 }}>
                     <ResponsiveContainer>
-                      <BarChart data={simpleData.categoryElecMuscuData} layout="vertical">
-                        <XAxis type="number" hide />
-                        <YAxis dataKey="name" type="category" width={120} tick={{ fontSize: 10 }} />
-                        <Tooltip 
-                          formatter={(value, name) => `${value} unités`}
-                        />
-                        <Legend 
-                          iconType="circle"
-                          wrapperStyle={{ fontSize: 12 }}
-                        />
-                        <Bar dataKey="electrique" fill={COLORS.teal} radius={[0, 6, 6, 0]} name="Électrique">
-                          <LabelList 
-                            dataKey="electriquePct" 
-                            position="right" 
-                            formatter={(value) => value > 0 ? `${value.toFixed(0)}%` : ''}
-                            style={{ fontSize: 10, fontWeight: 600, fill: COLORS.teal }}
+                      {!showUpwayCategoryComparison ? (
+                        <BarChart data={simpleData.categoryElecMuscuData} layout="vertical">
+                          <XAxis type="number" hide />
+                          <YAxis dataKey="name" type="category" width={120} tick={{ fontSize: 10 }} />
+                          <Tooltip
+                            formatter={(value, name) => `${value} unités`}
                           />
-                        </Bar>
-                        <Bar dataKey="musculaire" fill={COLORS.purple} radius={[0, 6, 6, 0]} name="Musculaire">
-                          <LabelList 
-                            dataKey="musculairePct" 
-                            position="right" 
-                            formatter={(value) => value > 0 ? `${value.toFixed(0)}%` : ''}
-                            style={{ fontSize: 10, fontWeight: 600, fill: COLORS.purple }}
+                          <Legend
+                            iconType="circle"
+                            wrapperStyle={{ fontSize: 12 }}
                           />
-                        </Bar>
-                      </BarChart>
+                          <Bar dataKey="electrique" fill={COLORS.teal} radius={[0, 6, 6, 0]} name="Électrique">
+                            <LabelList
+                              dataKey="electriquePct"
+                              position="right"
+                              formatter={(value) => value > 0 ? `${value.toFixed(0)}%` : ''}
+                              style={{ fontSize: 10, fontWeight: 600, fill: COLORS.teal }}
+                            />
+                          </Bar>
+                          <Bar dataKey="musculaire" fill={COLORS.purple} radius={[0, 6, 6, 0]} name="Musculaire">
+                            <LabelList
+                              dataKey="musculairePct"
+                              position="right"
+                              formatter={(value) => value > 0 ? `${value.toFixed(0)}%` : ''}
+                              style={{ fontSize: 10, fontWeight: 600, fill: COLORS.purple }}
+                            />
+                          </Bar>
+                        </BarChart>
+                      ) : (
+                        <BarChart data={(() => {
+                          // Combiner vous et Upway - graphique en %
+                          const allCats = [...new Set([
+                            ...simpleData.categoryElecMuscuData.map(d => d.name),
+                            ...upwayCategoryDist.map(d => d.name)
+                          ])];
+
+                          return allCats.map(cat => {
+                            const yourData = simpleData.categoryElecMuscuData.find(d => d.name === cat);
+                            const upwayData = upwayCategoryDist.find(d => d.name === cat);
+
+                            return {
+                              name: cat,
+                              vousElecPct: yourData?.electriquePct || 0,
+                              vousMusculairePct: yourData?.musculairePct || 0,
+                              upwayElecPct: upwayData?.electriquePct || 0,
+                              upwayMusculairePct: upwayData?.musculairePct || 0,
+                              vousElec: yourData?.electrique || 0,
+                              vousMusculaire: yourData?.musculaire || 0,
+                              upwayElec: upwayData?.electrique || 0,
+                              upwayMusculaire: upwayData?.musculaire || 0
+                            };
+                          }).sort((a, b) =>
+                            ((b.vousElecPct + b.vousMusculairePct) - (a.vousElecPct + a.vousMusculairePct))
+                          );
+                        })()} layout="vertical">
+                          <XAxis type="number" tick={{ fontSize: 10 }} label={{ value: '%', position: 'insideRight', offset: 10 }} />
+                          <YAxis dataKey="name" type="category" width={120} tick={{ fontSize: 9 }} />
+                          <Tooltip
+                            formatter={(value, name, props) => {
+                              const payload = props.payload;
+                              if (name === "Mint - Électrique") {
+                                return [`${Math.round(value)}% (${payload.vousElec} unités)`, name];
+                              } else if (name === "Mint - Musculaire") {
+                                return [`${Math.round(value)}% (${payload.vousMusculaire} unités)`, name];
+                              } else if (name === "Upway - Électrique") {
+                                return [`${Math.round(value)}% (${payload.upwayElec} unités)`, name];
+                              }
+                            }}
+                          />
+                          <Legend iconType="circle" wrapperStyle={{ fontSize: 11 }} />
+                          <Bar dataKey="vousElecPct" fill="#10b981" radius={[0, 6, 6, 0]} name="Mint - Électrique" stackId="mint">
+                            <LabelList
+                              dataKey="vousElecPct"
+                              position="inside"
+                              formatter={(value) => value > 3 ? `${Math.round(value)}%` : ''}
+                              style={{ fontSize: 9, fontWeight: 600, fill: '#fff' }}
+                            />
+                          </Bar>
+                          <Bar dataKey="vousMusculairePct" fill="#059669" radius={[0, 6, 6, 0]} name="Mint - Musculaire" stackId="mint">
+                            <LabelList
+                              dataKey="vousMusculairePct"
+                              position="inside"
+                              formatter={(value) => value > 3 ? `${Math.round(value)}%` : ''}
+                              style={{ fontSize: 9, fontWeight: 600, fill: '#fff' }}
+                            />
+                          </Bar>
+                          <Bar dataKey="upwayElecPct" fill="#2563eb" radius={[0, 6, 6, 0]} name="Upway - Électrique">
+                            <LabelList
+                              dataKey="upwayElecPct"
+                              position="inside"
+                              formatter={(value) => value > 3 ? `${Math.round(value)}%` : ''}
+                              style={{ fontSize: 9, fontWeight: 600, fill: '#fff' }}
+                            />
+                          </Bar>
+                        </BarChart>
+                      )}
                     </ResponsiveContainer>
                   </div>
                 ) : (
@@ -1541,23 +2162,191 @@ const KPIDashboard = ({ isOpen, onClose, statsData, velos = [], inventoryVelos =
               {/* Durée de mise en ligne */}
               {stockMode === "vente" && (
                 <div style={cardStyle}>
-                  <div style={{ fontWeight: 700, marginBottom: 12, fontSize: 14 }}>Durée de mise en ligne (jours)</div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                    <div style={{ fontWeight: 700, fontSize: 14 }}>Durée de mise en ligne (jours)</div>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer', userSelect: 'none' }}>
+                      <input
+                        type="checkbox"
+                        checked={showUpwayComparison}
+                        onChange={(e) => setShowUpwayComparison(e.target.checked)}
+                        style={{ cursor: 'pointer' }}
+                      />
+                      <span style={{ color: '#0d9488', fontWeight: 600 }}>Comparer avec Upway</span>
+                    </label>
+                  </div>
                   {listingAgeDist.length > 0 ? (
                     <div style={{ height: 220 }}>
                       <ResponsiveContainer>
-                        <BarChart data={withPctLabel(listingAgeDist, "value")}>
-                          <XAxis dataKey="name" tick={{ fontSize: 10 }} />
-                          <YAxis hide />
-                          <Tooltip />
-                          <Bar dataKey="value" radius={[6, 6, 0, 0]} label={{ position: 'top', fontSize: 11, fill: '#374151', dataKey: '__pctLabel' }}>
-                            {listingAgeDist.map((entry, idx) => {
-                              // Dégradé du vert au rouge (sobre)
-                              const colors = ['#10b981', '#34d399', '#fbbf24', '#fb923c', '#ef4444'];
-                              const colorIndex = Math.min(idx, colors.length - 1);
-                              return <Cell key={`listing-${idx}`} fill={colors[colorIndex]} />;
-                            })}
-                          </Bar>
-                        </BarChart>
+                        {!showUpwayComparison ? (
+                          <BarChart data={withPctLabel(listingAgeDist, "value")}>
+                            <XAxis dataKey="name" tick={{ fontSize: 10 }} />
+                            <YAxis hide />
+                            <Tooltip />
+                            <Bar dataKey="value" radius={[6, 6, 0, 0]} label={{ position: 'top', fontSize: 11, fill: '#374151', dataKey: '__pctLabel' }}>
+                              {listingAgeDist.map((entry, idx) => {
+                                // Dégradé du vert au rouge (sobre)
+                                const colors = ['#10b981', '#34d399', '#fbbf24', '#fb923c', '#ef4444'];
+                                const colorIndex = Math.min(idx, colors.length - 1);
+                                return <Cell key={`listing-${idx}`} fill={colors[colorIndex]} />;
+                              })}
+                            </Bar>
+                          </BarChart>
+                        ) : (
+                          <BarChart data={(() => {
+                            // Combiner les données pour comparaison en %
+                            const allRanges = [...new Set([...listingAgeDist.map(d => d.name), ...upwayAgeDist.map(d => d.name)])];
+                            const totalYours = listingAgeDist.reduce((sum, d) => sum + d.value, 0);
+                            const totalUpway = upwayAgeDist.reduce((sum, d) => sum + d.value, 0);
+
+                            // Calculer les catégories par tranche d'âge pour Mint
+                            const ageRanges = [
+                              { range: "0-7j", min: 0, max: 7 },
+                              { range: "7-30j", min: 7, max: 30 },
+                              { range: "30-60j", min: 30, max: 60 },
+                              { range: "60-90j", min: 60, max: 90 },
+                              { range: "90-120j", min: 90, max: 120 },
+                              { range: "120-150j", min: 120, max: 150 },
+                              { range: "150j+", min: 150, max: Infinity },
+                            ];
+
+                            const mintCategoriesByAge = {};
+                            const upwayCategoriesByAge = {};
+
+                            // Pour Mint
+                            velos.forEach(v => {
+                              const publishedAt = v?.["Published At"];
+                              if (!publishedAt) return;
+                              const date = new Date(publishedAt);
+                              if (isNaN(date.getTime())) return;
+                              const age = Math.floor((new Date() - date) / (1000 * 60 * 60 * 24));
+                              const cat = v?.["Catégorie"] || "Non classé";
+
+                              const bucket = ageRanges.find(r => age >= r.min && age < r.max);
+                              if (bucket) {
+                                if (!mintCategoriesByAge[bucket.range]) {
+                                  mintCategoriesByAge[bucket.range] = {};
+                                }
+                                mintCategoriesByAge[bucket.range][cat] = (mintCategoriesByAge[bucket.range][cat] || 0) + 1;
+                              }
+                            });
+
+                            // Pour Upway
+                            upwayBikes.forEach(b => {
+                              const d = b.uploadedDate || b["uploadedDate"];
+                              if (!d) return;
+                              const date = new Date(d);
+                              if (isNaN(date.getTime())) return;
+                              const age = Math.floor((new Date() - date) / (1000 * 60 * 60 * 24));
+                              const cat = b["Catégorie"] || b.cargoCategory || "Non classé";
+
+                              const bucket = ageRanges.find(r => age >= r.min && age < r.max);
+                              if (bucket) {
+                                if (!upwayCategoriesByAge[bucket.range]) {
+                                  upwayCategoriesByAge[bucket.range] = {};
+                                }
+                                upwayCategoriesByAge[bucket.range][cat] = (upwayCategoriesByAge[bucket.range][cat] || 0) + 1;
+                              }
+                            });
+
+                            return allRanges.map(range => {
+                              const yourData = listingAgeDist.find(d => d.name === range) || { value: 0 };
+                              const upwayData = upwayAgeDist.find(d => d.name === range) || { value: 0 };
+                              const yourPct = totalYours > 0 ? (yourData.value / totalYours) * 100 : 0;
+                              const upwayPct = totalUpway > 0 ? (upwayData.value / totalUpway) * 100 : 0;
+
+                              return {
+                                name: range,
+                                vousPct: yourPct,
+                                upwayPct: upwayPct,
+                                vousUnits: yourData.value,
+                                upwayUnits: upwayData.value,
+                                mintCategories: mintCategoriesByAge[range] || {},
+                                upwayCategories: upwayCategoriesByAge[range] || {}
+                              };
+                            });
+                          })()}>
+                            <XAxis dataKey="name" tick={{ fontSize: 10 }} />
+                            <YAxis
+                              tick={{ fontSize: 10 }}
+                              label={{ value: '%', angle: 0, position: 'insideTopLeft', offset: 10 }}
+                            />
+                            <Tooltip
+                              content={({ active, payload }) => {
+                                if (!active || !payload || !payload.length) return null;
+                                const data = payload[0].payload;
+
+                                return (
+                                  <div style={{
+                                    background: 'white',
+                                    border: '1px solid #e5e7eb',
+                                    borderRadius: '8px',
+                                    padding: '12px',
+                                    boxShadow: '0 4px 6px rgba(0,0,0,0.1)',
+                                    minWidth: '200px'
+                                  }}>
+                                    <div style={{ fontWeight: 700, marginBottom: 8, fontSize: 13 }}>
+                                      {data.name}
+                                    </div>
+
+                                    {/* Mint */}
+                                    <div style={{ marginBottom: 8 }}>
+                                      <div style={{ color: '#10b981', fontWeight: 600, fontSize: 12, marginBottom: 4 }}>
+                                        🟢 Mint: {Math.round(data.vousPct)}% ({data.vousUnits} unités)
+                                      </div>
+                                      {Object.keys(data.mintCategories).length > 0 && (
+                                        <div style={{ fontSize: 11, paddingLeft: 16, color: '#6b7280' }}>
+                                          {Object.entries(data.mintCategories)
+                                            .sort((a, b) => b[1] - a[1])
+                                            .slice(0, 3)
+                                            .map(([cat, count]) => (
+                                              <div key={cat}>• {cat}: {count}</div>
+                                            ))}
+                                        </div>
+                                      )}
+                                    </div>
+
+                                    {/* Upway */}
+                                    <div>
+                                      <div style={{ color: '#2563eb', fontWeight: 600, fontSize: 12, marginBottom: 4 }}>
+                                        🔵 Upway: {Math.round(data.upwayPct)}% ({data.upwayUnits} unités)
+                                      </div>
+                                      {Object.keys(data.upwayCategories).length > 0 && (
+                                        <div style={{ fontSize: 11, paddingLeft: 16, color: '#6b7280' }}>
+                                          {Object.entries(data.upwayCategories)
+                                            .sort((a, b) => b[1] - a[1])
+                                            .slice(0, 3)
+                                            .map(([cat, count]) => (
+                                              <div key={cat}>• {cat}: {count}</div>
+                                            ))}
+                                        </div>
+                                      )}
+                                    </div>
+                                  </div>
+                                );
+                              }}
+                            />
+                            <Legend
+                              iconType="circle"
+                              wrapperStyle={{ fontSize: 12 }}
+                            />
+                            <Bar dataKey="vousPct" fill="#10b981" radius={[6, 6, 0, 0]} name="Mint">
+                              <LabelList
+                                dataKey="vousPct"
+                                position="top"
+                                formatter={(value) => `${Math.round(value)}%`}
+                                style={{ fontSize: 10, fontWeight: 600 }}
+                              />
+                            </Bar>
+                            <Bar dataKey="upwayPct" fill="#2563eb" radius={[6, 6, 0, 0]} name="Upway">
+                              <LabelList
+                                dataKey="upwayPct"
+                                position="top"
+                                formatter={(value) => `${Math.round(value)}%`}
+                                style={{ fontSize: 10, fontWeight: 600 }}
+                              />
+                            </Bar>
+                          </BarChart>
+                        )}
                       </ResponsiveContainer>
                     </div>
                   ) : (
@@ -1568,37 +2357,115 @@ const KPIDashboard = ({ isOpen, onClose, statsData, velos = [], inventoryVelos =
 
               {/* Prix moyen par catégorie */}
               <div style={cardStyle}>
-                <div style={{ fontWeight: 700, marginBottom: 12, fontSize: 14 }}>Prix moyen par catégorie (Électrique vs Musculaire)</div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                  <div style={{ fontWeight: 700, fontSize: 14 }}>Prix moyen par catégorie (Électrique vs Musculaire)</div>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer', userSelect: 'none' }}>
+                    <input
+                      type="checkbox"
+                      checked={showUpwayCategoryPriceComparison}
+                      onChange={(e) => setShowUpwayCategoryPriceComparison(e.target.checked)}
+                      style={{ cursor: 'pointer' }}
+                    />
+                    <span style={{ color: '#0d9488', fontWeight: 600 }}>Comparer avec Upway</span>
+                  </label>
+                </div>
                 {simpleData.categoryPriceElecMuscuData?.length > 0 ? (
                   <div style={{ height: 220 }}>
                     <ResponsiveContainer>
-                      <BarChart data={simpleData.categoryPriceElecMuscuData} layout="vertical">
-                        <XAxis type="number" hide />
-                        <YAxis dataKey="name" type="category" width={120} tick={{ fontSize: 10 }} />
-                        <Tooltip 
-                          formatter={(value, name) => [`${value}€`, name]}
-                        />
-                        <Legend 
-                          iconType="circle"
-                          wrapperStyle={{ fontSize: 12 }}
-                        />
-                        <Bar dataKey="électrique" fill={COLORS.teal} radius={[0, 6, 6, 0]} name="Électrique">
-                          <LabelList 
-                            dataKey="électrique" 
-                            position="right" 
-                            formatter={(value) => value > 0 ? `${value}€` : ''}
-                            style={{ fontSize: 10, fontWeight: 600, fill: COLORS.teal }}
+                      {!showUpwayCategoryPriceComparison ? (
+                        <BarChart data={simpleData.categoryPriceElecMuscuData} layout="vertical">
+                          <XAxis type="number" hide />
+                          <YAxis dataKey="name" type="category" width={120} tick={{ fontSize: 10 }} />
+                          <Tooltip
+                            formatter={(value, name) => [`${value}€`, name]}
                           />
-                        </Bar>
-                        <Bar dataKey="musculaire" fill={COLORS.purple} radius={[0, 6, 6, 0]} name="Musculaire">
-                          <LabelList 
-                            dataKey="musculaire" 
-                            position="right" 
-                            formatter={(value) => value > 0 ? `${value}€` : ''}
-                            style={{ fontSize: 10, fontWeight: 600, fill: COLORS.purple }}
+                          <Legend
+                            iconType="circle"
+                            wrapperStyle={{ fontSize: 12 }}
                           />
-                        </Bar>
-                      </BarChart>
+                          <Bar dataKey="électrique" fill={COLORS.teal} radius={[0, 6, 6, 0]} name="Électrique">
+                            <LabelList
+                              dataKey="électrique"
+                              position="right"
+                              formatter={(value) => value > 0 ? `${value}€` : ''}
+                              style={{ fontSize: 10, fontWeight: 600, fill: COLORS.teal }}
+                            />
+                          </Bar>
+                          <Bar dataKey="musculaire" fill={COLORS.purple} radius={[0, 6, 6, 0]} name="Musculaire">
+                            <LabelList
+                              dataKey="musculaire"
+                              position="right"
+                              formatter={(value) => value > 0 ? `${value}€` : ''}
+                              style={{ fontSize: 10, fontWeight: 600, fill: COLORS.purple }}
+                            />
+                          </Bar>
+                        </BarChart>
+                      ) : (
+                        <BarChart data={(() => {
+                          // Combiner vous et Upway
+                          const allCats = [...new Set([
+                            ...simpleData.categoryPriceElecMuscuData.map(d => d.name),
+                            ...upwayCategoryPriceDist.map(d => d.name)
+                          ])];
+
+                          return allCats.map(cat => {
+                            const yourData = simpleData.categoryPriceElecMuscuData.find(d => d.name === cat);
+                            const upwayData = upwayCategoryPriceDist.find(d => d.name === cat);
+
+                            return {
+                              name: cat,
+                              vousElec: yourData?.électrique || 0,
+                              vousMusculaire: yourData?.musculaire || 0,
+                              upwayElec: upwayData?.électrique || 0,
+                              upwayMusculaire: upwayData?.musculaire || 0,
+                              upwayElecCount: upwayData?.electriqueCount || 0,
+                              upwayMusculaireCount: upwayData?.musculaireCount || 0
+                            };
+                          }).sort((a, b) =>
+                            ((b.vousElec + b.vousMusculaire) - (a.vousElec + a.vousMusculaire))
+                          );
+                        })()} layout="vertical">
+                          <XAxis type="number" tick={{ fontSize: 10 }} label={{ value: '€', position: 'insideRight', offset: 10 }} />
+                          <YAxis dataKey="name" type="category" width={120} tick={{ fontSize: 9 }} />
+                          <Tooltip
+                            formatter={(value, name, props) => {
+                              const payload = props.payload;
+                              if (name === "Mint - Électrique") {
+                                return [`${value}€`, name];
+                              } else if (name === "Mint - Musculaire") {
+                                return [`${value}€`, name];
+                              } else if (name === "Upway - Électrique") {
+                                return [`${value}€ (${payload.upwayElecCount} vélos)`, name];
+                              }
+                            }}
+                          />
+                          <Legend iconType="circle" wrapperStyle={{ fontSize: 11 }} />
+                          <Bar dataKey="vousElec" fill="#10b981" radius={[0, 6, 6, 0]} name="Mint - Électrique">
+                            <LabelList
+                              dataKey="vousElec"
+                              position="right"
+                              formatter={(value) => value > 0 ? `${value}€` : ''}
+                              style={{ fontSize: 9, fontWeight: 600, fill: '#10b981' }}
+                            />
+                          </Bar>
+                          <Bar dataKey="vousMusculaire" fill="#059669" radius={[0, 6, 6, 0]} name="Mint - Musculaire">
+                            <LabelList
+                              dataKey="vousMusculaire"
+                              position="right"
+                              formatter={(value) => value > 0 ? `${value}€` : ''}
+                              style={{ fontSize: 9, fontWeight: 600, fill: '#059669' }}
+                            />
+                          </Bar>
+                          <Bar dataKey="upwayElec" fill="#2563eb" radius={[0, 6, 6, 0]} name="Upway - Électrique">
+                            <LabelList
+                              dataKey="upwayElec"
+                              position="right"
+                              formatter={(value) => value > 0 ? `${value}€` : ''}
+                              style={{ fontSize: 9, fontWeight: 600, fill: '#2563eb' }}
+                            />
+                          </Bar>
+                        </BarChart>
+                      )}
                     </ResponsiveContainer>
                   </div>
                 ) : (
@@ -1890,20 +2757,90 @@ const KPIDashboard = ({ isOpen, onClose, statsData, velos = [], inventoryVelos =
             <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 16, marginTop: 16 }}>
               {/* Distribution des prix */}
               <div style={cardStyle}>
-                <div style={{ fontWeight: 700, marginBottom: 12, fontSize: 14 }}>Distribution des prix (€)</div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                  <div style={{ fontWeight: 700, fontSize: 14 }}>Distribution des prix (€)</div>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer', userSelect: 'none' }}>
+                    <input
+                      type="checkbox"
+                      checked={showUpwayPriceComparison}
+                      onChange={(e) => setShowUpwayPriceComparison(e.target.checked)}
+                      style={{ cursor: 'pointer' }}
+                    />
+                    <span style={{ color: '#0d9488', fontWeight: 600 }}>Comparer avec Upway</span>
+                  </label>
+                </div>
                 {priceHisto.length > 0 ? (
                   <div style={{ height: 220 }}>
                     <ResponsiveContainer>
-                      <BarChart data={withPctLabel(priceHisto, "value")}>
-                        <XAxis dataKey="name" tick={{ fontSize: 10 }} />
-                        <YAxis hide />
-                        <Tooltip />
-                        <Bar dataKey="value" radius={[6, 6, 0, 0]} label={{ position: 'top', fontSize: 11, fill: '#374151', dataKey: '__pctLabel' }}>
-                          {priceHisto.map((_, idx) => (
-                            <Cell key={`price-${idx}`} fill={COLORS.primary} />
-                          ))}
-                        </Bar>
-                      </BarChart>
+                      {!showUpwayPriceComparison ? (
+                        <BarChart data={withPctLabel(priceHisto, "value")}>
+                          <XAxis dataKey="name" tick={{ fontSize: 10 }} />
+                          <YAxis hide />
+                          <Tooltip />
+                          <Bar dataKey="value" radius={[6, 6, 0, 0]} label={{ position: 'top', fontSize: 11, fill: '#374151', dataKey: '__pctLabel' }}>
+                            {priceHisto.map((_, idx) => (
+                              <Cell key={`price-${idx}`} fill={COLORS.primary} />
+                            ))}
+                          </Bar>
+                        </BarChart>
+                      ) : (
+                        <BarChart data={(() => {
+                          // Combiner les données pour comparaison en %
+                          const allRanges = [...new Set([...priceHisto.map(d => d.name), ...upwayPriceDist.map(d => d.name)])];
+                          const totalYours = priceHisto.reduce((sum, d) => sum + d.value, 0);
+                          const totalUpway = upwayPriceDist.reduce((sum, d) => sum + d.value, 0);
+
+                          return allRanges.map(range => {
+                            const yourData = priceHisto.find(d => d.name === range) || { value: 0 };
+                            const upwayData = upwayPriceDist.find(d => d.name === range) || { value: 0 };
+                            const yourPct = totalYours > 0 ? (yourData.value / totalYours) * 100 : 0;
+                            const upwayPct = totalUpway > 0 ? (upwayData.value / totalUpway) * 100 : 0;
+
+                            return {
+                              name: range,
+                              vousPct: yourPct,
+                              upwayPct: upwayPct,
+                              vousUnits: yourData.value,
+                              upwayUnits: upwayData.value
+                            };
+                          });
+                        })()}>
+                          <XAxis dataKey="name" tick={{ fontSize: 9, angle: -45, textAnchor: 'end' }} height={60} />
+                          <YAxis
+                            tick={{ fontSize: 10 }}
+                            label={{ value: '%', angle: 0, position: 'insideTopLeft', offset: 10 }}
+                          />
+                          <Tooltip
+                            formatter={(value, name, props) => {
+                              if (name === "Mint") {
+                                return [`${Math.round(value)}% (${props.payload.vousUnits} unités)`, name];
+                              } else {
+                                return [`${Math.round(value)}% (${props.payload.upwayUnits} unités)`, name];
+                              }
+                            }}
+                          />
+                          <Legend
+                            iconType="circle"
+                            wrapperStyle={{ fontSize: 12 }}
+                          />
+                          <Bar dataKey="vousPct" fill="#10b981" radius={[6, 6, 0, 0]} name="Mint">
+                            <LabelList
+                              dataKey="vousPct"
+                              position="top"
+                              formatter={(value) => `${Math.round(value)}%`}
+                              style={{ fontSize: 9, fontWeight: 600 }}
+                            />
+                          </Bar>
+                          <Bar dataKey="upwayPct" fill="#2563eb" radius={[6, 6, 0, 0]} name="Upway">
+                            <LabelList
+                              dataKey="upwayPct"
+                              position="top"
+                              formatter={(value) => `${Math.round(value)}%`}
+                              style={{ fontSize: 9, fontWeight: 600 }}
+                            />
+                          </Bar>
+                        </BarChart>
+                      )}
                     </ResponsiveContainer>
                   </div>
                 ) : (
