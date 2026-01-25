@@ -1926,7 +1926,7 @@ const KPIDashboard = ({ isOpen, onClose, statsData, velos = [], inventoryVelos =
               {/* Top 10 Marques */}
               <div style={cardStyle}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-                  <div style={{ fontWeight: 700, fontSize: 14 }}>Top 10 Marques (Électrique vs Musculaire)</div>
+                  <div style={{ fontWeight: 700, fontSize: 14 }}>{showUpwayBrandComparison ? 'Top 10 Marques Upway' : 'Top 10 Marques (Électrique vs Musculaire)'}</div>
                   <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer', userSelect: 'none' }}>
                     <input
                       type="checkbox"
@@ -1934,7 +1934,7 @@ const KPIDashboard = ({ isOpen, onClose, statsData, velos = [], inventoryVelos =
                       onChange={(e) => setShowUpwayBrandComparison(e.target.checked)}
                       style={{ cursor: 'pointer' }}
                     />
-                    <span style={{ color: '#0d9488', fontWeight: 600 }}>Comparer avec Upway</span>
+                    <span style={{ color: '#2563eb', fontWeight: 600 }}>Voir Upway</span>
                   </label>
                 </div>
                 {brandData.length > 0 ? (
@@ -1962,7 +1962,7 @@ const KPIDashboard = ({ isOpen, onClose, statsData, velos = [], inventoryVelos =
                             </div>
                           );
                         }} />
-                        <Legend 
+                        <Legend
                           iconType="circle"
                           wrapperStyle={{ fontSize: 12 }}
                         />
@@ -1987,44 +1987,15 @@ const KPIDashboard = ({ isOpen, onClose, statsData, velos = [], inventoryVelos =
                         />
                       </BarChart>
                       ) : (
-                        <BarChart data={(() => {
-                          // Combiner Mint et Upway
-                          const allBrands = [...new Set([
-                            ...brandData.map(d => d.name),
-                            ...upwayBrandDist.map(d => d.name)
-                          ])];
-
-                          return allBrands.slice(0, 10).map(brand => {
-                            const mintData = brandData.find(d => d.name === brand);
-                            const upwayData = upwayBrandDist.find(d => d.name === brand);
-
-                            return {
-                              name: brand,
-                              mintTotal: mintData?.total || 0,
-                              upwayTotal: upwayData?.total || 0
-                            };
-                          }).sort((a, b) => (b.mintTotal + b.upwayTotal) - (a.mintTotal + a.upwayTotal));
-                        })()} layout="vertical">
+                        <BarChart data={upwayBrandDist} layout="vertical">
                           <XAxis type="number" tick={{ fontSize: 10 }} />
-                          <YAxis dataKey="name" type="category" width={100} tick={{ fontSize: 9 }} />
+                          <YAxis dataKey="name" type="category" width={100} tick={{ fontSize: 10 }} />
                           <Tooltip
-                            formatter={(value, name) => {
-                              if (name === "Mint") return [`${value} vélos`, name];
-                              else return [`${value} vélos`, name];
-                            }}
+                            formatter={(value) => `${value} vélos`}
                           />
-                          <Legend iconType="circle" wrapperStyle={{ fontSize: 12 }} />
-                          <Bar dataKey="mintTotal" fill="#10b981" radius={[0, 6, 6, 0]} name="Mint">
+                          <Bar dataKey="électrique" fill="#2563eb" radius={[0, 6, 6, 0]} name="Électrique">
                             <LabelList
-                              dataKey="mintTotal"
-                              position="right"
-                              formatter={(value) => value > 0 ? value : ''}
-                              style={{ fontSize: 10, fontWeight: 600, fill: '#10b981' }}
-                            />
-                          </Bar>
-                          <Bar dataKey="upwayTotal" fill="#2563eb" radius={[0, 6, 6, 0]} name="Upway">
-                            <LabelList
-                              dataKey="upwayTotal"
+                              dataKey="électrique"
                               position="right"
                               formatter={(value) => value > 0 ? value : ''}
                               style={{ fontSize: 10, fontWeight: 600, fill: '#2563eb' }}
