@@ -8728,19 +8728,34 @@ const objTotalForCatMar = objectiveTotal * multCategory * multSize;
           
           // ✅ Vélos par tier (filtrés par catégorie + taille + prix si sélectionnés)
           const getVelosByTier = (tier) => {
-            return (rowsForPrices || [])
+            let filtered = (rowsForPrices || [])
               .filter(r => {
                 const t = String(getCatMarFromRow(r) || "").trim().toUpperCase();
                 return t === tier;
-              })
-              .map(r => ({
-                brand: r?.["Marque"] || "",
-                model: r?.["Modèle"] || "",
-                year: r?.["Année"] || "",
-                price: r?.["Prix réduit"] || r?.["Prix"] || "",
-                photo: r?.["Photo"] || r?.["Image"] || "",
-                url: r?.["URL"] || "",
-              }));
+              });
+
+            // Si une tranche de prix est sélectionnée, filtrer aussi par prix
+            if (parkingSelection.priceBand && bandsToUse && bandsToUse.length > 0) {
+              const band = bandsToUse.find(b => normStr(b.label) === normStr(parkingSelection.priceBand));
+              if (band) {
+                filtered = filtered.filter(r => {
+                  const price = parseFloat(r?.["Prix réduit"] || r?.["Prix"] || 0);
+                  const inRange = band.max
+                    ? (price >= band.min && price <= band.max)
+                    : (price >= band.min);
+                  return inRange;
+                });
+              }
+            }
+
+            return filtered.map(r => ({
+              brand: r?.["Marque"] || "",
+              model: r?.["Modèle"] || "",
+              year: r?.["Année"] || "",
+              price: r?.["Prix réduit"] || r?.["Prix"] || "",
+              photo: r?.["Photo"] || r?.["Image"] || "",
+              url: r?.["URL"] || "",
+            }));
           };
           function shrinkRowsForUI(rows, filterKey) {
   const selected = parkingSelection?.[filterKey];
@@ -9136,6 +9151,7 @@ const objTotalForCatMar = objectiveTotal * multCategory * multSize;
                     return (
                       <div
                         key={tierLabel}
+                        className="tier-card-hover"
                         style={{
                           padding: 16,
                           borderRadius: 12,
