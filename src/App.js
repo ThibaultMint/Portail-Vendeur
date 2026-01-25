@@ -9126,7 +9126,7 @@ const objTotalForCatMar = objectiveTotal * multCategory * multSize;
               </div>
 
             {/* ✅ ÉTAPE 4: MARQUES (CAT_MAR) */}
-            {parkingSelection.category && (
+            {parkingSelection.priceBand && (
               <div style={{ marginBottom: 24 }}>
                 <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 12, color: "#1f2937" }}>
                   4️⃣ Marques par CAT_MAR
@@ -9195,32 +9195,35 @@ const objTotalForCatMar = objectiveTotal * multCategory * multSize;
                           {isOverTarget ? `⚠️ SURSTOCK +${Math.round(gapUnits)} u` : isUnderTarget ? `${Math.round(Math.abs(gapUnits))} u manquants` : "✓ Équilibré"}
                         </div>
 
-                        {list.length > 0 && (
-                          <div style={{ marginTop: 8, display: "flex", flexWrap: "wrap", gap: 4 }}>
-                            {list.map((b) => (
-                              <span
-                                key={b}
-                                style={{
-                                  display: "inline-flex",
-                                  alignItems: "center",
-                                  padding: "4px 6px",
-                                  borderRadius: 4,
-                                  border: "1px solid rgba(0,0,0,0.12)",
-                                  background: "#fafafa",
-                                  fontWeight: 700,
-                                  fontSize: 11,
-                                  maxWidth: "100%",
-                                  overflow: "hidden",
-                                  textOverflow: "ellipsis",
-                                  whiteSpace: "nowrap",
-                                }}
-                                title={b}
-                              >
-                                {b}
-                              </span>
-                            ))}
-                          </div>
-                        )}
+                        <div style={{ marginTop: 8, display: "flex", flexWrap: "wrap", gap: 4 }}>
+                          {list.map((b) => (
+                            <span
+                              key={b}
+                              style={{
+                                display: "inline-flex",
+                                alignItems: "center",
+                                padding: "4px 6px",
+                                borderRadius: 4,
+                                border: "1px solid rgba(0,0,0,0.12)",
+                                background: "#fafafa",
+                                fontWeight: 700,
+                                fontSize: 11,
+                                maxWidth: "100%",
+                                overflow: "hidden",
+                                textOverflow: "ellipsis",
+                                whiteSpace: "nowrap",
+                              }}
+                              title={b}
+                            >
+                              {b}
+                            </span>
+                          ))}
+                          {list.length === 0 && (
+                            <div style={{ fontSize: 11, color: "#999", fontStyle: "italic" }}>
+                              Aucune marque
+                            </div>
+                          )}
+                        </div>
 
                         {/* Tooltip au survol avec liste des vélos */}
                         {velosInTier.length > 0 && (
