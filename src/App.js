@@ -2203,12 +2203,22 @@ const getPriceFromRow = (row) => {
   return Number.isFinite(n) ? n : NaN;
 };
 
-const getPriceBand = (price) => {
+const getPriceBand = (price, bands = null) => {
   if (!Number.isFinite(price)) return "";
-  if (price < 1500) return "0-1500";
-  if (price < 2500) return "1500-2500";
-  if (price < 3500) return "2500-3500";
-  return "3500+";
+
+  // SI PAS DE TRANCHES ENREGISTRÉES, RETOURNER VIDE
+  if (!bands || bands.length === 0) return "";
+
+  // Trouver la tranche qui correspond au prix
+  for (const band of bands) {
+    const minOk = price >= band.min;
+    const maxOk = band.max === null || band.max === undefined || price < band.max;
+    if (minOk && maxOk) {
+      return band.label;
+    }
+  }
+
+  return "";
 };
 
 const computeDistribution = (rows, getKeyFn) => {
@@ -2387,13 +2397,13 @@ const clearParkingFilters = () => {
   setParkingSelection({ category: null, priceBand: null, catMar: null, size: null });
 };
 
-const applyParkingSelection = (rows, sel) => {
+const applyParkingSelection = (rows, sel, bands = null) => {
   const s = sel || {};
   return (rows || []).filter((r) => {
     if (s.category && normStr(getCategoryFromRow(r)) !== normStr(s.category)) return false;
 
     if (s.priceBand) {
-      const b = getPriceBand(getPriceFromRow(r));
+      const b = getPriceBand(getPriceFromRow(r), bands);
       if (normStr(b) !== normStr(s.priceBand)) return false;
     }
 
@@ -3088,7 +3098,9 @@ const [parkingRules, setParkingRules] = useState({
 });
 
 // Détails complets des tranches de prix pour pouvoir les éditer
-const [priceBands, setPriceBands] = useState([]);
+const [priceBands, setPriceBands] = useState([]); // Tranches actuelles (pour l'édition)
+const [allPriceBandsByCategory, setAllPriceBandsByCategory] = useState({}); // Toutes les tranches de toutes les catégories
+const [priceBandsLoading, setPriceBandsLoading] = useState(true); // Loading state pour le cache
 
 // Charger les objectifs de catégorie depuis Supabase au chargement
 useEffect(() => {
@@ -3130,53 +3142,111 @@ useEffect(() => {
 useEffect(() => {
   async function loadPriceBands() {
     if (!parkingCategory) {
-      // Pas de catégorie sélectionnée = tranches vides
       setPriceBands([]);
       setParkingRules(prev => ({ ...prev, pricePct: {} }));
       return;
     }
 
-    // Parser parkingCategory pour extraire category et type
+    // Chercher dans le cache allPriceBandsByCategory
+    const key = parkingCategory;
+    if (allPriceBandsByCategory && allPriceBandsByCategory[key]) {
+      const cachedBands = allPriceBandsByCategory[key];
+      console.log(`✅ Tranches chargées du cache pour ${parkingCategory}:`, cachedBands);
+      setPriceBands(cachedBands);
+
+      // Mettre à jour les pourcentages
+      const pricePct = {};
+      cachedBands.forEach(band => {
+        pricePct[band.label] = (band.share_pct || 0) / 100; // Convertir 25 → 0.25
+      });
+      setParkingRules(prev => ({ ...prev, pricePct }));
+      return;
+    }
+
+    // Si pas dans le cache, charger depuis Supabase
     const parts = parkingCategory.split(" - ");
     const category = parts[0];
     const type = parts[1];
 
     const { data, error } = await supabase
       .from("pv_price_bands")
-      .select("id, category_key, label, min, max, share_pct, sort, bike_category, bike_type")
+      .select("id, label, min, max, share_pct, sort, bike_category, bike_type")
       .eq("bike_category", category)
       .eq("bike_type", type)
       .order("sort");
-    
+
     if (!error && data && data.length > 0) {
-      // Stocker les détails complets
       setPriceBands(data);
-      
-      // Et aussi les pourcentages pour la compatibilité
+
       const pricePct = {};
       data.forEach(band => {
-        pricePct[band.label || band.category_key] = band.share_pct || 0;
+        pricePct[band.label] = (band.share_pct || 0) / 100; // Convertir 25 → 0.25
       });
       setParkingRules(prev => ({ ...prev, pricePct }));
     } else {
-      // Fallback si pas de données - créer des tranches par défaut pour cette catégorie
-      const defaultBands = [
-        { id: null, category_key: "0-1500", label: "0-1500", min: 0, max: 1500, share_pct: 0.25, sort: 1, bike_category: category, bike_type: type },
-        { id: null, category_key: "1500-2500", label: "1500-2500", min: 1500, max: 2500, share_pct: 0.40, sort: 2, bike_category: category, bike_type: type },
-        { id: null, category_key: "2500-3500", label: "2500-3500", min: 2500, max: 3500, share_pct: 0.25, sort: 3, bike_category: category, bike_type: type },
-        { id: null, category_key: "3500+", label: "3500+", min: 3500, max: null, share_pct: 0.10, sort: 4, bike_category: category, bike_type: type },
-      ];
-      setPriceBands(defaultBands);
-      
-      const pricePct = {};
-      defaultBands.forEach(band => {
-        pricePct[band.label] = band.share_pct;
-      });
-      setParkingRules(prev => ({ ...prev, pricePct }));
+      // Aucune donnée : tranches vides
+      setPriceBands([]);
+      setParkingRules(prev => ({ ...prev, pricePct: {} }));
+      console.log("⚠️ Aucune tranche trouvée pour cette catégorie");
     }
   }
   loadPriceBands();
-}, [parkingCategory]);
+}, [parkingCategory, allPriceBandsByCategory]);
+
+// Charger les tranches de prix pour TOUTES les catégories
+useEffect(() => {
+  async function loadAllPriceBands() {
+    console.log("🔄 DÉBUT du chargement des tranches de prix...");
+    setPriceBandsLoading(true);
+    try {
+      const { data, error } = await supabase
+        .from("pv_price_bands")
+        .select("id, label, min, max, share_pct, sort, bike_category, bike_type");
+
+      console.log("📡 Réponse Supabase - Error:", error, "Data length:", data?.length);
+
+      if (error) {
+        console.error("❌ Erreur Supabase:", error);
+        setAllPriceBandsByCategory({});
+      } else if (data && data.length > 0) {
+        console.log("📊 Données brutes reçues:", data);
+
+        // Stocker toutes les tranches par catégorie/type
+        const bandsByCategory = {};
+        data.forEach(band => {
+          const key = `${band.bike_category} - ${band.bike_type}`; // Format: "VTT - Électrique"
+          console.log(`  → Band: ${band.label}, Category: ${band.bike_category}, Type: ${band.bike_type}, Key: ${key}`);
+          if (!bandsByCategory[key]) {
+            bandsByCategory[key] = [];
+          }
+          bandsByCategory[key].push(band);
+        });
+        console.log("✅ Tranches de prix organisées par catégorie:", bandsByCategory);
+        setAllPriceBandsByCategory(bandsByCategory);
+      } else {
+        console.log("⚠️ Aucune tranche de prix trouvée (data vide ou nulle)");
+        setAllPriceBandsByCategory({});
+      }
+    } catch (err) {
+      console.error("❌ Erreur catch dans loadAllPriceBands:", err);
+      setAllPriceBandsByCategory({});
+    } finally {
+      console.log("✅ FIN du chargement - setPriceBandsLoading(false)");
+      setPriceBandsLoading(false);
+    }
+  }
+
+  loadAllPriceBands();
+}, [parkingCategoryTypeOptions]); // Recharge quand les options changent
+
+// Initialiser parkingCategory avec la première catégorie qui a des tranches
+useEffect(() => {
+  if (parkingCategory === null && allPriceBandsByCategory && Object.keys(allPriceBandsByCategory).length > 0) {
+    const firstCategoryWithData = Object.keys(allPriceBandsByCategory)[0];
+    setParkingCategory(firstCategoryWithData);
+    console.log("✅ parkingCategory initialisé avec la première catégorie avec données:", firstCategoryWithData);
+  }
+}, [allPriceBandsByCategory, parkingCategory]);
 
 // Charger les objectifs de taille depuis Supabase au chargement
 useEffect(() => {
@@ -3365,74 +3435,97 @@ const handleTierPctChange = useCallback(
 );
 
 // Sauvegarder une tranche de prix dans pv_price_bands
-const savePriceBand = useCallback(async (band) => {
-  try {
-    // Générer un label basé sur min/max
-    const label = band.max ? `${band.min}-${band.max}` : `${band.min}+`;
-    
-    const payload = {
-      category_key: band.category_key || label,
-      label: label,
-      min: band.min,
-      max: band.max,
-      share_pct: band.share_pct,
-      sort: band.sort,
-      bike_category: band.bike_category,
-      bike_type: band.bike_type,
-    };
+// Fonction pour valider les chevauchements de tranches de prix
+const validatePriceBandOverlap = (bands) => {
+  const sorted = [...bands].sort((a, b) => a.min - b.min);
 
-    console.log("💾 Sauvegarde tranche prix:", payload);
+  for (let i = 0; i < sorted.length - 1; i++) {
+    const current = sorted[i];
+    const next = sorted[i + 1];
 
-    if (band.id) {
-      // Update existant
-      const { error } = await supabase
-        .from("pv_price_bands")
-        .update(payload)
-        .eq("id", band.id);
-      
-      if (error) {
-        console.error("❌ Erreur update:", error);
-        throw error;
-      }
-      console.log("✅ Mise à jour réussie, id:", band.id);
-    } else {
-      // Insert nouveau
-      const { data, error } = await supabase
-        .from("pv_price_bands")
-        .insert(payload)
-        .select("id")
-        .single();
-      
-      if (error) {
-        console.error("❌ Erreur insert:", error);
-        throw error;
-      }
-      
-      console.log("✅ Insertion réussie, nouvel id:", data?.id);
-      
-      // Mettre à jour l'id local
-      if (data) {
-        const idx = priceBands.findIndex(b => b === band);
-        if (idx >= 0) {
-          const newBands = [...priceBands];
-          newBands[idx] = { ...newBands[idx], id: data.id };
-          setPriceBands(newBands);
-        }
+    // Si le max du courant existe et max >= min du suivant, c'est un chevauchement
+    if (current.max !== null && current.max !== undefined) {
+      if (current.max > next.min) {
+        return {
+          valid: false,
+          error: `Chevauchement détecté: ${current.min}€-${current.max}€ chevauche ${next.min}€-${next.max ? next.max + '€' : '+'}`,
+        };
       }
     }
-    
-    // ✅ Sauvegarder aussi pricePct dans pv_settings
-    const pricePct = {};
-    priceBands.forEach(b => {
-      if (b.label) pricePct[b.label] = b.share_pct || 0;
-    });
-    if (label) pricePct[label] = band.share_pct || 0; // Inclure la band actuelle
-    saveParkingSettings({ pricePct });
-    
-  } catch (err) {
-    console.error("❌ Erreur sauvegarde tranche prix:", err);
   }
-}, [priceBands, saveParkingSettings]);
+
+  return { valid: true };
+};
+
+// Sauvegarder TOUTES les tranches de prix pour la catégorie sélectionnée
+const saveAllPriceBands = useCallback(async () => {
+  try {
+    if (!parkingCategory || !priceBands || priceBands.length === 0) {
+      alert("Sélectionnez une catégorie et ajoutez des tranches");
+      return;
+    }
+
+    // Extraire category et type de parkingCategory (format: "VTT - Électrique")
+    const parts = parkingCategory.split(" - ");
+    const category = parts[0] || "";
+    const type = parts[1] || "";
+
+    console.log(`🗑️ Suppression des anciennes tranches pour ${category} - ${type}`);
+
+    // 1. Supprimer TOUTES les anciennes tranches pour cette catégorie/type
+    const { error: deleteError } = await supabase
+      .from("pv_price_bands")
+      .delete()
+      .eq("bike_category", category)
+      .eq("bike_type", type);
+
+    if (deleteError) {
+      console.error("❌ Erreur suppression:", deleteError);
+      throw deleteError;
+    }
+    console.log("✅ Anciennes tranches supprimées");
+
+    // 2. Insérer les nouvelles tranches
+    const payloads = priceBands.map((band, idx) => ({
+      label: band.label,
+      min: band.min,
+      max: band.max,
+      share_pct: Math.round((band.share_pct || 0) * 100), // Convertir 0.25 → 25
+      sort: idx + 1,
+      bike_category: category,
+      bike_type: type,
+    }));
+
+    console.log("💾 Insertion des nouvelles tranches:", payloads);
+
+    const { data, error: insertError } = await supabase
+      .from("pv_price_bands")
+      .insert(payloads)
+      .select("id");
+
+    if (insertError) {
+      console.error("❌ Erreur insertion:", insertError);
+      throw insertError;
+    }
+
+    console.log("✅ Nouvelles tranches sauvegardées:", data);
+
+    // 3. Mettre à jour les IDs locaux
+    if (data) {
+      const newBands = priceBands.map((band, idx) => ({
+        ...band,
+        id: data[idx]?.id || band.id,
+      }));
+      setPriceBands(newBands);
+    }
+
+    alert("✅ Tranches de prix sauvegardées!");
+
+  } catch (err) {
+    console.error("❌ Erreur sauvegarde:", err);
+    alert("❌ Erreur lors de la sauvegarde");
+  }
+}, [parkingCategory, priceBands]);
 
 
 const [brandTiersIndex, setBrandTiersIndex] = useState(new Map()); 
@@ -8458,8 +8551,46 @@ ${Object.entries(v)
           ======================= */}
       {parkingTab === "vue" &&
         (() => {
+          // Si le cache est en cours de chargement, afficher un message
+          if (priceBandsLoading) {
+            return (
+              <div style={{ padding: 40, textAlign: "center", color: "#666" }}>
+                ⏳ Chargement des paramètres en cours...
+              </div>
+            );
+          }
+
+          // Si pas de cache ou pas de données, afficher message
+          if (!allPriceBandsByCategory || Object.keys(allPriceBandsByCategory).length === 0) {
+            return (
+              <div style={{ padding: 40, textAlign: "center", color: "#999" }}>
+                ⏳ Aucune tranche de prix définie. Allez dans Paramètres pour en créer.
+              </div>
+            );
+          }
+
+          // Déterminer quelle catégorie utiliser
+          // IMPORTANT: Utiliser UNIQUEMENT les catégories qui ont réellement des tranches dans Supabase
+          let categoryToUse = parkingSelection.category || parkingCategory;
+
+          // Si pas de catégorie sélectionnée, utiliser la première qui existe dans le cache
+          if (!categoryToUse) {
+            categoryToUse = Object.keys(allPriceBandsByCategory)[0];
+            console.log(`ℹ️ Aucune catégorie sélectionnée, utilisation de la première disponible: ${categoryToUse}`);
+          }
+
+          // Charger les tranches UNIQUEMENT depuis le cache (allPriceBandsByCategory)
+          let bandsToUse = [];
+          if (categoryToUse && allPriceBandsByCategory && allPriceBandsByCategory[categoryToUse]) {
+            bandsToUse = allPriceBandsByCategory[categoryToUse];
+            console.log(`📊 VUE: Tranches chargées pour ${categoryToUse}:`, bandsToUse);
+          } else {
+            console.warn(`⚠️ VUE: Aucune tranche trouvée pour ${categoryToUse} - affichage sans tranches`);
+            bandsToUse = [];
+          }
+
           const baseRows = filteredAndSortedVelos || []; // ou velos si tu préfères tout le stock
-          const rowsForView = applyParkingSelection(baseRows, parkingSelection);
+          const rowsForView = applyParkingSelection(baseRows, parkingSelection, bandsToUse);
           const brandRecap = buildBrandRecapByTier(rowsForView);
           const baseUnits = (baseRows || []).reduce((sum, r) => sum + Number(getRowTotalStock(r) || 0), 0);
           const filteredUnits = (rowsForView || []).reduce((sum, r) => sum + Number(getRowTotalStock(r) || 0), 0);
@@ -8575,13 +8706,22 @@ const objTotalForCatMar = objectiveTotal * multCategory * multSize;
             return { out, totalUnits };
           };
           
-          const distPrice = computeDistributionForSize(rowsForPrices, (r) => getPriceBand(getPriceFromRow(r)), parkingSelection.size);
+          const distPrice = computeDistributionForSize(rowsForPrices, (r) => getPriceBand(getPriceFromRow(r), bandsToUse), parkingSelection.size);
+
+          // Ajouter les tranches de prix manquantes (avec 0 unités) pour les afficher
+          if (bandsToUse && bandsToUse.length > 0) {
+            bandsToUse.forEach(band => {
+              if (!distPrice.out[band.label]) {
+                distPrice.out[band.label] = 0;
+              }
+            });
+          }
 
           // ---- Gap rows avec objectifs cascadés
           const objTotalForCategory = objectiveTotal;
           const objTotalForSize = objectiveTotal * multCategory;
           const objTotalForPrice = objectiveTotal * multCategory * multSize;
-          
+
           const catRows = buildGapRows(distCategory.out, distCategory.totalUnits, parkingRules.categoryPct, objTotalForCategory);
           const sizeRows = buildGapRows(distSize.out, distSize.totalUnits, parkingRules.sizePct, objTotalForSize);
           const priceRows = buildGapRows(distPrice.out, distPrice.totalUnits, parkingRules.pricePct, objTotalForPrice);
@@ -8614,7 +8754,22 @@ const objTotalForCatMar = objectiveTotal * multCategory * multSize;
   return rows || [];
 }
 
-          const renderTable = (title, rows, filterKey) => (
+          const renderTable = (title, rows, filterKey) => {
+            // Helper pour formater les labels des tranches de prix
+            const formatLabel = (key, filterType) => {
+              if (filterType !== "priceBand") return key;
+
+              // Si c'est une tranche de prix, chercher dans le cache et afficher min-max
+              if (bandsToUse && bandsToUse.length > 0) {
+                const band = bandsToUse.find(b => normStr(b.label) === normStr(key));
+                if (band) {
+                  return band.max ? `${band.min}€-${band.max}€` : `${band.min}€+`;
+                }
+              }
+              return key;
+            };
+
+            return (
             <div className="parking-card">
               <div className="parking-card-title">{title}</div>
 
@@ -8637,7 +8792,7 @@ const objTotalForCatMar = objectiveTotal * multCategory * multSize;
                       onClick={() => toggleParkingFilter(filterKey, r.key)}
                       title="Cliquer pour filtrer (re-cliquer pour enlever)"
                     >
-                      <div className="parking-key">{r.key || "—"}</div>
+                      <div className="parking-key">{formatLabel(r.key, filterKey) || "—"}</div>
 
                       <div>
                         <div className="parking-strong">{Math.round(r.actualUnits)} u</div>
@@ -8666,169 +8821,441 @@ const objTotalForCatMar = objectiveTotal * multCategory * multSize;
               </div>
             </div>
           );
+            };
 
           return (
             <div className="parking-body">
-              {/* Barre filtres */}
-              <div className="parking-card" style={{ gridColumn: "1 / -1" }}>
-                <div className="parking-card-title">Filtres actifs</div>
-                <div className="parking-muted" style={{ marginTop: 6 }}>
-  Ordre OBLIGATOIRE : <strong>1) Catégorie</strong> → <strong>2) Taille</strong> → <strong>3) Prix</strong>.
-  <span style={{ marginLeft: 6 }}>
-    (Les <strong>Actuel</strong> et <strong>Obj</strong> de chaque table restent figés)
-  </span>
-</div>
-
-                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-                  {parkingSelection.category ? (
-                    <span className="parking-chip">Catégorie: {parkingSelection.category}</span>
-                  ) : null}
-                  {parkingSelection.priceBand ? (
-                    <span className="parking-chip">Prix: {parkingSelection.priceBand}</span>
-                  ) : null}
-                  {parkingSelection.catMar ? (
-                    <span className="parking-chip">CAT_MAR: {parkingSelection.catMar}</span>
-                  ) : null}
-                  {parkingSelection.size ? <span className="parking-chip">Taille: {parkingSelection.size}</span> : null}
-
-                  <button type="button" className="parking-clear-btn" onClick={clearParkingFilters}>
-                    Réinitialiser
+              {/* Barre filtres ultra-compacte - affichée SEULEMENT si un filtre est actif */}
+              {Object.values(parkingSelection).some(v => v) && (
+              <div style={{
+                gridColumn: "1 / -1",
+                padding: "4px 8px",
+                background: "#f0f9ff",
+                border: "1px solid #bfdbfe",
+                borderRadius: 6,
+                display: "flex",
+                gap: 6,
+                alignItems: "center",
+                flexWrap: "wrap",
+                fontSize: 11,
+                marginBottom: 16
+              }}>
+                {parkingSelection.category && (
+                  <span style={{ fontWeight: 700, padding: "2px 6px", background: "#3b82f6", color: "white", borderRadius: 3, fontSize: 10 }}>
+                    CAT: {parkingSelection.category}
+                  </span>
+                )}
+                {parkingSelection.size && (
+                  <span style={{ fontWeight: 700, padding: "2px 6px", background: "#8b5cf6", color: "white", borderRadius: 3, fontSize: 10 }}>
+                    TAILLE: {parkingSelection.size}
+                  </span>
+                )}
+                {parkingSelection.priceBand && (
+                  <span style={{ fontWeight: 700, padding: "2px 6px", background: "#ec4899", color: "white", borderRadius: 3, fontSize: 10 }}>
+                    PRIX: {parkingSelection.priceBand}
+                  </span>
+                )}
+                <div style={{ marginLeft: "auto", color: "#1f2937", fontWeight: 600, fontSize: 11 }}>
+                  {Math.round(filteredUnits)} / {Math.round(baseUnits)} u
+                </div>
+                {Object.values(parkingSelection).some(v => v) && (
+                  <button type="button" onClick={clearParkingFilters} style={{
+                    padding: "2px 4px",
+                    fontSize: 10,
+                    background: "#ef4444",
+                    color: "white",
+                    border: "none",
+                    borderRadius: 3,
+                    cursor: "pointer",
+                    fontWeight: 700
+                  }}>
+                    ✕
                   </button>
+                )}
+              </div>
+              )}
 
-                  <div className="parking-muted" style={{ marginLeft: "auto" }}>
-                    Base: {Math.round(baseUnits)} u · Filtré: {Math.round(filteredUnits)} u
+              {/* Arbre de décision interactif */}
+              <div style={{ gridColumn: "1 / -1" }}>
+                {/* ÉTAPE 1: CATÉGORIES */}
+                <div style={{ marginBottom: 24 }}>
+                  <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 12, color: "#1f2937" }}>
+                    1️⃣ Sélectionner une catégorie
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 12 }}>
+                    {(() => {
+                      // Filtrer et trier les catégories
+                      const filtered = catRows.filter(r => Object.keys(allPriceBandsByCategory).some(key => key.startsWith(r.key)));
+                      return filtered.sort((a, b) => a.key.localeCompare(b.key));
+                    })().map((r) => {
+                      const active = parkingSelection.category && normStr(parkingSelection.category) === normStr(r.key);
+                      const isOverTarget = r.gapUnits > 0;
+                      const isUnderTarget = r.gapUnits < 0;
+                      const gapColor = isOverTarget ? "#ef4444" : isUnderTarget ? "#10b981" : "#6b7280";
+
+                      // Formater le label: supprimer le type et ajouter un logo
+                      const isElectric = r.key.includes("Électrique");
+                      const isMusculaire = r.key.includes("Musculaire");
+                      const categoryName = r.key.replace(" - Électrique", "").replace(" - Musculaire", "").trim();
+                      const displayLabel = isElectric ? `${categoryName} ⚡` : isMusculaire ? `${categoryName} 🦵` : categoryName;
+
+                      return (
+                        <div
+                          key={r.key}
+                          onClick={() => toggleParkingFilter("category", r.key)}
+                          style={{
+                            padding: 16,
+                            borderRadius: 12,
+                            border: active ? `3px solid ${gapColor}` : "2px solid #e5e7eb",
+                            background: active ? (isOverTarget ? "rgba(239, 68, 68, 0.1)" : isUnderTarget ? "rgba(16, 185, 129, 0.1)" : "#f3f4f6") : "#fff",
+                            cursor: "pointer",
+                            transition: "all 0.2s",
+                            boxShadow: active ? `0 0 0 3px ${gapColor}33` : "none"
+                          }}
+                        >
+                          <div style={{ fontWeight: 700, fontSize: 15, color: "#1f2937", marginBottom: 10 }}>
+                            {displayLabel}
+                          </div>
+                          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 10 }}>
+                            <div style={{ padding: "8px", background: "#f3f4f6", borderRadius: 6 }}>
+                              <div style={{ fontSize: 10, color: "#666", marginBottom: 2 }}>Actuel</div>
+                              <div style={{ fontSize: 16, fontWeight: 800, color: "#1f2937" }}>
+                                {Math.round(r.actualUnits)}
+                              </div>
+                              <div style={{ fontSize: 10, color: "#999" }}>u ({Math.round(r.actualPct * 100)}%)</div>
+                            </div>
+                            <div style={{ padding: "8px", background: "#f3f4f6", borderRadius: 6 }}>
+                              <div style={{ fontSize: 10, color: "#666", marginBottom: 2 }}>Objectif</div>
+                              <div style={{ fontSize: 16, fontWeight: 800, color: "#1f2937" }}>
+                                {Math.round(r.targetUnits)}
+                              </div>
+                              <div style={{ fontSize: 10, color: "#999" }}>u ({Math.round(r.targetPct * 100)}%)</div>
+                            </div>
+                          </div>
+                          <div style={{
+                            padding: isOverTarget ? "10px 12px" : "8px 12px",
+                            borderRadius: 6,
+                            background: gapColor,
+                            color: "white",
+                            fontWeight: 700,
+                            fontSize: isOverTarget ? 13 : 13,
+                            textAlign: "center",
+                            transform: isOverTarget ? "scale(1.05)" : "scale(1)"
+                          }}>
+                            {isOverTarget ? `⚠️ SURSTOCK +${Math.round(r.gapUnits)} u` : isUnderTarget ? `${Math.round(Math.abs(r.gapUnits))} u manquants` : "✓ Équilibré"}
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
-              </div>
 
-              {renderTable("Catégories", shrinkRowsForUI(catRows, "category"), "category")}
-              {parkingSelection.category && renderTable("Tailles", shrinkRowsForUI(sizeRows, "size"), "size")}
-              {parkingSelection.category && parkingSelection.size && renderTable("Prix", shrinkRowsForUI(priceRows, "priceBand"), "priceBand")}
+                {/* ÉTAPE 2: TAILLES */}
+                {parkingSelection.category && (
+                  <div style={{ marginBottom: 24 }}>
+                    <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 12, color: "#1f2937" }}>
+                      2️⃣ Sélectionner une taille
+                    </div>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: 12 }}>
+                      {(() => {
+                        const sizeOrder = ["XS", "S", "M", "L", "XL"];
+                        return shrinkRowsForUI(sizeRows, "size").sort((a, b) => {
+                          const indexA = sizeOrder.indexOf(a.key.toUpperCase());
+                          const indexB = sizeOrder.indexOf(b.key.toUpperCase());
+                          return (indexA === -1 ? 999 : indexA) - (indexB === -1 ? 999 : indexB);
+                        });
+                      })().map((r) => {
+                        const active = parkingSelection.size && normStr(parkingSelection.size) === normStr(r.key);
+                        const isOverTarget = r.gapUnits > 0;
+                        const isUnderTarget = r.gapUnits < 0;
+                        const gapColor = isOverTarget ? "#ef4444" : isUnderTarget ? "#10b981" : "#6b7280";
 
-
-{/* ✅ Rappel marques par tier (uniquement si une Catégorie est filtrée) */}
-{parkingSelection.category ? (
-  <div className="parking-card" style={{ gridColumn: "1 / -1" }}>
-    <div className="parking-card-title">
-      Marques par CAT_MAR (sur la sélection) — {parkingSelection.category}
-    </div>
-    <div className="parking-muted" style={{ marginBottom: 10 }}>
-      (Basé sur le stock actuellement filtré : catégorie / taille / prix)
-    </div>
-
-    <div style={{ display: "grid", gridTemplateColumns: "repeat(5, minmax(0, 1fr))", gap: 10 }}>
-      {[
-        ["A", brandRecap.A],
-        ["B", brandRecap.B],
-        ["C", brandRecap.C],
-        ["D", brandRecap.D],
-      ].map(([label, list]) => {
-        const velosInTier = getVelosByTier(label);
-        const tierPct = parkingTierPct[label] || 0;
-        
-        return (
-        <div
-          key={label}
-          style={{
-            border: "1px solid #e5e7eb",
-            borderRadius: 12,
-            background: "#fff",
-            padding: 10,
-            minWidth: 0,
-            position: "relative",
-            cursor: velosInTier.length > 0 ? "pointer" : "default",
-          }}
-          className="tier-card-hover"
-        >
-          <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "baseline" }}>
-            <div style={{ fontWeight: 900 }}>{label}</div>
-            <div style={{ fontSize: 12, color: "#6b7280" }}>
-              <span style={{ fontWeight: 700, color: "#059669" }}>{Math.round(tierPct * 100)}%</span>
-            </div>
-          </div>
-          
-          <div style={{ fontSize: 11, color: "#6b7280", marginTop: 4 }}>
-            {list.length} marques · {velosInTier.length} vélos
-          </div>
-
-          <div style={{ marginTop: 8, display: "flex", flexWrap: "wrap", gap: 6 }}>
-            {list.length === 0 ? (
-              <span style={{ fontSize: 12, color: "#9ca3af" }}>—</span>
-            ) : (
-              list.map((b) => (
-                <span
-                  key={b}
-                  style={{
-                    display: "inline-flex",
-                    alignItems: "center",
-                    padding: "5px 8px",
-                    borderRadius: 999,
-                    border: "1px solid rgba(0,0,0,0.12)",
-                    background: "#fafafa",
-                    fontWeight: 800,
-                    fontSize: 12,
-                    maxWidth: "100%",
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
-                  }}
-                  title={b}
-                >
-                  {b}
-                </span>
-              ))
-            )}
-          </div>
-          
-          {/* Tooltip au survol avec liste des vélos */}
-          {velosInTier.length > 0 && (
-            <div className="tier-velos-tooltip">
-              <div style={{ fontWeight: 700, marginBottom: 8, borderBottom: "1px solid #e5e7eb", paddingBottom: 6 }}>
-                Vélos Tier {label} ({velosInTier.length})
-              </div>
-              <div style={{ maxHeight: 400, overflowY: "auto" }}>
-                {velosInTier.map((v, i) => (
-                  <div 
-                    key={i}
-                    style={{
-                      display: "flex",
-                      gap: 10,
-                      padding: 8,
-                      borderBottom: i < velosInTier.length - 1 ? "1px solid #f3f4f6" : "none",
-                      alignItems: "center",
-                    }}
-                  >
-                    {v.photo && (
-                      <img 
-                        src={v.photo} 
-                        alt={v.model}
-                        style={{
-                          width: 50,
-                          height: 50,
-                          objectFit: "cover",
-                          borderRadius: 6,
-                          flexShrink: 0,
-                        }}
-                      />
-                    )}
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontWeight: 600, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                        {v.brand} {v.model}
-                      </div>
-                      <div style={{ fontSize: 11, color: "#6b7280" }}>
-                        {v.year} · {v.price}€
-                      </div>
+                        return (
+                          <div
+                            key={r.key}
+                            onClick={() => toggleParkingFilter("size", r.key)}
+                            style={{
+                              padding: 16,
+                              borderRadius: 12,
+                              border: active ? `3px solid ${gapColor}` : "2px solid #e5e7eb",
+                              background: active ? (isOverTarget ? "rgba(239, 68, 68, 0.1)" : isUnderTarget ? "rgba(16, 185, 129, 0.1)" : "#f3f4f6") : "#fff",
+                              cursor: "pointer",
+                              transition: "all 0.2s",
+                              boxShadow: active ? `0 0 0 3px ${gapColor}33` : "none"
+                            }}
+                          >
+                            <div style={{ fontWeight: 700, fontSize: 15, color: "#1f2937", marginBottom: 10 }}>
+                              {r.key}
+                            </div>
+                            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 10 }}>
+                              <div style={{ padding: "8px", background: "#f3f4f6", borderRadius: 6 }}>
+                                <div style={{ fontSize: 10, color: "#666", marginBottom: 2 }}>Actuel</div>
+                                <div style={{ fontSize: 16, fontWeight: 800, color: "#1f2937" }}>
+                                  {Math.round(r.actualUnits)}
+                                </div>
+                                <div style={{ fontSize: 10, color: "#999" }}>u ({Math.round(r.actualPct * 100)}%)</div>
+                              </div>
+                              <div style={{ padding: "8px", background: "#f3f4f6", borderRadius: 6 }}>
+                                <div style={{ fontSize: 10, color: "#666", marginBottom: 2 }}>Objectif</div>
+                                <div style={{ fontSize: 16, fontWeight: 800, color: "#1f2937" }}>
+                                  {Math.round(r.targetUnits)}
+                                </div>
+                                <div style={{ fontSize: 10, color: "#999" }}>u ({Math.round(r.targetPct * 100)}%)</div>
+                              </div>
+                            </div>
+                            <div style={{
+                              padding: isOverTarget ? "10px 12px" : "8px 12px",
+                              borderRadius: 6,
+                              background: gapColor,
+                              color: "white",
+                              fontWeight: 700,
+                              fontSize: isOverTarget ? 14 : 13,
+                              textAlign: "center",
+                              transform: isOverTarget ? "scale(1.05)" : "scale(1)"
+                            }}>
+                              {isOverTarget ? `⚠️ SURSTOCK +${Math.round(r.gapUnits)} u` : isUnderTarget ? `${Math.round(Math.abs(r.gapUnits))} u` : "✓"}
+                            </div>
+                          </div>
+                        );
+                      })}
                     </div>
                   </div>
-                ))}
+                )}
+
+                {/* ÉTAPE 3: PRIX */}
+                {parkingSelection.category && parkingSelection.size && (
+                  <div style={{ marginBottom: 24 }}>
+                    <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 12, color: "#1f2937" }}>
+                      3️⃣ Sélectionner une tranche de prix
+                    </div>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: 12 }}>
+                      {(() => {
+                        return shrinkRowsForUI(priceRows, "priceBand")
+                          .filter(r => bandsToUse.some(b => normStr(b.label) === normStr(r.key)))
+                          .sort((rowA, rowB) => {
+                            // Trouver les bandes correspondantes pour trier par min
+                            const bandA = bandsToUse.find(b => normStr(b.label) === normStr(rowA.key));
+                            const bandB = bandsToUse.find(b => normStr(b.label) === normStr(rowB.key));
+                            const minA = bandA?.min ?? 0;
+                            const minB = bandB?.min ?? 0;
+                            return minA - minB;
+                          });
+                      })().map((r) => {
+                        const active = parkingSelection.priceBand && normStr(parkingSelection.priceBand) === normStr(r.key);
+                        const isOverTarget = r.gapUnits > 0;
+                        const isUnderTarget = r.gapUnits < 0;
+                        const gapColor = isOverTarget ? "#ef4444" : isUnderTarget ? "#10b981" : "#6b7280";
+
+                        // Formater le label pour les tranches de prix
+                        const formatLabel = (key) => {
+                          if (bandsToUse && bandsToUse.length > 0) {
+                            const band = bandsToUse.find(b => normStr(b.label) === normStr(key));
+                            if (band) {
+                              return band.max ? `${band.min}€-${band.max}€` : `${band.min}€+`;
+                            }
+                          }
+                          return key;
+                        };
+
+                        return (
+                          <div
+                            key={r.key}
+                            onClick={() => toggleParkingFilter("priceBand", r.key)}
+                            style={{
+                              padding: 16,
+                              borderRadius: 12,
+                              border: active ? `3px solid ${gapColor}` : "2px solid #e5e7eb",
+                              background: active ? (isOverTarget ? "rgba(239, 68, 68, 0.1)" : isUnderTarget ? "rgba(16, 185, 129, 0.1)" : "#f3f4f6") : "#fff",
+                              cursor: "pointer",
+                              transition: "all 0.2s",
+                              boxShadow: active ? `0 0 0 3px ${gapColor}33` : "none"
+                            }}
+                          >
+                            <div style={{ fontWeight: 700, fontSize: 15, color: "#1f2937", marginBottom: 10 }}>
+                              {formatLabel(r.key)}
+                            </div>
+                            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 10 }}>
+                              <div style={{ padding: "8px", background: "#f3f4f6", borderRadius: 6 }}>
+                                <div style={{ fontSize: 10, color: "#666", marginBottom: 2 }}>Actuel</div>
+                                <div style={{ fontSize: 16, fontWeight: 800, color: "#1f2937" }}>
+                                  {Math.round(r.actualUnits)}
+                                </div>
+                                <div style={{ fontSize: 10, color: "#999" }}>u ({Math.round(r.actualPct * 100)}%)</div>
+                              </div>
+                              <div style={{ padding: "8px", background: "#f3f4f6", borderRadius: 6 }}>
+                                <div style={{ fontSize: 10, color: "#666", marginBottom: 2 }}>Objectif</div>
+                                <div style={{ fontSize: 16, fontWeight: 800, color: "#1f2937" }}>
+                                  {Math.round(r.targetUnits)}
+                                </div>
+                                <div style={{ fontSize: 10, color: "#999" }}>u ({Math.round(r.targetPct * 100)}%)</div>
+                              </div>
+                            </div>
+                            <div style={{
+                              padding: isOverTarget ? "10px 12px" : "8px 12px",
+                              borderRadius: 6,
+                              background: gapColor,
+                              color: "white",
+                              fontWeight: 700,
+                              fontSize: isOverTarget ? 14 : 13,
+                              textAlign: "center",
+                              transform: isOverTarget ? "scale(1.05)" : "scale(1)"
+                            }}>
+                              {isOverTarget ? `⚠️ SURSTOCK +${Math.round(r.gapUnits)} u` : isUnderTarget ? `${Math.round(Math.abs(r.gapUnits))} u` : "✓"}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
               </div>
-            </div>
-          )}
-        </div>
-      )})}
-    </div>
-  </div>
-) : null}
+
+            {/* ✅ ÉTAPE 4: MARQUES (CAT_MAR) */}
+            {parkingSelection.category && (
+              <div style={{ marginBottom: 24 }}>
+                <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 12, color: "#1f2937" }}>
+                  4️⃣ Marques par CAT_MAR
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: 12 }}>
+                  {[
+                    ["A", brandRecap.A],
+                    ["B", brandRecap.B],
+                    ["C", brandRecap.C],
+                    ["D", brandRecap.D],
+                  ].map(([tierLabel, list]) => {
+                    const velosInTier = getVelosByTier(tierLabel);
+                    const tierPct = parkingTierPct[tierLabel] || 0;
+                    const actualUnits = velosInTier.length;
+                    const objTotalForTier = objTotalForCatMar || 0;
+                    const targetUnits = Math.round((tierPct || 0) * objTotalForTier);
+                    const gapUnits = actualUnits - targetUnits;
+                    const isOverTarget = gapUnits > 0;
+                    const isUnderTarget = gapUnits < 0;
+                    const gapColor = isOverTarget ? "#ef4444" : isUnderTarget ? "#10b981" : "#6b7280";
+
+                    return (
+                      <div
+                        key={tierLabel}
+                        style={{
+                          padding: 16,
+                          borderRadius: 12,
+                          border: "2px solid #e5e7eb",
+                          background: "#fff",
+                          cursor: "default",
+                          transition: "all 0.2s",
+                          position: "relative"
+                        }}
+                      >
+                        <div style={{ fontWeight: 700, fontSize: 15, color: "#1f2937", marginBottom: 10 }}>
+                          Tier {tierLabel}
+                        </div>
+                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 10 }}>
+                          <div style={{ padding: "8px", background: "#f3f4f6", borderRadius: 6 }}>
+                            <div style={{ fontSize: 10, color: "#666", marginBottom: 2 }}>Actuel</div>
+                            <div style={{ fontSize: 16, fontWeight: 800, color: "#1f2937" }}>
+                              {actualUnits}
+                            </div>
+                            <div style={{ fontSize: 10, color: "#999" }}>vélos</div>
+                          </div>
+                          <div style={{ padding: "8px", background: "#f3f4f6", borderRadius: 6 }}>
+                            <div style={{ fontSize: 10, color: "#666", marginBottom: 2 }}>Objectif</div>
+                            <div style={{ fontSize: 16, fontWeight: 800, color: "#1f2937" }}>
+                              {targetUnits}
+                            </div>
+                            <div style={{ fontSize: 10, color: "#999" }}>({Math.round(tierPct * 100)}%)</div>
+                          </div>
+                        </div>
+                        <div style={{
+                          padding: isOverTarget ? "10px 12px" : "8px 12px",
+                          borderRadius: 6,
+                          background: gapColor,
+                          color: "white",
+                          fontWeight: 700,
+                          fontSize: isOverTarget ? 14 : 13,
+                          textAlign: "center",
+                          transform: isOverTarget ? "scale(1.05)" : "scale(1)",
+                          marginBottom: 10
+                        }}>
+                          {isOverTarget ? `⚠️ SURSTOCK +${Math.round(gapUnits)} u` : isUnderTarget ? `${Math.round(Math.abs(gapUnits))} u manquants` : "✓ Équilibré"}
+                        </div>
+
+                        {list.length > 0 && (
+                          <div style={{ marginTop: 8, display: "flex", flexWrap: "wrap", gap: 4 }}>
+                            {list.map((b) => (
+                              <span
+                                key={b}
+                                style={{
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                  padding: "4px 6px",
+                                  borderRadius: 4,
+                                  border: "1px solid rgba(0,0,0,0.12)",
+                                  background: "#fafafa",
+                                  fontWeight: 700,
+                                  fontSize: 11,
+                                  maxWidth: "100%",
+                                  overflow: "hidden",
+                                  textOverflow: "ellipsis",
+                                  whiteSpace: "nowrap",
+                                }}
+                                title={b}
+                              >
+                                {b}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+
+                        {/* Tooltip au survol avec liste des vélos */}
+                        {velosInTier.length > 0 && (
+                          <div className="tier-velos-tooltip">
+                            <div style={{ fontWeight: 700, marginBottom: 8, borderBottom: "1px solid #e5e7eb", paddingBottom: 6 }}>
+                              Vélos Tier {tierLabel} ({velosInTier.length})
+                            </div>
+                            <div style={{ maxHeight: 400, overflowY: "auto" }}>
+                              {velosInTier.map((v, i) => (
+                                <div
+                                  key={i}
+                                  style={{
+                                    display: "flex",
+                                    gap: 10,
+                                    padding: 8,
+                                    borderBottom: i < velosInTier.length - 1 ? "1px solid #f3f4f6" : "none",
+                                    alignItems: "center",
+                                  }}
+                                >
+                                  {v.photo && (
+                                    <img
+                                      src={v.photo}
+                                      alt={v.model}
+                                      style={{
+                                        width: 50,
+                                        height: 50,
+                                        objectFit: "cover",
+                                        borderRadius: 6,
+                                        flexShrink: 0,
+                                      }}
+                                    />
+                                  )}
+                                  <div style={{ flex: 1, minWidth: 0 }}>
+                                    <div style={{ fontWeight: 600, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                      {v.brand} {v.model}
+                                    </div>
+                                    <div style={{ fontSize: 11, color: "#6b7280" }}>
+                                      {v.year} · {v.price}€
+                                    </div>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
             </div>
           );
         })()}
@@ -8957,86 +9384,6 @@ const objTotalForCatMar = objectiveTotal * multCategory * multSize;
                   </div>
                 );
               })}
-
-              {/* Section Prix - édition complète des tranches */}
-              <div className="parking-card">
-                <div className="parking-card-title">Prix</div>
-
-                <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-                  {priceBands.map((band, idx) => (
-                    <div
-                      key={band.id || idx}
-                      style={{
-                        padding: 12,
-                        borderRadius: 12,
-                        border: "1px solid #e5e7eb",
-                        background: "#fff",
-                      }}
-                    >
-                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 100px", gap: 10, marginBottom: 8 }}>
-                        <div>
-                          <label style={{ fontSize: 11, color: "#666", display: "block", marginBottom: 4 }}>Min (€)</label>
-                          <input
-                            type="number"
-                            value={band.min ?? ""}
-                            onChange={(e) => {
-                              const newBands = [...priceBands];
-                              newBands[idx] = { ...newBands[idx], min: Number(e.target.value) || 0 };
-                              setPriceBands(newBands);
-                              // Sauvegarder dans Supabase
-                              savePriceBand(newBands[idx]);
-                            }}
-                            style={{ width: "100%", padding: "6px 8px", fontSize: 12 }}
-                          />
-                        </div>
-
-                        <div>
-                          <label style={{ fontSize: 11, color: "#666", display: "block", marginBottom: 4 }}>Max (€)</label>
-                          <input
-                            type="number"
-                            value={band.max ?? ""}
-                            onChange={(e) => {
-                              const newBands = [...priceBands];
-                              newBands[idx] = { ...newBands[idx], max: Number(e.target.value) || null };
-                              setPriceBands(newBands);
-                              savePriceBand(newBands[idx]);
-                            }}
-                            placeholder="∞"
-                            style={{ width: "100%", padding: "6px 8px", fontSize: 12 }}
-                          />
-                        </div>
-
-                        <div>
-                          <label style={{ fontSize: 11, color: "#666", display: "block", marginBottom: 4 }}>Part (%)</label>
-                          <input
-                            type="number"
-                            step="1"
-                            value={Math.round((band.share_pct || 0) * 100)}
-                            onChange={(e) => {
-                              const pct = clamp01(Number(e.target.value || 0) / 100);
-                              const newBands = [...priceBands];
-                              newBands[idx] = { ...newBands[idx], share_pct: pct };
-                              setPriceBands(newBands);
-                              
-                              // Mettre à jour aussi pricePct pour la compatibilité
-                              setParkingRules((p) => ({
-                                ...p,
-                                pricePct: { ...(p.pricePct || {}), [band.label]: pct },
-                              }));
-                              savePriceBand(newBands[idx]);
-                            }}
-                            style={{ width: "100%", padding: "6px 8px", fontSize: 12 }}
-                          />
-                        </div>
-                      </div>
-
-                      <div style={{ fontSize: 12, fontWeight: 600 }}>
-                        {band.min ?? 0}€ - {band.max ? `${band.max}€` : "∞"}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
               </div>
 
               {/* DROITE : Paramètres liés à la catégorie/type */}
@@ -9057,12 +9404,240 @@ const objTotalForCatMar = objectiveTotal * multCategory * multSize;
                 </div>
 
                 {/* Paramètres tranches de prix */}
-                <div className="parking-card" style={{ marginBottom: 0, paddingBottom: 0 }}>
-                  <div style={{ fontWeight: 800, fontSize: 16, marginBottom: 8 }}>Paramètres tranches de prix</div>
-                  {/* ...existing code for price bands UI... */}
-                  <div>
-                    {/* ...code d'affichage et édition des tranches de prix (déjà présent)... */}
+                <div className="parking-card">
+                  <div style={{ fontWeight: 800, fontSize: 16, marginBottom: 12, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <span>Paramètres tranches de prix</span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        // Extraire category et type
+                        const parts = (parkingCategory || "").split(" - ");
+                        const category = parts[0] || "";
+                        const type = parts[1] || "";
+
+                        const newBand = {
+                          id: `band-${Date.now()}`,
+                          min: null,
+                          max: null,
+                          share_pct: 0,
+                          label: `Tranche ${priceBands.length + 1}`,
+                          bike_category: category,
+                          bike_type: type,
+                        };
+                        const newBands = [...priceBands, newBand];
+
+                        // Ne pas valider à l'ajout - l'utilisateur remplira les valeurs ensuite
+                        setPriceBands(newBands);
+                      }}
+                      style={{
+                        padding: "6px 12px",
+                        borderRadius: 8,
+                        border: "none",
+                        background: "#10b981",
+                        color: "white",
+                        fontWeight: 600,
+                        fontSize: 12,
+                        cursor: "pointer",
+                      }}
+                    >
+                      + Ajouter
+                    </button>
                   </div>
+
+                  <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                    {priceBands.map((band, idx) => (
+                      <div
+                        key={band.id || idx}
+                        style={{
+                          padding: 12,
+                          borderRadius: 10,
+                          border: "1px solid rgba(0,0,0,0.12)",
+                          background: "rgba(0,0,0,0.02)",
+                        }}
+                      >
+                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 80px 28px", gap: 8, alignItems: "center", marginBottom: 8 }}>
+                          <div>
+                            <label style={{ fontSize: 11, color: "#666", display: "block", marginBottom: 4, fontWeight: 600 }}>Min (€)</label>
+                            <input
+                              type="number"
+                              value={band.min ?? ""}
+                              onChange={(e) => {
+                                const newBands = [...priceBands];
+                                newBands[idx] = { ...newBands[idx], min: Number(e.target.value) || 0 };
+                                setPriceBands(newBands);
+                              }}
+                              onBlur={(e) => {
+                                const newBands = [...priceBands];
+                                const minVal = Number(e.target.value) || 0;
+                                newBands[idx] = { ...newBands[idx], min: minVal };
+
+                                // Mettre à jour le label avec le format min-max
+                                const max = newBands[idx].max;
+                                newBands[idx].label = max ? `${minVal}€-${max}€` : `${minVal}€+`;
+
+                                // Valider les chevauchements
+                                const validation = validatePriceBandOverlap(newBands);
+                                if (!validation.valid) {
+                                  alert("⚠️ " + validation.error);
+                                  return;
+                                }
+
+                                setPriceBands(newBands);
+                              }}
+                              style={{
+                                width: "100%",
+                                padding: "6px 8px",
+                                fontSize: 13,
+                                borderRadius: 8,
+                                border: "1px solid rgba(0,0,0,0.16)",
+                                height: 34,
+                              }}
+                            />
+                          </div>
+
+                          <div>
+                            <label style={{ fontSize: 11, color: "#666", display: "block", marginBottom: 4, fontWeight: 600 }}>Max (€)</label>
+                            <input
+                              type="number"
+                              value={band.max ?? ""}
+                              onChange={(e) => {
+                                const newBands = [...priceBands];
+                                newBands[idx] = { ...newBands[idx], max: Number(e.target.value) || null };
+                                setPriceBands(newBands);
+                              }}
+                              onBlur={(e) => {
+                                const newBands = [...priceBands];
+                                const maxVal = Number(e.target.value) || null;
+                                newBands[idx] = { ...newBands[idx], max: maxVal };
+
+                                // Mettre à jour le label avec le format min-max
+                                const min = newBands[idx].min;
+                                newBands[idx].label = maxVal ? `${min}€-${maxVal}€` : `${min}€+`;
+
+                                // Valider les chevauchements
+                                const validation = validatePriceBandOverlap(newBands);
+                                if (!validation.valid) {
+                                  alert("⚠️ " + validation.error);
+                                  return;
+                                }
+
+                                setPriceBands(newBands);
+                              }}
+                              placeholder="∞"
+                              style={{
+                                width: "100%",
+                                padding: "6px 8px",
+                                fontSize: 13,
+                                borderRadius: 8,
+                                border: "1px solid rgba(0,0,0,0.16)",
+                                height: 34,
+                              }}
+                            />
+                          </div>
+
+                          <div>
+                            <label style={{ fontSize: 11, color: "#666", display: "block", marginBottom: 4, fontWeight: 600 }}>Part (%)</label>
+                            <input
+                              type="number"
+                              step="1"
+                              value={Math.round((band.share_pct || 0) * 100)}
+                              onChange={(e) => {
+                                const pct = clamp01(Number(e.target.value || 0) / 100);
+                                const newBands = [...priceBands];
+                                newBands[idx] = { ...newBands[idx], share_pct: pct };
+                                setPriceBands(newBands);
+
+                                setParkingRules((p) => ({
+                                  ...p,
+                                  pricePct: { ...(p.pricePct || {}), [band.label]: pct },
+                                }));
+                              }}
+                              style={{
+                                width: "100%",
+                                padding: "6px 8px",
+                                fontSize: 13,
+                                borderRadius: 8,
+                                border: "1px solid rgba(0,0,0,0.16)",
+                                height: 34,
+                              }}
+                            />
+                          </div>
+
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              const bandToDelete = priceBands[idx];
+
+                              // Supprimer de Supabase si elle a un vrai ID
+                              if (bandToDelete.id && !String(bandToDelete.id).startsWith("band-")) {
+                                try {
+                                  const { error } = await supabase
+                                    .from("pv_price_bands")
+                                    .delete()
+                                    .eq("id", bandToDelete.id);
+
+                                  if (error) {
+                                    console.error("❌ Erreur suppression:", error);
+                                    alert("Erreur lors de la suppression");
+                                    return;
+                                  }
+                                  console.log("✅ Tranche supprimée de Supabase");
+                                } catch (err) {
+                                  console.error("❌ Exception suppression:", err);
+                                  alert("Erreur lors de la suppression");
+                                  return;
+                                }
+                              }
+
+                              // Supprimer localement
+                              const newBands = priceBands.filter((_, i) => i !== idx);
+                              setPriceBands(newBands);
+                            }}
+                            style={{
+                              padding: "6px 8px",
+                              borderRadius: 6,
+                              border: "none",
+                              background: "#ef4444",
+                              color: "white",
+                              fontWeight: 600,
+                              fontSize: 14,
+                              cursor: "pointer",
+                              height: 34,
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                            }}
+                            title="Supprimer cette tranche"
+                          >
+                            ✕
+                          </button>
+                        </div>
+
+                        <div style={{ fontSize: 12, fontWeight: 700, color: "#374151" }}>
+                          {band.min ?? 0}€ - {band.max ? `${band.max}€` : "∞"}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={saveAllPriceBands}
+                    style={{
+                      width: "100%",
+                      padding: "10px 16px",
+                      borderRadius: 8,
+                      border: "none",
+                      background: "#3b82f6",
+                      color: "white",
+                      fontWeight: 700,
+                      fontSize: 14,
+                      cursor: "pointer",
+                      marginTop: 12,
+                    }}
+                  >
+                    💾 Enregistrer les tranches
+                  </button>
                 </div>
 
                 {/* Paramètres CAT MAR */}
