@@ -8757,6 +8757,22 @@ const objTotalForCatMar = objectiveTotal * multCategory * multSize;
               url: r?.["URL"] || "",
             }));
           };
+
+          // ✅ Récupère TOUTES les marques d'un tier pour la catégorie sélectionnée (sans filtre prix)
+          const getBrandsByTier = (tier) => {
+            const brands = new Set();
+            (rowsForPrices || [])
+              .filter(r => {
+                const t = String(getCatMarFromRow(r) || "").trim().toUpperCase();
+                return t === tier;
+              })
+              .forEach(r => {
+                const brand = String(r?.["Marque"] || "").trim();
+                if (brand) brands.add(brand);
+              });
+            return Array.from(brands).sort((a, b) => a.localeCompare(b, "fr"));
+          };
+
           function shrinkRowsForUI(rows, filterKey) {
   const selected = parkingSelection?.[filterKey];
 
@@ -9133,10 +9149,10 @@ const objTotalForCatMar = objectiveTotal * multCategory * multSize;
                 </div>
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: 12 }}>
                   {[
-                    ["A", brandRecap.A],
-                    ["B", brandRecap.B],
-                    ["C", brandRecap.C],
-                    ["D", brandRecap.D],
+                    ["A", getBrandsByTier("A")],
+                    ["B", getBrandsByTier("B")],
+                    ["C", getBrandsByTier("C")],
+                    ["D", getBrandsByTier("D")],
                   ].map(([tierLabel, list]) => {
                     const velosInTier = getVelosByTier(tierLabel);
                     const tierPct = parkingTierPct[tierLabel] || 0;
