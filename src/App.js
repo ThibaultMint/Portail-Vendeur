@@ -3,6 +3,7 @@ import { supabase } from "./supabaseClient";
 import Login from "./Login";
 import InventoryList from "./InventoryList";
 import KPIDashboard from "./KPIDashboard";
+import PriceToolModal from "./PriceToolModal";
 import { 
   FaTrash, FaEnvelope, FaSyncAlt, FaBalanceScale, FaHeart, FaUser, FaUserCircle, 
   FaSms, FaPercent, FaLink, FaCheckSquare, FaFileExport 
@@ -3048,6 +3049,19 @@ const [parkingTab, setParkingTab] = useState("vue"); // "vue" | "params"
 const [parkingCategory, setParkingCategory] = useState(null); // catégorie sélectionnée pour les objectifs
 const [parkingType, setParkingType] = useState(null); // type sélectionné pour les objectifs
 
+// ===== OUTIL PRIX (modal) =====
+const [priceToolOpen, setPriceToolOpen] = useState(false);
+const [priceToolForm, setPriceToolForm] = useState({
+  brand: "",
+  model: "",
+  year: new Date().getFullYear().toString(),
+  size: "",
+  category: "",
+  estimatedPrice: "",
+});
+const [priceToolCompetitorLinks, setPriceToolCompetitorLinks] = useState([]);
+const [priceToolShowCompetitors, setPriceToolShowCompetitors] = useState(false);
+
 // Charger les combinaisons uniques (Catégorie, Type de vélo) depuis velosmint
 const parkingCategoryTypeOptions = useMemo(() => {
   const combos = velos
@@ -5098,7 +5112,61 @@ const openParkingVirtuelTool = () => {
 };
 
 const openPriceTool = () => {
-  alert("💲 Outil Prix — à brancher (v1 bientôt)");
+  setPriceToolOpen(true);
+  setPriceToolForm({
+    brand: "",
+    model: "",
+    year: new Date().getFullYear().toString(),
+    size: "",
+    category: "",
+    estimatedPrice: "",
+  });
+  setPriceToolCompetitorLinks([]);
+  setPriceToolShowCompetitors(false);
+};
+
+// ✅ Générer les liens de recherche concurrence pour Outil Prix
+const generatePriceToolCompetitorLinks = () => {
+  const { brand, model, year } = priceToolForm;
+  if (!brand || !model || !year) return [];
+
+  const query = `${brand} ${model} ${year}`;
+  const queryNoYear = `${brand} ${model}`;
+  const qWithYear = encodeURIComponent(query);
+  const qNoYear = encodeURIComponent(queryNoYear);
+
+  // Déterminer si électrique (basé sur la catégorie ou un indicateur)
+  const isElectric = priceToolForm.category?.toLowerCase().includes("électrique");
+
+  const googleUrl = `https://www.google.com/search?q=${qWithYear}`;
+  const buycycleUrl = `https://buycycle.com/fr-fr/shop/min-year/${encodeURIComponent(year)}/search/${qNoYear}/sort-by/lowest-price`;
+  const leboncoinUrl = `https://www.leboncoin.fr/recherche?category=55&text=${qNoYear}&sort=price&order=asc`;
+  const upwayUrl = `https://upway.fr/search?q=${qWithYear}`;
+  const tuvalumUrl = `https://tuvalum.fr/search?sort_by=price-ascending&grid=default&q=${qWithYear}`;
+  const zycloraUrl = `https://zyclora.fr/#210c/fullscreen/m=or&q=${qWithYear}`;
+  const rebikeUrl = `https://rebike.fr/search?q=${qWithYear}`;
+
+  const links = [
+    { label: "🔍 Google", url: googleUrl, color: "#4285F4" },
+    { label: "🚴 Buycycle", url: buycycleUrl, color: "#00A651" },
+    { label: "🛒 Leboncoin", url: leboncoinUrl, color: "#FF6E14" },
+    { label: "📦 Tuvalum", url: tuvalumUrl, color: "#7C3AED" },
+    { label: "🔄 Zyclora", url: zycloraUrl, color: "#0EA5E9" },
+    { label: "♻️ Rebike", url: rebikeUrl, color: "#10B981" },
+  ];
+
+  if (isElectric) {
+    links.push({ label: "⚡ Upway", url: upwayUrl, color: "#F59E0B" });
+  }
+
+  return links;
+};
+
+// ✅ Déclencher la recherche de concurrence
+const handlePriceToolSearchCompetitors = () => {
+  const links = generatePriceToolCompetitorLinks();
+  setPriceToolCompetitorLinks(links);
+  setPriceToolShowCompetitors(true);
 };
 
 
@@ -11076,6 +11144,20 @@ const objTotalForCatMar = objectiveTotal * multCategory * multSize;
     filteredVelosCount={filteredAndSortedVelos.length}
     stockMode={stockMode}
     setStockMode={setStockMode}
+  />
+
+  {/* 💲 Outil Prix Modal */}
+  <PriceToolModal
+    isOpen={priceToolOpen}
+    onClose={() => setPriceToolOpen(false)}
+    form={priceToolForm}
+    onFormChange={setPriceToolForm}
+    competitorLinks={priceToolCompetitorLinks}
+    onSearchCompetitors={handlePriceToolSearchCompetitors}
+    showCompetitors={priceToolShowCompetitors}
+    onShowCompetitors={setPriceToolShowCompetitors}
+    allBrands={velos.map(v => v?.["Marque"] || "").filter((v, i, arr) => v && arr.indexOf(v) === i).sort()}
+    parkingCategories={parkingCategoryTypeOptions.map(c => c.split(" - ")[0]).filter((v, i, arr) => arr.indexOf(v) === i).sort()}
   />
   </>
   );
