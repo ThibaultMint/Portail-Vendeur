@@ -11157,7 +11157,7 @@ const objTotalForCatMar = objectiveTotal * multCategory * multSize;
     showCompetitors={priceToolShowCompetitors}
     onShowCompetitors={setPriceToolShowCompetitors}
     allBrands={velos.map(v => v?.["Marque"] || "").filter((v, i, arr) => v && arr.indexOf(v) === i).sort()}
-    parkingCategories={parkingCategoryTypeOptions.map(c => c.split(" - ")[0]).filter((v, i, arr) => arr.indexOf(v) === i).sort()}
+    parkingCategories={parkingCategoryTypeOptions.map(c => c.category).filter((v, i, arr) => arr.indexOf(v) === i).sort()}
   />
   </>
   );
