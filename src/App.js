@@ -1,3 +1,4 @@
+// Déplace tous les imports en haut du fichier (ESLint import/first)
 import React, { useState, useEffect, useMemo, useCallback, useRef, startTransition, useDeferredValue } from "react";
 import { supabase } from "./supabaseClient";
 import Login from "./Login";
@@ -37,7 +38,10 @@ import { useDroppable } from "@dnd-kit/core";
 import { pointerWithin } from "@dnd-kit/core";
 import { rectSortingStrategy } from "@dnd-kit/sortable";
 
-// 🚨 Mets ta vraie clé Gemini ici :
+// Place cette fonction dans le composant principal, après les useState :
+// const getCatMarFromRow = (row) => { ... }
+
+// ...existing code...
 const API_KEY = "XXXXXXXXXXXX";
 
 /* =============================
@@ -1108,9 +1112,30 @@ const formatKm = (val) => {
 const TIERS = ["A", "B", "C", "D"];
 const DEFAULT_BUCKETS = ["UNASSIGNED", ...TIERS];
 
+
+// ...existing code...
+// (Déplace la déclaration du state et la fonction getCatMarFromRow dans le composant principal, là où sont les autres useState)
 function normBrand(s) {
-  return (s || "").toString().trim();
+  if (!s) return "";
+  return s
+    .toString()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "") // retire accents
+    .replace(/[^a-zA-Z0-9]/g, "") // retire tout sauf lettres/chiffres
+    .toLowerCase()
+    .trim();
 }
+
+function normAll(s) {
+  // Pour catégorie, type, marque
+  return normBrand(s);
+}
+
+const makeTierKey = (category, bikeType, brand) =>
+  `${normAll(category)}||${normAll(bikeType)}||${normAll(brand)}`;
+
+// getCatMarFromRow doit être défini dans le composant principal pour accéder à brandTiersIndex
+// Déclare simplement la signature ici, l'implémentation sera dans le composant
 
 function uniq(arr) {
   return Array.from(new Set(arr));
@@ -2148,9 +2173,9 @@ const getCategoryFromRow = (row) => {
 };
 
 const getCatMarFromRow = (row) => {
-  const category = norm(row?.["Catégorie"]);
-  const bikeType = norm(row?.["Type de vélo"]); // "Electrique" | "Musculaire"
-  const brand = norm(row?.["Marque"]);
+  const category = norm(row?.["Catégorie"] ?? row?.["Categorie"] ?? "");
+  const bikeType = norm(row?.["Type de vélo"] ?? row?.["Type de velo"] ?? row?.["Type velo"] ?? ""); // "Electrique" | "Musculaire"
+  const brand = norm(row?.["Marque"] ?? "");
 
   if (!category || !bikeType || !brand) return "";
 
@@ -2240,7 +2265,7 @@ const computeDistribution = (rows, getKeyFn) => {
   return { out, totalUnits };
 };
 
-const norm = (v) => String(v ?? "").trim();
+const norm = (v) => String(v ?? "").toLowerCase().trim().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
 
 const makeTierKey = (category, bikeType, brand) =>
   `${norm(category)}||${norm(bikeType)}||${norm(brand)}`.toLowerCase();
@@ -3049,6 +3074,19 @@ const [parkingTab, setParkingTab] = useState("vue"); // "vue" | "params"
 const [parkingCategory, setParkingCategory] = useState(null); // catégorie sélectionnée pour les objectifs
 const [parkingType, setParkingType] = useState(null); // type sélectionné pour les objectifs
 
+// Index des tiers de marque (clé = `${cat}||${type}||${brand}`)
+// ...existing code...
+
+// Fonction pour retrouver le tier d'un vélo selon la marque/catégorie/type (utilise l'index dynamique)
+// ...existing code...
+
+// Synchronisation de la catégorie du formulaire de la modale (vue) avec le state global
+const syncParkingCategoryFromModal = (formCategory) => {
+  if (formCategory && formCategory !== parkingCategory) {
+    setParkingCategory(formCategory);
+  }
+};
+
 // ===== OUTIL PRIX (modal) =====
 const [priceToolOpen, setPriceToolOpen] = useState(false);
 const [priceToolForm, setPriceToolForm] = useState({
@@ -3058,6 +3096,7 @@ const [priceToolForm, setPriceToolForm] = useState({
   size: "",
   category: "",
   estimatedPrice: "",
+  skipTransportCost: false,
 });
 const [priceToolCompetitorLinks, setPriceToolCompetitorLinks] = useState([]);
 const [priceToolShowCompetitors, setPriceToolShowCompetitors] = useState(false);
@@ -3127,30 +3166,52 @@ useEffect(() => {
     const { data, error } = await supabase
       .from("pv_category_targets")
       .select("category, target_pct");
+    let categoryPct = {};
     if (!error && data && data.length > 0) {
-      const categoryPct = {};
       data.forEach(row => {
         categoryPct[row.category] = (row.target_pct ?? 0) / 100;
       });
-      // S'assurer que toutes les catégories sont présentes
-      parkingCategoryTypeOptions.forEach(opt => {
-        if (!(opt.label in categoryPct)) {
-          categoryPct[opt.label] = 1 / parkingCategoryTypeOptions.length;
-        }
-      });
-      setParkingRules(prev => ({ ...prev, categoryPct }));
-    } else {
-      // Si pas de données, initialiser par défaut
-      const defaultPct = 1 / parkingCategoryTypeOptions.length;
-      const categoryPct = {};
-      parkingCategoryTypeOptions.forEach(opt => {
-        categoryPct[opt.label] = defaultPct;
-      });
-      setParkingRules(prev => ({ ...prev, categoryPct }));
     }
+    // S'assurer que toutes les catégories sont présentes
+    parkingCategoryTypeOptions.forEach(opt => {
+      if (!(opt.label in categoryPct)) {
+        categoryPct[opt.label] = 1 / parkingCategoryTypeOptions.length;
+      }
+    });
+    setParkingRules(prev => ({ ...prev, categoryPct }));
   }
   loadCategoryPct();
 }, [parkingCategoryTypeOptions]);
+
+
+
+// Synchroniser tous les taux dans parkingRules dès que la catégorie ou les tranches changent
+const [rulesReady, setRulesReady] = useState(false);
+useEffect(() => {
+  // On ne bloque que si aucune catégorie ou aucune tranche n'est dispo ou en cours de chargement
+  if (!parkingCategory || priceBandsLoading) {
+    setRulesReady(false);
+    return;
+  }
+  const bands = allPriceBandsByCategory[parkingCategory] || [];
+  if (!parkingRules.categoryPct[parkingCategory] || bands.length === 0) {
+    setRulesReady(false);
+    return;
+  }
+  const pricePct = {};
+  bands.forEach(band => {
+    pricePct[band.label] = band.share_pct || 0;
+  });
+  setParkingRules(prev => ({
+    ...prev,
+    pricePct: { ...pricePct }
+  }));
+  setRulesReady(true);
+}, [parkingCategory, allPriceBandsByCategory, parkingRules.categoryPct, priceBandsLoading]);
+
+if (!rulesReady) {
+  return <div style={{padding:40, fontWeight:700, fontSize:18, color:'#1e293b'}}>Chargement des objectifs…</div>;
+}
 
 // Charger les prix depuis pv_price_bands - scopé par parkingCategory
 useEffect(() => {
@@ -3168,10 +3229,10 @@ useEffect(() => {
       console.log(`✅ Tranches chargées du cache pour ${parkingCategory}:`, cachedBands);
       setPriceBands(cachedBands);
 
-      // Mettre à jour les pourcentages
+      // Mettre à jour les pourcentages (déjà en décimal depuis le cache)
       const pricePct = {};
       cachedBands.forEach(band => {
-        pricePct[band.label] = (band.share_pct || 0) / 100; // Convertir 25 → 0.25
+        pricePct[band.label] = band.share_pct || 0; // Déjà en décimal (0.25 pour 25%)
       });
       setParkingRules(prev => ({ ...prev, pricePct }));
       return;
@@ -3190,11 +3251,16 @@ useEffect(() => {
       .order("sort");
 
     if (!error && data && data.length > 0) {
-      setPriceBands(data);
+      // Convertir share_pct de la DB (25 = 25%) vers le format décimal local (0.25)
+      const normalizedBands = data.map(band => ({
+        ...band,
+        share_pct: (band.share_pct || 0) / 100, // Convertir 25 → 0.25
+      }));
+      setPriceBands(normalizedBands);
 
       const pricePct = {};
-      data.forEach(band => {
-        pricePct[band.label] = (band.share_pct || 0) / 100; // Convertir 25 → 0.25
+      normalizedBands.forEach(band => {
+        pricePct[band.label] = band.share_pct; // Déjà en décimal
       });
       setParkingRules(prev => ({ ...prev, pricePct }));
     } else {
@@ -3226,6 +3292,7 @@ useEffect(() => {
         console.log("📊 Données brutes reçues:", data);
 
         // Stocker toutes les tranches par catégorie/type
+        // IMPORTANT: Normaliser share_pct de la DB (25 = 25%) vers le format décimal (0.25)
         const bandsByCategory = {};
         data.forEach(band => {
           const key = `${band.bike_category} - ${band.bike_type}`; // Format: "VTT - Électrique"
@@ -3233,7 +3300,11 @@ useEffect(() => {
           if (!bandsByCategory[key]) {
             bandsByCategory[key] = [];
           }
-          bandsByCategory[key].push(band);
+          // Normaliser share_pct vers décimal pour l'utilisation interne
+          bandsByCategory[key].push({
+            ...band,
+            share_pct: (band.share_pct || 0) / 100, // Convertir 25 → 0.25
+          });
         });
         console.log("✅ Tranches de prix organisées par catégorie:", bandsByCategory);
         setAllPriceBandsByCategory(bandsByCategory);
@@ -8670,18 +8741,22 @@ ${Object.entries(v)
 
           const objectiveTotal = Number(parkingRules.objectiveTotal || 0); // ex: 600
 
-          const getPct = (obj, key) => {
-  if (!obj) return 0;
-  const v = obj[key];
-  return Number.isFinite(v) ? v : 0;
-};
 
-// ✅ cascade dans l’ordre : Catégorie -> Prix -> Taille -> CAT_MAR
+          // Correction : retourne 1 par défaut si la clé n'existe pas, pour ne pas annuler l'objectif
+          const getPct = (obj, key) => {
+            if (!obj) return 1;
+            const v = obj[key];
+            if (v === undefined || v === null) return 1;
+            return Number.isFinite(v) ? v : 1;
+          };
+
+// ✅ cascade dans l'ordre : Catégorie -> Taille -> Prix -> CAT_MAR
 const multCategory = parkingSelection.category ? getPct(parkingRules.categoryPct, parkingSelection.category) : 1;
 const multSize = parkingSelection.size ? getPct(parkingRules.sizePct, parkingSelection.size) : 1;
+const multPrice = parkingSelection.priceBand ? getPct(parkingRules.pricePct, parkingSelection.priceBand) : 1;
 
-// Total “base” pour chaque table (objectif global * produit des filtres avant)
-const objTotalForCatMar = objectiveTotal * multCategory * multSize;
+// Total "base" pour chaque table (objectif global * produit des filtres avant)
+const objTotalForCatMar = objectiveTotal * multCategory * multSize * multPrice;
 
 
           // ---- Taille (distribution spéciale)
@@ -8794,36 +8869,139 @@ const objTotalForCatMar = objectiveTotal * multCategory * multSize;
           const sizeRows = buildGapRows(distSize.out, distSize.totalUnits, parkingRules.sizePct, objTotalForSize);
           const priceRows = buildGapRows(distPrice.out, distPrice.totalUnits, parkingRules.pricePct, objTotalForPrice);
           
-          // ✅ Vélos par tier (filtrés par catégorie + taille + prix si sélectionnés)
+
+                    // Nouvelle logique Cat_mar inspirée de PriceToolModal.js
+                    // ===== LOGIQUE STRICTEMENT COPIÉE DE PriceToolModal.js =====
+                    function computeCatMarDistribution_STRICT(rows, sel, bands, getCatMarFromRow, tierPctMap) {
+                      // Helpers strictement copiés
+                      const norm = (str) => {
+                        if (!str) return "";
+                        return String(str)
+                          .toLowerCase()
+                          .trim()
+                          .normalize("NFD")
+                          .replace(/[ -\u036f]/g, "");
+                      };
+                      const sumUnits = (rows) => {
+                        if (!getRowTotalStock) return rows.length;
+                        return rows.reduce((sum, r) => sum + (getRowTotalStock(r) || 0), 0);
+                      };
+                      const sumUnitsForSize = (rows, targetSize) => {
+                        let total = 0;
+                        for (const r of rows) {
+                          const sizeStocks = getSizeStocksFromRow ? getSizeStocksFromRow(r) : null;
+                          if (sizeStocks && sizeStocks[targetSize]) {
+                            total += Number(sizeStocks[targetSize] || 0);
+                            continue;
+                          }
+                          const totalStock = getRowTotalStock ? (getRowTotalStock(r) || 0) : 1;
+                          const buckets = getVariantSizeBucketsFromRow ? getVariantSizeBucketsFromRow(r) : null;
+                          if (buckets && buckets.length > 0 && buckets.includes(targetSize)) {
+                            total += totalStock / buckets.length;
+                          }
+                        }
+                        return Math.round(total);
+                      };
+                      // Cascade Cat Mar
+                      const tiers = ["A", "B", "C", "D"];
+                      let filtered = rows;
+                      if (sel.category) {
+                        filtered = filtered.filter(r => normStr(getCategoryFromRow(r)) === normStr(sel.category));
+                      }
+                      let sizeLetter = sel.size ? String(sel.size).trim().toUpperCase() : null;
+                      if (sizeLetter) {
+                        filtered = filtered.filter(r => {
+                          const buckets = (getVariantSizeBucketsFromRow(r) || []).map(x => String(x).trim().toUpperCase());
+                          return buckets.includes(sizeLetter);
+                        });
+                      }
+                      if (sel.priceBand) {
+                        filtered = filtered.filter(r => {
+                          const b = getPriceBand(getPriceFromRow(r), bands);
+                          return normStr(b) === normStr(sel.priceBand);
+                        });
+                      }
+                      // Objectif de base
+                      const categoryPct = parkingRules.categoryPct?.[sel.category] || 0;
+                      const sizePct = sizeLetter ? (parkingRules.sizePct?.[sizeLetter] || 0) : 0;
+                      const bandObj = bands.find(b => normStr(b.label) === normStr(sel.priceBand));
+                      const pricePct = bandObj?.share_pct > 1 ? bandObj.share_pct / 100 : (bandObj?.share_pct || 0);
+                      const objectiveTotal = Number(parkingRules.objectiveTotal || 0);
+                      const categoryTarget = Math.round(objectiveTotal * categoryPct);
+                      const sizeTarget = sizeLetter && sizePct > 0 && categoryTarget > 0 ? Math.round(categoryTarget * sizePct) : categoryTarget;
+                      const priceTarget = sel.priceBand && pricePct > 0 && sizeTarget > 0 ? Math.round(sizeTarget * pricePct) : sizeTarget;
+                      // Pour chaque tier, filtrer et compter les unités, puis appliquer le % objectif
+                      const rowsOut = tiers.map(tier => {
+                        // Filtrer les vélos du tier
+                        let velosFiltered = filtered.filter(r => {
+                          const t = String(getCatMarFromRow(r) || "").trim().toUpperCase();
+                          return t === tier;
+                        });
+                        // Compter les unités (si taille sélectionnée, ne compter que cette taille)
+                        let actualUnits = 0;
+                        if (sizeLetter && sizePct > 0) {
+                          actualUnits = sumUnitsForSize(velosFiltered, sizeLetter);
+                        } else {
+                          actualUnits = sumUnits(velosFiltered);
+                        }
+                        const tierPct = tierPctMap?.[tier] || 0;
+                        let baseTarget = categoryTarget;
+                        if (sizeLetter && sizePct > 0) baseTarget = sizeTarget;
+                        if (sel.priceBand && pricePct > 0) baseTarget = priceTarget; // <-- cette ligne garantit la cascade correcte
+                        const targetUnits = Math.round(baseTarget * tierPct);
+                        const gapUnits = actualUnits - targetUnits;
+                        return {
+                          key: tier,
+                          actualUnits,
+                          targetUnits,
+                          gapUnits,
+                          targetPct: tierPct,
+                          actualPct: baseTarget > 0 ? actualUnits / baseTarget : 0,
+                          gapPct: baseTarget > 0 ? (actualUnits / baseTarget) - tierPct : 0,
+                        };
+                      });
+                      return rowsOut;
+                    }
+
+                    // Utilisation dans le rendu (remplace l'ancien calcul Cat_mar)
+                    const catMarRows = computeCatMarDistribution_STRICT(
+                      priceRows,
+                      parkingSelection,
+                      allPriceBandsByCategory[parkingSelection.category] || [],
+                      getCatMarFromRow,
+                      parkingRules.tierPct || {}
+                    );
+
+
+
+          // ✅ Récupère TOUS les vélos d'un tier pour la catégorie sélectionnée (avec filtres actifs)
           const getVelosByTier = (tier) => {
-            let filtered = (rowsForPrices || [])
-              .filter(r => {
-                const t = String(getCatMarFromRow(r) || "").trim().toUpperCase();
-                return t === tier;
-              });
-
-            // Si une tranche de prix est sélectionnée, filtrer aussi par prix
-            if (parkingSelection.priceBand && bandsToUse && bandsToUse.length > 0) {
-              const band = bandsToUse.find(b => normStr(b.label) === normStr(parkingSelection.priceBand));
-              if (band) {
-                filtered = filtered.filter(r => {
-                  const price = parseFloat(r?.["Prix réduit"] || r?.["Prix"] || 0);
-                  const inRange = band.max
-                    ? (price >= band.min && price <= band.max)
-                    : (price >= band.min);
-                  return inRange;
-                });
-              }
+            let filtered = rowsForPrices || [];
+            if (parkingSelection.category) {
+              filtered = filtered.filter(r => normStr(getCategoryFromRow(r)) === normStr(parkingSelection.category));
             }
+            if (parkingSelection.size) {
+              const wanted = String(parkingSelection.size).trim().toUpperCase();
+              filtered = filtered.filter(r => {
+                const buckets = (getVariantSizeBucketsFromRow(r) || []).map(x => String(x).trim().toUpperCase());
+                return buckets.includes(wanted);
+              });
+            }
+            if (parkingSelection.priceBand) {
+              filtered = filtered.filter(r => {
+                const b = getPriceBand(getPriceFromRow(r), bandsToUse);
+                return normStr(b) === normStr(parkingSelection.priceBand);
+              });
+            }
+            return filtered.filter(r => {
+              const t = String(getCatMarFromRow(r) || "").trim().toUpperCase();
+              return t === tier;
+            });
+          };
 
-            return filtered.map(r => ({
-              brand: r?.["Marque"] || "",
-              model: r?.["Modèle"] || "",
-              year: r?.["Année"] || "",
-              price: r?.["Prix réduit"] || r?.["Prix"] || "",
-              photo: r?.["Photo"] || r?.["Image"] || "",
-              url: r?.["URL"] || "",
-            }));
+          // ✅ Récupère le nombre d'unités pour un tier donné (avec les filtres actifs)
+          const getUnitsByTier = (tier) => {
+            return getVelosByTier(tier).reduce((sum, v) => sum + (getRowTotalStock(v) || 0), 0);
           };
 
           // ✅ Récupère TOUTES les marques d'un tier pour la catégorie sélectionnée (sans filtre prix)
@@ -9127,12 +9305,18 @@ const objTotalForCatMar = objectiveTotal * multCategory * multSize;
                     <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 12, color: "#1f2937" }}>
                       3️⃣ Sélectionner une tranche de prix
                     </div>
+                    {/* Diagnostic: bandsToUse */}
+                    {(!bandsToUse || bandsToUse.length === 0) && (
+                      <div style={{ color: "#b91c1c", fontWeight: 700, marginBottom: 12 }}>
+                        ⚠️ Aucune tranche de prix disponible. Vérifiez la source des tranches.
+                      </div>
+                    )}
                     <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: 12 }}>
                       {(() => {
+                        // Correction: calculer le taux et l'objectif à partir de la sélection courante
                         return shrinkRowsForUI(priceRows, "priceBand")
                           .filter(r => bandsToUse.some(b => normStr(b.label) === normStr(r.key)))
                           .sort((rowA, rowB) => {
-                            // Trouver les bandes correspondantes pour trier par min
                             const bandA = bandsToUse.find(b => normStr(b.label) === normStr(rowA.key));
                             const bandB = bandsToUse.find(b => normStr(b.label) === normStr(rowB.key));
                             const minA = bandA?.min ?? 0;
@@ -9141,8 +9325,18 @@ const objTotalForCatMar = objectiveTotal * multCategory * multSize;
                           });
                       })().map((r) => {
                         const active = parkingSelection.priceBand && normStr(parkingSelection.priceBand) === normStr(r.key);
-                        const isOverTarget = r.gapUnits > 0;
-                        const isUnderTarget = r.gapUnits < 0;
+                        const bandObj = bandsToUse.find(b => normStr(b.label) === normStr(r.key));
+                        const pricePct = bandObj?.share_pct || 0;
+                        // Objectif total pour la catégorie et taille sélectionnée
+                        const categoryPct = parkingRules.categoryPct?.[parkingSelection.category] || 0;
+                        const sizePct = parkingRules.sizePct?.[parkingSelection.size] || 0;
+                        const objectiveTotal = parkingRules.objectiveTotal || 0;
+                        const targetUnits = Math.round(objectiveTotal * categoryPct * sizePct * pricePct);
+                        const actualUnits = r.actualUnits;
+                        const actualPct = actualUnits / (objectiveTotal * categoryPct * sizePct || 1);
+                        const isOverTarget = actualUnits > targetUnits;
+                        const isUnderTarget = actualUnits < targetUnits;
+                        const gapUnits = actualUnits - targetUnits;
                         const gapColor = isOverTarget ? "#ef4444" : isUnderTarget ? "#10b981" : "#6b7280";
 
                         // Formater le label pour les tranches de prix
@@ -9177,16 +9371,16 @@ const objTotalForCatMar = objectiveTotal * multCategory * multSize;
                               <div style={{ padding: "8px", background: "#f3f4f6", borderRadius: 6 }}>
                                 <div style={{ fontSize: 10, color: "#666", marginBottom: 2 }}>Actuel</div>
                                 <div style={{ fontSize: 16, fontWeight: 800, color: "#1f2937" }}>
-                                  {Math.round(r.actualUnits)}
+                                  {Math.round(actualUnits)}
                                 </div>
-                                <div style={{ fontSize: 10, color: "#999" }}>u ({Math.round(r.actualPct * 100)}%)</div>
+                                <div style={{ fontSize: 10, color: "#999" }}>u ({Math.round(actualPct * 100)}%)</div>
                               </div>
                               <div style={{ padding: "8px", background: "#f3f4f6", borderRadius: 6 }}>
                                 <div style={{ fontSize: 10, color: "#666", marginBottom: 2 }}>Objectif</div>
                                 <div style={{ fontSize: 16, fontWeight: 800, color: "#1f2937" }}>
-                                  {Math.round(r.targetUnits)}
+                                  {Math.round(targetUnits)}
                                 </div>
-                                <div style={{ fontSize: 10, color: "#999" }}>u ({Math.round(r.targetPct * 100)}%)</div>
+                                <div style={{ fontSize: 10, color: "#999" }}>u ({Math.round(pricePct * 100)}%)</div>
                               </div>
                             </div>
                             <div style={{
@@ -9199,7 +9393,7 @@ const objTotalForCatMar = objectiveTotal * multCategory * multSize;
                               textAlign: "center",
                               transform: isOverTarget ? "scale(1.05)" : "scale(1)"
                             }}>
-                              {isOverTarget ? `⚠️ SURSTOCK +${Math.round(r.gapUnits)} u` : isUnderTarget ? `${Math.round(Math.abs(r.gapUnits))} u` : "✓"}
+                              {isOverTarget ? `⚠️ SURSTOCK +${Math.round(gapUnits)} u` : isUnderTarget ? `${Math.round(Math.abs(gapUnits))} u` : "✓"}
                             </div>
                           </div>
                         );
@@ -9215,6 +9409,12 @@ const objTotalForCatMar = objectiveTotal * multCategory * multSize;
                 <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 12, color: "#1f2937" }}>
                   4️⃣ Marques par CAT_MAR
                 </div>
+                  {/* Diagnostic: vélos par tier */}
+                  {(["A", "B", "C", "D"].every(tier => (getVelosByTier(tier) || []).length === 0)) && (
+                    <div style={{ color: "#b91c1c", fontWeight: 700, marginBottom: 12 }}>
+                      ⚠️ Aucun vélo trouvé dans les tiers. Vérifiez l'index des marques classées et la source des vélos.
+                    </div>
+                  )}
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: 12 }}>
                   {[
                     ["A", getBrandsByTier("A")],
@@ -9224,13 +9424,17 @@ const objTotalForCatMar = objectiveTotal * multCategory * multSize;
                   ].map(([tierLabel, list]) => {
                     const velosInTier = getVelosByTier(tierLabel);
                     const tierPct = parkingTierPct[tierLabel] || 0;
-                    const actualUnits = velosInTier.length;
+                    const actualUnits = getUnitsByTier(tierLabel);
                     const objTotalForTier = objTotalForCatMar || 0;
                     const targetUnits = Math.round((tierPct || 0) * objTotalForTier);
                     const gapUnits = actualUnits - targetUnits;
                     const isOverTarget = gapUnits > 0;
                     const isUnderTarget = gapUnits < 0;
                     const gapColor = isOverTarget ? "#ef4444" : isUnderTarget ? "#10b981" : "#6b7280";
+                      // Diagnostic: objectif total
+                      if (objTotalForCatMar === 0 && velosInTier.length > 0) {
+                        console.warn(`⚠️ Objectif total (dn) est à 0 alors que des vélos existent dans le tier ${tierLabel}`);
+                      }
 
                     return (
                       <div
@@ -9357,6 +9561,30 @@ const objTotalForCatMar = objectiveTotal * multCategory * multSize;
                     );
                   })}
                 </div>
+
+                {/* Marques non classées dans un tier */}
+                {(() => {
+                  // Récupérer toutes les marques du stock filtré (parkingSelection)
+                  // Utilise la même source que pour l'affichage des cartes de tiers
+                  const allStockBrands = (priceRows || []).map(v => v.brand).filter(Boolean);
+                  // Récupérer toutes les marques classées dans un tier
+                  const tierBrands = ["A", "B", "C", "D"].flatMap(tier => getBrandsByTier(tier));
+                  // Marques non classées
+                  const unclassifiedBrands = [...new Set(allStockBrands.filter(b => !tierBrands.includes(b)))].sort((a, b) => a.localeCompare(b, "fr"));
+                  if (unclassifiedBrands.length === 0) return null;
+                  return (
+                    <div style={{ marginTop: 32, padding: 16, background: "#fef9c3", borderRadius: 10, border: "1px solid #fde68a" }}>
+                      <div style={{ fontWeight: 700, fontSize: 15, color: "#b45309", marginBottom: 8 }}>
+                        Marques à classer (non assignées à un tier)
+                      </div>
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                        {unclassifiedBrands.map(b => (
+                          <span key={b} style={{ padding: "4px 8px", background: "#fef3c7", borderRadius: 6, fontWeight: 600, fontSize: 13, border: "1px solid #fde68a" }}>{b}</span>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })()}
               </div>
             )}
             </div>
@@ -11157,7 +11385,16 @@ const objTotalForCatMar = objectiveTotal * multCategory * multSize;
     showCompetitors={priceToolShowCompetitors}
     onShowCompetitors={setPriceToolShowCompetitors}
     allBrands={velos.map(v => v?.["Marque"] || "").filter((v, i, arr) => v && arr.indexOf(v) === i).sort()}
-    parkingCategories={parkingCategoryTypeOptions.map(c => c.category).filter((v, i, arr) => arr.indexOf(v) === i).sort()}
+    parkingCategories={parkingCategoryTypeOptions.map(c => c.label)}
+    velos={velos}
+    brandTiersIndex={brandTiersIndex}
+    parkingRules={parkingRules}
+    getCatMarFromRow={getCatMarFromRow}
+    allPriceBandsByCategory={allPriceBandsByCategory}
+    parkingTierPct={parkingTierPct}
+    getRowTotalStock={getRowTotalStock}
+    getSizeStocksFromRow={getSizeStocksFromRow}
+    getVariantSizeBucketsFromRow={getVariantSizeBucketsFromRow}
   />
   </>
   );
