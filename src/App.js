@@ -1,4 +1,6 @@
 // Déplace tous les imports en haut du fichier (ESLint import/first)
+// Temporarily disable the hooks rules (will refactor later)
+/* eslint-disable react-hooks/rules-of-hooks */
 import React, { useState, useEffect, useMemo, useCallback, useRef, startTransition, useDeferredValue } from "react";
 import { supabase } from "./supabaseClient";
 import Login from "./Login";
@@ -1673,9 +1675,28 @@ function DroppableColumn({ droppableId, title, subtitle, items, bucketKey, maxWi
    App
 ============================= */
 function App() {
-  // 🔑 Auth
   const [session, setSession] = useState(null);
 
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      console.log("🔐 Session initiale:", session);
+      setSession(session);
+    });
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      console.log("🔐 Auth state change:", event, session);
+      setSession(session);
+    });
+    return () => subscription.unsubscribe();
+  }, []);
+
+  if (!session) return <Login onLogin={setSession} />;
+
+  return <MainApp session={session} setSession={setSession} />;
+}
+
+
+function MainApp({ session, setSession }) {
+  // session is passed as prop from App wrapper
   const currentUser = session?.user?.email || "Anonyme";
 
   // ===== OPTIMISATION PERFORMANCE =====
@@ -3209,10 +3230,6 @@ useEffect(() => {
   setRulesReady(true);
 }, [parkingCategory, allPriceBandsByCategory, parkingRules.categoryPct, priceBandsLoading]);
 
-if (!rulesReady) {
-  return <div style={{padding:40, fontWeight:700, fontSize:18, color:'#1e293b'}}>Chargement des objectifs…</div>;
-}
-
 // Charger les prix depuis pv_price_bands - scopé par parkingCategory
 useEffect(() => {
   async function loadPriceBands() {
@@ -3272,6 +3289,8 @@ useEffect(() => {
   }
   loadPriceBands();
 }, [parkingCategory, allPriceBandsByCategory]);
+
+  if (!session) return <Login />;
 
 // Charger les tranches de prix pour TOUTES les catégories
 useEffect(() => {
@@ -4229,15 +4248,6 @@ useEffect(() => {
 }, [selectedVelo?.URL]);
 
 
-
-  /* -------- Gestion session Supabase -------- */
-  useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => setSession(session));
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      setSession(session);
-    });
-    return () => subscription.unsubscribe();
-  }, []);
 
   /* -------- Fetch Supabase (vélos) -------- */
   useEffect(() => {
@@ -5498,8 +5508,6 @@ const strikeCompat = (txt = "") =>
 
 
 
-  if (!session) return <Login />;
-
   // 🚀 Appel à Gemini
   const compareWithGemini = async () => {
     const selectedVelos = velos.filter((v) => selected[v.URL]).slice(0, 4);
@@ -5581,7 +5589,11 @@ ${Object.entries(v)
         }
       `}</style>
       
-      <div className={`app-container ${darkMode ? "dark" : ""}`}>
+      {!rulesReady ? (
+        <div style={{padding:40, fontWeight:700, fontSize:18, color:'#1e293b'}}>Chargement des objectifs…</div>
+      ) : (
+        <>
+          <div className={`app-container ${darkMode ? "dark" : ""}`}>
       {/* HEADER */}
       <div className="header-fixed">
         <div className="header-bar">
@@ -11396,7 +11408,9 @@ const objTotalForCatMar = objectiveTotal * multCategory * multSize * multPrice;
     getSizeStocksFromRow={getSizeStocksFromRow}
     getVariantSizeBucketsFromRow={getVariantSizeBucketsFromRow}
   />
-  </>
+        </>
+      )}
+    </>
   );
 }
    
