@@ -1,6 +1,4 @@
 // Déplace tous les imports en haut du fichier (ESLint import/first)
-// Temporarily disable the hooks rules (will refactor later)
-/* eslint-disable react-hooks/rules-of-hooks */
 import React, { useState, useEffect, useMemo, useCallback, useRef, startTransition, useDeferredValue } from "react";
 import ParkingModal from "./ParkingModal";
 import { supabase } from "./supabaseClient";
@@ -9,41 +7,37 @@ import InventoryList from "./InventoryList";
 import KPIDashboard from "./KPIDashboard";
 import PriceToolModal from "./PriceToolModal";
 import { 
-  {/* ===== MODAL PARKING VIRTUEL ===== */}
-  {parkingOpen && (
-    <ParkingModal
-      setParkingOpen={setParkingOpen}
-      parkingTab={parkingTab}
-      setParkingTab={setParkingTab}
-      parkingRules={parkingRules}
-      priceBandsLoading={priceBandsLoading}
-      allPriceBandsByCategory={allPriceBandsByCategory}
-      parkingSelection={parkingSelection}
-      setParkingSelection={setParkingSelection}
-      parkingCategory={parkingCategory}
-      filteredAndSortedVelos={filteredAndSortedVelos}
-      applyParkingSelection={applyParkingSelection}
-      buildBrandRecapByTier={buildBrandRecapByTier}
-      getRowTotalStock={getRowTotalStock}
-      getSizeStocksFromRow={getSizeStocksFromRow}
-      getVariantSizeBucketsFromRow={getVariantSizeBucketsFromRow}
-      getCategoryFromRow={getCategoryFromRow}
-      getPriceBand={getPriceBand}
-      getPriceFromRow={getPriceFromRow}
-      buildGapRows={buildGapRows}
-      getCatMarFromRow={getCatMarFromRow}
-      normStr={normStr}
-    />
-  )}
-      const val = cleanText(raw);
-      if (!val) return false;
-      return realValues.has(val);
-    }
-
-    // Si l’utilisateur n’a coché QUE “vide” (realValues.size === 0)
-    return wantEmpty && empty;
-  });
-};
+  FaTrash, FaEnvelope, FaSyncAlt, FaBalanceScale, FaHeart, FaUser, FaUserCircle, 
+  FaSms, FaPercent, FaLink, FaCheckSquare, FaFileExport 
+} from "react-icons/fa";
+import logoMint from "./logo mint.png";
+import "./App.css";
+import Slider from "rc-slider";
+import "rc-slider/assets/index.css";
+import { createPortal } from "react-dom";
+import {
+  ResponsiveContainer,
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  PieChart,
+  Pie,
+  Cell,
+  LabelList,
+  ScatterChart,
+  Scatter,
+  ZAxis,
+  ReferenceLine
+} from "recharts";
+import { DndContext, PointerSensor, useSensor, useSensors, closestCenter } from "@dnd-kit/core";
+import { SortableContext, useSortable, arrayMove, verticalListSortingStrategy } from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
+import { useDroppable } from "@dnd-kit/core";
+import { pointerWithin } from "@dnd-kit/core";
+import { rectSortingStrategy } from "@dnd-kit/sortable";
 
 // ====== "vide" helpers ======
 const EMPTY_TOKEN = "__EMPTY__";
@@ -51,6 +45,390 @@ const EMPTY_LABEL = "— Vide —";
 const isEmptyLike = (val) => {
   const s = String(val ?? "").trim();
   return !s || s.toUpperCase() === "N/A";
+};
+
+const API_KEY = "XXXXXXXXXXXX";
+
+/* =============================
+   Labels champs
+============================= */
+const fieldLabels = {
+  Title: "Nom du vélo",
+  "Marque": "Marque",
+  "Modèle": "Modèle",
+  "Prix réduit": "Prix",
+  "Prix original": "Prix barré",
+  URL: "Lien produit",
+  "Published At": "Date de publication",
+  "Updated At": "Dernière mise à jour",
+  "Total Inventory Qty": "Stock disponible",
+  Status: "Statut",
+  Marque: "Marque",
+  Modèle: "Modèle",
+  Année: "Année",
+  "Type de vélo": "Type de vélo",
+  Catégorie: "Catégorie",
+  "Poids du vélo": "Poids",
+  Transmission: "Transmission",
+  "Nb de vitesses": "Nombre de vitesses",
+  "Nb de plateaux": "Nombre de plateaux",
+  Cassette: "Cassette",
+  "Dérailleur arrière": "Dérailleur arrière",
+  "Dérailleur avant": "Dérailleur avant",
+  Chaine: "Chaîne",
+  Pédalier: "Pédalier",
+  Guidon: "Guidon",
+  Potence: "Potence",
+  Selle: "Selle",
+  "Tige de selle": "Tige de selle",
+  "Type tige de selle": "Type tige de selle",
+  "Type de freins": "Type de freins",
+  "Frein avant": "Frein avant",
+  "Frein arrière": "Frein arrière",
+  "Levier de freins": "Levier de freins",
+  "Marque moteur": "Marque moteur",
+  "Modèle moteur": "Modèle moteur",
+  "Puissance moteur": "Puissance moteur",
+  "Vitesse max": "Vitesse max",
+  "Marque batterie": "Marque batterie",
+  "Modèle batterie": "Modèle batterie",
+  "Puissance batterie": "Puissance batterie",
+  Autonomie: "Autonomie",
+  "Etat batterie": "État batterie",
+  "Nombre de cycles batterie": "Cycles batterie",
+  "Matériau cadre": "Matériau cadre",
+  "Marque fourche": "Marque fourche",
+  "Modèle fourche": "Modèle fourche",
+  "Débattement fourche": "Débattement fourche",
+  Amortisseur: "Amortisseur",
+  "Débattement amortisseur": "Débattement amortisseur",
+  "Type de pneus": "Type de pneus",
+  "Pneu avant": "Pneu avant",
+  "Pneu arrière": "Pneu arrière",
+  "Taille des roues": "Taille des roues",
+  Kilométrage: "Kilométrage",
+  "Taille du cadre": "Taille du cadre",
+  "Taille Minimum": "Taille Minimum (cm)",
+  "Taille Maximum": "Taille Maximum (cm)",
+  "Denture cassette": "Denture cassette",
+  "Denture plateaux": "Denture plateaux",
+  "Levier de vitesse": "Levier de vitesse",
+  "Plateaux": "Plateaux",
+  "Roue avant": "Roue avant",
+  "Matériau roue avant": "Matériau roue avant",
+  "Roue arrière": "Roue arrière",
+  "Matériau roue arrière": "Matériau roue arrière",
+  "Pièces neuves": "Pièces neuves",
+  "Défauts visuels": "Défauts visuels",
+  "Points forts": "Points forts",
+  "Tailles conseillées": "Tailles de cadre disponibles",
+};
+
+/* =============================
+   Groupes caractéristiques
+============================= */
+const fieldGroups = {
+  "Infos générales": [
+    "Marque",
+    "Modèle",
+    "Année",
+    "Catégorie",
+    "Type de vélo",
+    "Poids du vélo",
+    "Kilométrage",
+  ],
+  Transmission: [
+    "Transmission",
+    "Nb de plateaux",
+    "Denture plateaux",
+    "Nb de vitesses",
+    "Cassette",
+    "Denture cassette",
+    "Dérailleur avant",
+    "Dérailleur arrière",
+    "Chaine",
+    "Pédalier",
+    "Levier de vitesse",
+    "Plateaux",
+  ],
+  "Roues & Pneus": [
+    "Type de pneus",
+    "Pneu avant",
+    "Pneu arrière",
+    "Taille des roues",
+    "Roue avant",
+    "Matériau roue avant",
+    "Roue arrière",
+    "Matériau roue arrière",
+  ],
+  "Cadre & Suspension": [
+    "Matériau cadre",
+    "Marque fourche",
+    "Modèle fourche",
+    "Débattement fourche",
+    "Amortisseur",
+    "Débattement amortisseur",
+  ],
+  Freinage: ["Type de freins", "Frein avant", "Frein arrière", "Levier de freins"],
+  "Poste de pilotage": ["Guidon", "Potence", "Selle", "Tige de selle", "Type tige de selle"],
+  "Électrique (VAE)": [
+    "Marque moteur",
+    "Modèle moteur",
+    "Puissance moteur",
+    "Vitesse max",
+    "Marque batterie",
+    "Modèle batterie",
+    "Puissance batterie",
+    "Autonomie",
+    "Etat batterie",
+    "Nombre de cycles batterie",
+  ],
+  Divers: [
+    "Pièces neuves",
+    "Défauts visuels",
+    "Points forts"
+  ],
+};
+
+// Champs numériques -> sliders (noms EXACTS des colonnes)
+const numericFields = {
+  "Année": { min: 2018, max: 2026, step: 1, unit: "" },
+  "Poids du vélo": { min: 0, max: 40, step: 1, unit: "kg" },
+  "Kilométrage": { min: 0, max: 40000, step: 100, unit: "km" },
+  "Débattement fourche": { min: 0, max: 220, step: 5, unit: "mm" },
+  "Débattement amortisseur": { min: 0, max: 220, step: 5, unit: "mm" },
+  "Nb de vitesses": { min: 1, max: 13, step: 1, unit: "" },
+  "Puissance batterie": { min: 100, max: 1200, step: 50, unit: "Wh" },
+  "Puissance moteur": { min: 0, max: 120, step: 5, unit: "Nm" },
+};
+
+// 🔑 mapping "Nom de colonne" -> préfixe de clé dans `filters`
+const rangeKeyMap = {
+  "Année": "annee",
+  "Poids du vélo": "poids",
+  "Kilométrage": "kilometrage",
+  "Débattement fourche": "debattementFourche",
+  "Débattement amortisseur": "debattementAmortisseur",
+  "Nb de vitesses": "nbVitesses",
+  "Puissance batterie": "puissanceBatterie",
+  "Puissance moteur": "puissanceMoteur",
+  "Nombre de cycles batterie": "cyclesBatterie",
+  "Vitesse max": "vitesseMax",
+  "Nb de plateaux": "nbPlateaux",
+  "Denture cassette": "dentureCassette",
+  "Denture plateaux": "denturePlateaux",
+  "Taille du cadre": "tailleCadre",
+  "Autonomie": "autonomie",
+};
+
+// Mapping MultiSelect "nom colonne" -> clé `filters`
+const multiSelectMapping = {
+  "Catégorie": "categories",
+  "Type de vélo": "typesVelo",
+  "Taille du cadre": "taillesCadre",
+  "Matériau cadre": "materiauxCadre",
+  "Type de freins": "typesFreins",
+  "Type de pneus": "typesPneus",
+  "Marque moteur": "marqueMoteur",
+  "Marque batterie": "marqueBatterie",
+  "Marque fourche": "marqueFourche",
+  "Amortisseur": "amortisseurs",
+  "Taille des roues": "tailleRoues",
+  "Transmission": "transmission",
+  "Nb de plateaux": "nbPlateaux",
+  "Denture plateaux": "denturePlateaux",
+  "Denture cassette": "dentureCassette",
+  "Pneu avant": "pneusAvant",
+  "Pneu arrière": "pneusArriere",
+  "Roue avant": "rouesAvant",
+  "Matériau roue avant": "materiauRoueAvant",
+  "Roue arrière": "rouesArriere",
+  "Matériau roue arrière": "materiauRoueArriere",
+  "Modèle fourche": "modelesFourche",
+  "Frein avant": "freinsAvant",
+  "Frein arrière": "freinsArriere",
+  "Levier de freins": "leviersFreins",
+  "Type tige de selle": "typesTigeSelle",
+  "Modèle moteur": "modelesMoteur",
+};
+
+// Formatte les prix en "k"
+const formatPrice = (value) => {
+  if (value >= 1000) return (value / 1000).toFixed(1).replace(".0", "") + "k €";
+  return value + " €";
+};
+
+// Constantes pour le mode pricing
+const BUYERS = [
+  "",
+  "Thibault",
+  "François",
+  "Pierre",
+  "Tom",
+  "Victor",
+  "Hugo",
+  "Gregory",
+  "Autre",
+];
+
+const SELLER_TYPES = [
+  "",
+  "Vélociste",
+  "Particulier",
+  "Partenaire",
+  "Fabricant",
+  "Autre",
+];
+
+/** Liste à cocher déroulante réutilisable */
+function MultiSelect({
+  label,
+  options,
+  values,
+  onChange,
+  placeholder = "Choisir…",
+  includeEmpty = true,
+  emptyLabel = EMPTY_LABEL,
+}) {
+  const [open, setOpen] = useState(false);
+
+  const toggle = (val) => {
+    if (values.includes(val)) onChange(values.filter((v) => v !== val));
+    else onChange([...values, val]);
+  };
+
+  return (
+    <div className="multi-select">
+      <button type="button" className="multi-select-btn" onClick={() => setOpen((o) => !o)}>
+        {label} {values.length > 0 ? `(${values.length})` : ""} ▾
+      </button>
+      {open && (
+        <div className="multi-select-dropdown" onMouseLeave={() => setOpen(false)}>
+          {includeEmpty && (
+            <label className="multi-select-item" key="__empty__">
+              <input
+                type="checkbox"
+                checked={values.includes(EMPTY_TOKEN)}
+                onChange={() => toggle(EMPTY_TOKEN)}
+              />
+              <span>{emptyLabel}</span>
+            </label>
+          )}
+
+          {options.length === 0 ? (
+            <div className="multi-select-empty">{placeholder}</div>
+          ) : (
+            options.map((opt) => (
+              <label key={opt} className="multi-select-item">
+                <input type="checkbox" checked={values.includes(opt)} onChange={() => toggle(opt)} />
+                <span>{opt}</span>
+              </label>
+            ))
+          )}
+
+          {values.length > 0 && (
+            <button type="button" className="multi-select-clear" onClick={() => onChange([])}>
+              Effacer la sélection
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+const parseDateFlexible = (val) => {
+  if (!val) return NaN;
+  const t = Date.parse(val);
+  if (!Number.isNaN(t)) return t;
+  const m = String(val).match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/);
+  if (m) {
+    const d = Number(m[1]);
+    const mo = Number(m[2]) - 1;
+    const y = Number(m[3].length === 2 ? `20${m[3]}` : m[3]);
+    return new Date(y, mo, d).getTime();
+  }
+  return NaN;
+};
+
+// Utilitaires
+const cleanText = (val) => String(val ?? "").trim().replace(/\s+/g, " ");
+const parseNumericValue = (val) => {
+  if (val == null) return null;
+  const str = String(val).replace(/[^0-9.,-]/g, "").replace(",", ".");
+  const num = parseFloat(str);
+  return Number.isNaN(num) ? null : num;
+};
+const median = (arr) => {
+  const a = (arr || []).filter((x) => Number.isFinite(x)).sort((x, y) => x - y);
+  if (!a.length) return null;
+  const m = Math.floor(a.length / 2);
+  return a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2;
+};
+
+const bucketizeWeighted = (values, weights, bins) => {
+  const out = bins.map((b) => ({ name: b.label, units: 0 }));
+  for (let i = 0; i < values.length; i++) {
+    const v = values[i];
+    const w = weights[i];
+    if (!Number.isFinite(v) || !Number.isFinite(w) || w <= 0) continue;
+    const idx = bins.findIndex((b) => v >= b.min && v < b.max);
+    if (idx >= 0) out[idx].units += w;
+  }
+  return out;
+};
+
+const fmtEur = (n) => (Number.isFinite(n) ? `${Math.round(n).toLocaleString("fr-FR")} €` : "—");
+
+// Total d'un dataset sur une clé (ex: units)
+const sumKey = (arr, key) => (arr || []).reduce((s, x) => s + (Number(x?.[key]) || 0), 0);
+
+// % arrondi
+const pctOf = (value, total) => {
+  const v = Number(value) || 0;
+  const t = Number(total) || 0;
+  return t > 0 ? Math.round((v / t) * 100) : 0;
+};
+
+// Couleur par barre (plus c'est haut, plus c'est foncé)
+const barFillByValue = (value, min, max) => {
+  const v = Number(value) || 0;
+  const lo = Number(min) || 0;
+  const hi = Number(max) || 1;
+  const t = hi > lo ? (v - lo) / (hi - lo) : 0.5;
+  const clamped = Math.max(0, Math.min(1, t));
+  const k = 0.25 + 0.70 * clamped;
+  const r = Math.round(37 * k);
+  const g = Math.round(99 * k);
+  const b = Math.round(235 * k);
+  return `rgb(${r}, ${g}, ${b})`;
+};
+
+// Helper multi-select réutilisable (global)
+const applyMulti = (list, field, selected) => {
+  if (!selected || selected.length === 0) return list;
+
+  const wantEmpty = selected.includes(EMPTY_TOKEN);
+  const realValues = new Set(
+    selected
+      .filter((v) => v !== EMPTY_TOKEN)
+      .map((s) => cleanText(s))
+  );
+
+  return list.filter((row) => {
+    const raw = row?.[field];
+    const empty = isEmptyLike(raw);
+
+    if (wantEmpty && empty) return true;
+
+    if (realValues.size > 0) {
+      const val = cleanText(raw);
+      if (!val) return false;
+      return realValues.has(val);
+    }
+
+    return wantEmpty && empty;
+  });
 };
 
 
@@ -958,8 +1336,7 @@ function BrandTierBoard({ tierPct = {}, onTierPctChange, selectedCategoryType })
       const { data: rules, error: e2 } = await supabase
         .from("brand_tiers")
         .select("brand,tier")
-        .eq("bike_category", bikeCategory)
-        .eq("bike_type", bikeType);
+        .eq("bike_category", bikeCategory);
 
       if (e2) throw e2;
 
@@ -1004,34 +1381,43 @@ function BrandTierBoard({ tierPct = {}, onTierPctChange, selectedCategoryType })
     setError("");
 
     try {
+      // La contrainte unique est sur (bike_category, brand) - sans bike_type
       if (toBucket === BANK) {
-        // déclasser = supprimer la règle
+        // Déclasser = supprimer la règle
         const { error: delErr } = await supabase
-        .from("brand_tiers")
-        .delete()
-        .eq("bike_category", bikeCategory)
-        .eq("bike_type", bikeType)
-        .eq("brand", brand);
+          .from("brand_tiers")
+          .delete()
+          .eq("bike_category", bikeCategory)
+          .eq("brand", brand);
 
-        if (delErr) throw delErr;
+        if (delErr) {
+          console.error("❌ Erreur suppression brand_tiers:", delErr);
+          throw delErr;
+        }
       } else {
+        // Déplacer vers un tier = upsert avec la bonne contrainte
         const payload = {
-        bike_category: bikeCategory,
-        bike_type: bikeType,      // ✅ nouveau
-        brand,
-        tier: toBucket,
-        updated_at: new Date().toISOString(),
+          bike_category: bikeCategory,
+          brand,
+          tier: toBucket,
+          updated_at: new Date().toISOString(),
         };
 
         const { error: upErr } = await supabase
           .from("brand_tiers")
-          .upsert(payload, { onConflict: "bike_category,bike_type,brand" });
+          .upsert(payload, { onConflict: "bike_category,brand" });
 
-        if (upErr) throw upErr;
+        if (upErr) {
+          console.error("❌ Erreur upsert brand_tiers:", upErr);
+          throw upErr;
+        }
       }
+
+      console.log(`✅ Marque "${brand}" déplacée vers ${toBucket}`);
     } catch (err) {
+      console.error("❌ persistTierChange error:", err);
       setError(err?.message || "Erreur sauvegarde");
-      await fetchData(); // resync
+      await fetchData(); // resync en cas d'erreur
     } finally {
       setSaving(false);
     }
@@ -2898,8 +3284,6 @@ useEffect(() => {
   loadPriceBands();
 }, [parkingCategory, allPriceBandsByCategory]);
 
-  if (!session) return <Login />;
-
 // Charger les tranches de prix pour TOUTES les catégories
 useEffect(() => {
   async function loadAllPriceBands() {
@@ -4515,8 +4899,10 @@ for (const v of list) {
 
   // mode_pricing est indexé par mint_url (chez toi = v.URL)
   const pr = pricingByUrl?.[v?.URL];
-// ✅ Promo = mint_promo_amount > 0
-const promo = Number(pr?.mint_promo_amount ?? 0);
+// ✅ Promo = basé sur velosmint."Montant promo" (format: "-350 €")
+const promoRaw = v?.["Montant promo"];
+const promoValue = promoRaw ? parseNumericValue(promoRaw) : 0;
+const promo = Math.abs(promoValue) || 0;
 if (Number.isFinite(promo) && promo > 0) {
   promoUnits += units;
   promoTotalEur += promo * units;
@@ -6023,14 +6409,14 @@ ${Object.entries(v)
                   <div className="image-wrapper">
   {v["Image 1"] && <img src={v["Image 1"]} alt="Vélo" className="velo-image" />}
 
-  {/* ✅ BADGE PROMO (vente + pricing) */}
+  {/* ✅ BADGE PROMO (basé sur velosmint."Montant promo") */}
 {(() => {
-  const promoRaw =
-    pricingByUrl?.[v.URL]?.mint_promo_amount ??
-    v?.mint_promo_amount ??
-    v?.["mint_promo_amount"];
+  const promoRaw = v?.["Montant promo"];
+  if (!promoRaw) return null;
 
-  const promo = parseNumericValue(promoRaw);
+  // Le format peut être "-350€" - on prend la valeur absolue
+  const promoValue = parseNumericValue(promoRaw);
+  const promo = Math.abs(promoValue);
   if (!Number.isFinite(promo) || promo <= 0) return null;
 
   return (
@@ -6883,12 +7269,23 @@ ${Object.entries(v)
             <div style={fieldWrap}>
               <label style={labelStyle}>Montant promo (€)</label>
               <input
+                type="text"
+                value={selectedVelo?.["Montant promo"] ?? "—"}
+                disabled
+                style={{ ...inputStyle, background: "#f3f4f6", color: "#6b7280", cursor: "not-allowed" }}
+                title="Valeur provenant de Shopify (velosmint)"
+              />
+            </div>
+            <div style={fieldWrap}>
+              <label style={labelStyle}>Promo à appliquer (€)</label>
+              <input
                 type="number"
                 value={pricingRow?.mint_promo_amount ?? ""}
                 onChange={setField("mint_promo_amount", "number")}
                 onBlur={(e) => autoUpsertPricingField(selectedVelo.URL, 'mint_promo_amount', parseFloat(e.target.value) || null)}
                 style={inputStyle}
                 placeholder="ex: 100"
+                title="Valeur pour export CSV vers Shopify"
               />
             </div>
           </div>

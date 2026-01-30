@@ -2,6 +2,16 @@ import React, { useMemo, useState, useEffect } from "react";
 import { PieChart, Pie, BarChart, Bar, ScatterChart, Scatter, Cell, XAxis, YAxis, Tooltip, ResponsiveContainer, Legend, ZAxis, CartesianGrid, Line, ComposedChart, LabelList } from "recharts";
 import { supabase } from "./supabaseClient";
 
+// Helper pour extraire le montant promo depuis velosmint (format: "-350 €" ou "-350€")
+const getPromoAmount = (velo) => {
+  const raw = velo?.["Montant promo"];
+  if (!raw) return 0;
+  // Nettoie le format: retire espaces, €, et prend la valeur absolue
+  const cleaned = String(raw).replace(/[^\d.,-]/g, "").replace(",", ".");
+  const value = parseFloat(cleaned);
+  return Number.isFinite(value) ? Math.abs(value) : 0;
+};
+
 const KPIDashboard = ({ isOpen, onClose, statsData, velos = [], inventoryVelos = [], pricingByUrl = {}, filteredVelosCount, stockMode, setStockMode }) => {
   const [inventoryData, setInventoryData] = useState([]);
   const [upwayBikes, setUpwayBikes] = useState([]);
@@ -587,13 +597,11 @@ const KPIDashboard = ({ isOpen, onClose, statsData, velos = [], inventoryVelos =
       { range: "900€ et plus", min: 900, max: Infinity, count: 0 },
     ];
 
-    // Moyenne promo par catégorie
+    // Moyenne promo par catégorie (basé sur velosmint."Montant promo")
     const promoCategoryStats = {};
     velos.forEach(v => {
       const cat = v?.Catégorie || "Non classé";
-      const url = v?.URL;
-      const pricing = pricingByUrl?.[url];
-      const promoAmt = Number(pricing?.mint_promo_amount) || 0;
+      const promoAmt = getPromoAmount(v);
       const units = getStockUnits(v);
       if (promoAmt > 0) {
         if (!promoCategoryStats[cat]) {
@@ -607,12 +615,10 @@ const KPIDashboard = ({ isOpen, onClose, statsData, velos = [], inventoryVelos =
       .map(([name, stats]) => ({ name, value: stats.sum / stats.count, units: stats.count }))
       .sort((a, b) => b.value - a.value);
 
-    // Répartition des promos par montant
+    // Répartition des promos par montant (basé sur velosmint."Montant promo")
     const promoAmountMap = {};
     velos.forEach(v => {
-      const url = v?.URL;
-      const pricing = pricingByUrl?.[url];
-      const promoAmt = Number(pricing?.mint_promo_amount) || 0;
+      const promoAmt = getPromoAmount(v);
       const units = getStockUnits(v);
       if (promoAmt > 0) {
         const amtKey = `${promoAmt}€`;
@@ -2494,13 +2500,13 @@ const KPIDashboard = ({ isOpen, onClose, statsData, velos = [], inventoryVelos =
                     if (pricing) {
                       const priceStr = String(v?.["Prix réduit"] || "0").replace(/[^\d.,]/g, "").replace(",", ".");
                       const sellPrice = parseFloat(priceStr) || 0;
-                      const mintPromoAmount = Number(pricing.mint_promo_amount) || 0;
+                      const mintPromoAmount = getPromoAmount(v);
                       const originalPrice = sellPrice + mintPromoAmount; // Prix original avant promos
-                      
+
                       const buyPrice = Number(pricing.negotiated_buy_price) || 0;
                       const parts = Number(pricing.parts_cost_actual) || 0;
                       const logistics = Number(pricing.logistics_cost) || 0;
-                      
+
                       const units = (() => {
                         let total = 0;
                         for (let i = 1; i <= 6; i++) {
@@ -2509,7 +2515,7 @@ const KPIDashboard = ({ isOpen, onClose, statsData, velos = [], inventoryVelos =
                         }
                         return total;
                       })();
-                      
+
                       if (originalPrice > 0 && units > 0) {
                         const margin = originalPrice - buyPrice - parts - logistics;
                         totalMarginWeighted += margin * units;
@@ -2529,13 +2535,13 @@ const KPIDashboard = ({ isOpen, onClose, statsData, velos = [], inventoryVelos =
                       if (pricing) {
                         const priceStr = String(v?.["Prix réduit"] || "0").replace(/[^\d.,]/g, "").replace(",", ".");
                         const sellPrice = parseFloat(priceStr) || 0;
-                        const mintPromoAmount = Number(pricing.mint_promo_amount) || 0;
+                        const mintPromoAmount = getPromoAmount(v);
                         const originalPrice = sellPrice + mintPromoAmount; // Prix original avant promos
-                        
+
                         const buyPrice = Number(pricing.negotiated_buy_price) || 0;
                         const parts = Number(pricing.parts_cost_actual) || 0;
                         const logistics = Number(pricing.logistics_cost) || 0;
-                        
+
                         const units = (() => {
                           let total = 0;
                           for (let i = 1; i <= 6; i++) {
@@ -2544,7 +2550,7 @@ const KPIDashboard = ({ isOpen, onClose, statsData, velos = [], inventoryVelos =
                           }
                           return total;
                         })();
-                        
+
                         if (originalPrice > 0 && units > 0) {
                           const margin = originalPrice - buyPrice - parts - logistics;
                           totalMarginWeighted += margin * units;
@@ -2566,7 +2572,7 @@ const KPIDashboard = ({ isOpen, onClose, statsData, velos = [], inventoryVelos =
                       if (pricing) {
                         const priceStr = String(v?.["Prix réduit"] || "0").replace(/[^\d.,]/g, "").replace(",", ".");
                         const sellPrice = parseFloat(priceStr) || 0;
-                        const mintPromoAmount = Number(pricing.mint_promo_amount) || 0;
+                        const mintPromoAmount = getPromoAmount(v);
                         const originalPrice = sellPrice + mintPromoAmount;
                         
                         const buyPrice = Number(pricing.negotiated_buy_price) || 0;
