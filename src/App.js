@@ -3037,6 +3037,40 @@ const getMarginColor = (benef) => {
     { t: 1, color: "#15803d" }, // vert plus profond
   ]);
 };
+
+// Couleur basée sur le taux de marge (%)
+const getMarginColorByPct = (pct) => {
+  if (pct == null || Number.isNaN(Number(pct))) return "#6b7280"; // gris
+
+  const p = Number(pct);
+
+  // < 0% => rouge
+  if (p < 0) {
+    const t = clamp01(Math.abs(p) / 20); // -20% = rouge sombre max
+    return gradientColor(t, [
+      { t: 0, color: "#ef4444" }, // rouge
+      { t: 1, color: "#7f1d1d" }, // rouge sombre
+    ]);
+  }
+
+  // 0..15% => jaune -> orange (marge faible)
+  if (p <= 15) {
+    const t = clamp01(p / 15);
+    return gradientColor(t, [
+      { t: 0, color: "#facc15" }, // jaune
+      { t: 1, color: "#f97316" }, // orange
+    ]);
+  }
+
+  // >15% => vert (bonne marge)
+  // 15..30% => vert de plus en plus profond
+  const t = clamp01((p - 15) / 15);
+  return gradientColor(t, [
+    { t: 0, color: "#22c55e" }, // vert
+    { t: 1, color: "#15803d" }, // vert profond
+  ]);
+};
+
 const getAgeColor = (days) => {
   if (!Number.isFinite(days)) return "#6b7280";
 
@@ -4028,11 +4062,12 @@ const computePricing = (row, velo = null) => {
     parseNumericValue(row.parts_cost_actual) ??
     parseNumericValue(row.parts_cost_estimated);
 
-  const logistics = parseNumericValue(row.logistics_cost);
+  const includeTransport = row.include_transport === true;
 
   let commercialEur = null;
   let commercialPct = null;
 
+  // Marge commerciale = Prix de vente - Prix d'achat HT
   if (sale != null && buy != null) {
     commercialEur = sale - buy;
     commercialPct = sale !== 0 ? (commercialEur / sale) * 100 : null;
@@ -4041,9 +4076,19 @@ const computePricing = (row, velo = null) => {
   let grossEur = null;
   let grossPct = null;
 
+  // TVA sur marge (régime de la marge) et marge sur coûts variables
+  let tvaSurMarge = null;
+  let fraisTransport = null;
+  let partsSafe = null;
+
   if (sale != null && buy != null) {
-    const totalCosts = (buy ?? 0) + (parts ?? 0) + (logistics ?? 0);
-    grossEur = sale - totalCosts;
+    // TVA sur marge = margeCommerciale - margeCommerciale/1.2
+    tvaSurMarge = commercialEur - commercialEur / 1.2;
+    partsSafe = parts ?? 0;
+    fraisTransport = includeTransport ? FRAIS_TRANSPORT : 0;
+
+    // Marge sur coûts variables = Marge commerciale - Pièces - Marquage - Emballage - Transport - TVA sur marge
+    grossEur = commercialEur - partsSafe - FRAIS_MARQUAGE - FRAIS_EMBALLAGE - fraisTransport - tvaSurMarge;
     grossPct = sale !== 0 ? (grossEur / sale) * 100 : null;
   }
 
@@ -4051,12 +4096,26 @@ const computePricing = (row, velo = null) => {
 
   return {
     ...row,
+    // Valeurs utilisées pour l'affichage du détail
+    _sale: round2(sale),
+    _buy: round2(buy),
+    _parts: round2(partsSafe),
+    _frais_marquage: FRAIS_MARQUAGE,
+    _frais_emballage: FRAIS_EMBALLAGE,
+    _frais_transport: round2(fraisTransport),
+    _tva_sur_marge: round2(tvaSurMarge),
+    // Marges calculées
     commercial_margin_eur: round2(commercialEur),
     commercial_margin_pct: round2(commercialPct),
     gross_margin_eur: round2(grossEur),
     gross_margin_pct: round2(grossPct),
   };
 };
+
+// Constantes pour les frais fixes
+const FRAIS_MARQUAGE = 2;      // €, pour tous les vélos
+const FRAIS_EMBALLAGE = 21;    // €, pour tous les vélos
+const FRAIS_TRANSPORT = 84.5;  // €, si include_transport est coché
 
 const computeCardBenefit = (velo, pricingRow) => {
   const sale = parseNumericValue(velo?.["Prix réduit"]);
@@ -4068,12 +4127,26 @@ const computeCardBenefit = (velo, pricingRow) => {
     parseNumericValue(pricingRow?.parts_cost_actual) ??
     parseNumericValue(pricingRow?.parts_cost_estimated);
 
-  const logistics = parseNumericValue(pricingRow?.logistics_cost);
+  const includeTransport = pricingRow?.include_transport === true;
 
   if (sale == null || buy == null) return null;
 
-  const benefit = sale - (buy ?? 0) - (parts ?? 0) - (logistics ?? 0);
-  return Math.round(benefit * 100) / 100;
+  // Marge commerciale = Prix de vente - Prix d'achat HT
+  const margeCommerciale = sale - buy;
+
+  // TVA sur marge (régime de la marge) = margeCommerciale - margeCommerciale/1.2
+  const tvaSurMarge = margeCommerciale - margeCommerciale / 1.2;
+
+  // Marge sur coûts variables = Marge commerciale - Pièces TTC - Marquage - Emballage - Transport - TVA sur marge
+  let margeSurCoutsVariables = margeCommerciale - (parts ?? 0) - FRAIS_MARQUAGE - FRAIS_EMBALLAGE - tvaSurMarge;
+  if (includeTransport) {
+    margeSurCoutsVariables -= FRAIS_TRANSPORT;
+  }
+
+  const eur = Math.round(margeSurCoutsVariables * 100) / 100;
+  const pct = sale !== 0 ? Math.round((margeSurCoutsVariables / sale) * 1000) / 10 : null;
+
+  return { eur, pct };
 };
 
 const getSaleBreakdownFromModePricing = (velo, pricingRow) => {
@@ -4114,13 +4187,16 @@ const savePricingRow = async (row, updatePriceTimestamp = false) => {
 
   setPricingSaving(true);
   try {
-    const payload = { ...row };
-    
+    // Filtrer les champs virtuels (préfixés par _) qui ne sont pas en base
+    const payload = Object.fromEntries(
+      Object.entries(row).filter(([key]) => !key.startsWith("_"))
+    );
+
     // ✅ Si on modifie best_used_url → màj price_updated_at
     if (updatePriceTimestamp) {
       payload.price_updated_at = new Date().toISOString();
     }
-    
+
     // On met toujours à jour updated_at pour les autres modifs
     payload.updated_at = new Date().toISOString();
 
@@ -4472,9 +4548,9 @@ const applyAllFilters = (sourceVelos, f = {}) => {
       if (!pRow) return true;
       
       // Utilise la même fonction que l'affichage des cartes
-      const marge = computeCardBenefit(v, pRow);
-      if (marge === null) return true;
-      
+      const marge = computeCardBenefit(v, pRow)?.eur;
+      if (marge === null || marge === undefined) return true;
+
       if (f.pricingMarginMin !== undefined && marge < f.pricingMarginMin) return false;
       if (f.pricingMarginMax !== undefined && marge > f.pricingMarginMax) return false;
       return true;
@@ -4540,8 +4616,15 @@ if (key === "PRICING_BRAND_CATEGORY") {
 if (key === "PRICING_BENEFICE") {
   const pa = pricingByUrl?.[a?.URL];
   const pb = pricingByUrl?.[b?.URL];
-  aVal = computeCardBenefit(a, pa);
-  bVal = computeCardBenefit(b, pb);
+  aVal = computeCardBenefit(a, pa)?.eur;
+  bVal = computeCardBenefit(b, pb)?.eur;
+}
+
+if (key === "PRICING_BENEFICE_PCT") {
+  const pa = pricingByUrl?.[a?.URL];
+  const pb = pricingByUrl?.[b?.URL];
+  aVal = computeCardBenefit(a, pa)?.pct;
+  bVal = computeCardBenefit(b, pb)?.pct;
 }
 
 if (key === "PRICING_BUY_PRICE") {
@@ -4723,7 +4806,7 @@ if (Number.isFinite(dListing)) {
 }
 
 // ✅ Moy marge totale (bénéfice moyen par unité)
-const bUnit = computeCardBenefit(v, pr);
+const bUnit = computeCardBenefit(v, pr)?.eur;
 if (Number.isFinite(bUnit)) {
   benefitTotalEur += bUnit * units;
   benefitTotalUnits += units;
@@ -4746,7 +4829,7 @@ else unknownPowerUnits += units;
     }
 
     const p = pricingByUrl?.[v?.URL];
-    const b = computeCardBenefit(v, p);
+    const b = computeCardBenefit(v, p)?.eur;
     if (Number.isFinite(b)) {
       benefits.push(b);
       benefitUnits.push(units);
@@ -5011,7 +5094,7 @@ for (const v of list) {
   const units = getRowTotalStock(v);
   if (!units || units <= 0) continue;
   
-  const benefit = computeCardBenefit(v);
+  const benefit = computeCardBenefit(v)?.eur;
   if (!Number.isFinite(benefit)) continue;
   
   const brand = String(v?.Marque || "Inconnu").trim();
@@ -6192,17 +6275,39 @@ ${Object.entries(v)
   }}
   className="icon-btn"
   title="Parking Virtuel"
+  style={{
+    background: "#3b82f6",
+    border: "1px solid #3b82f6",
+    color: "#fff",
+    fontWeight: 700,
+    fontSize: 16,
+  }}
 >
-  🅿️
+  P
 </button>
 
     {/* 💲 Outil Prix */}
     <button
       onClick={openPriceTool}
-      className="icon-btn"
+      className="icon-btn price-tool-btn"
       title="Outil Prix"
+      style={{
+        background: "#fff",
+        border: "1px solid #22c55e",
+        color: "#22c55e",
+        fontWeight: 700,
+        fontSize: 16,
+      }}
+      onMouseEnter={(e) => {
+        e.currentTarget.style.background = "#22c55e";
+        e.currentTarget.style.color = "#fff";
+      }}
+      onMouseLeave={(e) => {
+        e.currentTarget.style.background = "#fff";
+        e.currentTarget.style.color = "#22c55e";
+      }}
     >
-      💲
+      $
     </button>
 
     <button
@@ -6370,7 +6475,8 @@ ${Object.entries(v)
 ) : (
   <>
     <option value="PRICING_UPDATED_AT">Date du dernier pricing</option>
-    <option value="PRICING_BENEFICE">Marge</option>
+    <option value="PRICING_BENEFICE_PCT">Marge (%)</option>
+    <option value="PRICING_BENEFICE">Marge (€)</option>
     <option value="Published At">Date de publication</option>
     <option value="PRICING_BUY_PRICE">Prix d&apos;achat</option>
     <option value="Prix réduit">Prix</option>
@@ -6547,16 +6653,19 @@ ${Object.entries(v)
         <>
           <div
             style={{
-              fontSize: 20,
+              fontSize: 22,
               fontWeight: 800,
               lineHeight: 1.1,
-              color: getMarginColor(ben),
+              color: getMarginColorByPct(ben?.pct),
             }}
           >
-            {ben != null ? `${Number(ben).toLocaleString("fr-FR")} €` : "—"}
+            {ben?.pct != null ? `${Number(ben.pct).toLocaleString("fr-FR")} %` : "—"}
           </div>
-          <div style={{ fontSize: 11, opacity: 0.7, marginBottom: 10 }}>
-            Marge (estimée+)
+          <div style={{ fontSize: 12, opacity: 0.85, marginBottom: 2 }}>
+            {ben?.eur != null ? `${Number(ben.eur).toLocaleString("fr-FR")} €` : ""}
+          </div>
+          <div style={{ fontSize: 10, opacity: 0.6, marginBottom: 10 }}>
+            Marge s/ coûts var.
           </div>
 
           <div style={{ marginTop: 6, opacity: 0.75 }}>
@@ -6632,10 +6741,13 @@ ${Object.entries(v)
 
         {selectedVelo && (
           <div className="velo-details">
-            <button className="close-btn" onClick={() => setSelectedVelo(null)}>
-              X
-            </button>
-            <h2>{selectedVelo.Title}</h2>
+            {/* Header sticky avec titre et bouton fermer */}
+            <div className="velo-details-header">
+              <h2>{selectedVelo.Title}</h2>
+              <button className="close-btn" onClick={() => setSelectedVelo(null)}>
+                X
+              </button>
+            </div>
             <div style={{ display: "flex", gap: 8, margin: "8px 0 14px 0" }}>
 </div>
 
@@ -6852,6 +6964,8 @@ ${Object.entries(v)
       border: "1px solid #e5e7eb",
       borderRadius: 10,
       background: "var(--bg-card, #fff)",
+      overflow: "hidden",
+      minWidth: 0,
     }}
   >
     {/* HEADER */}
@@ -6934,21 +7048,6 @@ ${Object.entries(v)
       const marketUsedUrl = pricingRow?.best_used_url ?? "";
 
       // =====================================================
-      // 2) INFO ACHAT
-      // =====================================================
-      const mintPromo = n(pricingRow?.mint_promo_amount) ?? 0;
-
-      // =====================================================
-      // 3) COÛTS ACHAT
-      // =====================================================
-      const buyPrice = n(pricingRow?.negotiated_buy_price);
-      const partsCost = n(pricingRow?.parts_cost_actual);
-      const logisticsCost = n(pricingRow?.logistics_cost);
-      const marketingCost = n(pricingRow?.marketing_cost);
-
-      const totalCosts =
-        (buyPrice ?? 0) + (partsCost ?? 0) + (logisticsCost ?? 0) + (marketingCost ?? 0);
-      // =====================================================
       // Styles
       // =====================================================
       const sectionStyle = {
@@ -6956,6 +7055,8 @@ ${Object.entries(v)
         border: "1px solid rgba(0,0,0,0.08)",
         borderRadius: 10,
         background: "#fff",
+        minWidth: 0,
+        overflow: "hidden",
       };
 
       const titleStyle = { fontWeight: 800, marginBottom: 8 };
@@ -6964,9 +7065,10 @@ ${Object.entries(v)
         display: "grid",
         gridTemplateColumns: "1fr 1fr",
         gap: 10,
+        minWidth: 0,
       };
 
-      const fieldWrap = { display: "grid", gap: 6 };
+      const fieldWrap = { display: "grid", gap: 6, minWidth: 0, overflow: "hidden" };
 
       const labelStyle = { fontSize: 12, color: "#6b7280" };
 
@@ -6975,6 +7077,9 @@ ${Object.entries(v)
         border: "1px solid #d1d5db",
         borderRadius: 8,
         padding: "6px 10px",
+        minWidth: 0,
+        width: "100%",
+        boxSizing: "border-box",
       };
 
       const roStyle = {
@@ -7041,12 +7146,36 @@ ${Object.entries(v)
 
                 <div style={fieldWrap}>
                   <label style={labelStyle}>URL neuf déstock</label>
-                  <input
-                    type="text"
-                    value={marketNewUrl}
-                    onChange={setField("new_bike_url", "text")}
-                    style={inputStyle}
-                  />
+                  <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                    <input
+                      type="text"
+                      value={marketNewUrl}
+                      onChange={setField("new_bike_url", "text")}
+                      style={{ ...inputStyle, flex: 1 }}
+                    />
+                    {marketNewUrl && (
+                      <a
+                        href={marketNewUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          width: 32,
+                          height: 32,
+                          background: "#e0f2fe",
+                          borderRadius: 6,
+                          color: "#0284c7",
+                          textDecoration: "none",
+                          flexShrink: 0,
+                        }}
+                        title="Ouvrir le lien"
+                      >
+                        ↗
+                      </a>
+                    )}
+                  </div>
                 </div>
               </div>
 
@@ -7063,12 +7192,36 @@ ${Object.entries(v)
 
                 <div style={fieldWrap}>
                   <label style={labelStyle}>URL occasion</label>
-                  <input
-                    type="text"
-                    value={marketUsedUrl}
-                    onChange={setField("best_used_url", "text")}
-                    style={inputStyle}
-                  />
+                  <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                    <input
+                      type="text"
+                      value={marketUsedUrl}
+                      onChange={setField("best_used_url", "text")}
+                      style={{ ...inputStyle, flex: 1 }}
+                    />
+                    {marketUsedUrl && (
+                      <a
+                        href={marketUsedUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          width: 32,
+                          height: 32,
+                          background: "#e0f2fe",
+                          borderRadius: 6,
+                          color: "#0284c7",
+                          textDecoration: "none",
+                          flexShrink: 0,
+                        }}
+                        title="Ouvrir le lien"
+                      >
+                        ↗
+                      </a>
+                    )}
+                  </div>
                 </div>
               </div>
             </div>
@@ -7146,7 +7299,7 @@ ${Object.entries(v)
             <div style={{ display: "grid", gap: 10 }}>
               <div style={grid2}>
                 <div style={fieldWrap}>
-                  <label style={labelStyle}>Prix d'achat</label>
+                  <label style={labelStyle}>Prix d'achat (HT)</label>
                   <input
                     type="number"
                     value={pricingRow?.negotiated_buy_price ?? ""}
@@ -7157,7 +7310,7 @@ ${Object.entries(v)
                 </div>
 
                 <div style={fieldWrap}>
-                  <label style={labelStyle}>Prix des pièces</label>
+                  <label style={labelStyle}>Prix des pièces (HT)</label>
                   <input
                     type="number"
                     value={pricingRow?.parts_cost_actual ?? ""}
@@ -7168,39 +7321,28 @@ ${Object.entries(v)
                 </div>
               </div>
 
-              <div style={grid2}>
-                <div style={fieldWrap}>
-                  <label style={labelStyle}>Frais logistiques</label>
-                  <input
-                    type="number"
-                    value={pricingRow?.logistics_cost ?? ""}
-                    onChange={setField("logistics_cost", "number")}
-                    onBlur={(e) => autoUpsertPricingField(selectedVelo.URL, 'logistics_cost', parseFloat(e.target.value) || null)}
-                    style={inputStyle}
-                  />
-                </div>
-
-                <div style={fieldWrap}>
-                  <label style={labelStyle}>Frais marketing</label>
-                  <input
-                    type="number"
-                    value={pricingRow?.marketing_cost ?? ""}
-                    onChange={setField("marketing_cost", "number")}
-                    onBlur={(e) => autoUpsertPricingField(selectedVelo.URL, 'marketing_cost', parseFloat(e.target.value) || null)}
-                    style={inputStyle}
-                  />
-                </div>
-              </div>
-
               <div style={fieldWrap}>
-                <label style={labelStyle}>Total coûts (indicatif)</label>
-                <div style={roStyle}>{fmt(totalCosts)}</div>
+                <label style={{ ...labelStyle, display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+                  <input
+                    type="checkbox"
+                    checked={pricingRow?.include_transport === true}
+                    onChange={(e) => {
+                      const newVal = e.target.checked;
+                      setPricingRow((prev) =>
+                        computePricing({ ...prev, include_transport: newVal }, selectedVelo)
+                      );
+                      autoUpsertPricingField(selectedVelo.URL, 'include_transport', newVal);
+                    }}
+                    style={{ width: 16, height: 16 }}
+                  />
+                  Inclure frais de transport ({FRAIS_TRANSPORT} €)
+                </label>
               </div>
             </div>
           </div>
 
           {/* =========================
-              CALCULÉ (marges en une ligne)
+              CALCULÉ (marges avec détail)
              ========================= */}
           <div
             style={{
@@ -7213,22 +7355,84 @@ ${Object.entries(v)
               Marges (calculé)
             </div>
 
-            {/* Marge commerciale : € + % sur la même ligne */}
-            <div style={{ ...marginRowStyle, marginBottom: 10 }}>
-              <div style={fieldWrap}>
-                <label style={labelStyle}>Marge commerciale</label>
-                <div style={roInline}>
-                  <span>{fmt(pricingRow?.commercial_margin_eur)}</span>
-                  <span style={{ opacity: 0.75 }}>{fmtPct(pricingRow?.commercial_margin_pct)}</span>
+            {/* Détail du calcul de la marge sur coûts variables */}
+            <div
+              style={{
+                background: "#f8fafc",
+                border: "1px solid #e2e8f0",
+                borderRadius: 8,
+                padding: 12,
+                marginBottom: 10,
+                fontSize: 12,
+              }}
+            >
+              <div style={{ fontWeight: 600, marginBottom: 8, color: "#475569" }}>
+                Détail marge sur coûts variables
+              </div>
+              <div style={{ display: "grid", gap: 4, color: "#64748b" }}>
+                <div style={{ display: "flex", justifyContent: "space-between" }}>
+                  <span>Prix de vente TTC</span>
+                  <span style={{ fontWeight: 500, color: "#334155" }}>{fmt(pricingRow?._sale)}</span>
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between" }}>
+                  <span>− Prix d'achat HT</span>
+                  <span>{fmt(pricingRow?._buy)}</span>
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", borderTop: "1px dashed #cbd5e1", paddingTop: 4, marginTop: 2 }}>
+                  <span style={{ fontWeight: 500 }}>= Marge commerciale</span>
+                  <span style={{ fontWeight: 500 }}>{fmt(pricingRow?.commercial_margin_eur)}</span>
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4 }}>
+                  <span>− Pièces HT</span>
+                  <span>{fmt(pricingRow?._parts)}</span>
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between" }}>
+                  <span>− Marquage</span>
+                  <span>{fmt(pricingRow?._frais_marquage)}</span>
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between" }}>
+                  <span>− Emballage</span>
+                  <span>{fmt(pricingRow?._frais_emballage)}</span>
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between" }}>
+                  <span>− Transport {pricingRow?._frais_transport > 0 ? "" : "(non inclus)"}</span>
+                  <span>{fmt(pricingRow?._frais_transport)}</span>
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between" }}>
+                  <span>− TVA sur marge commerciale (20%)</span>
+                  <span>{fmt(pricingRow?._tva_sur_marge)}</span>
                 </div>
               </div>
 
-              {/* Marge brute : € + % sur la même ligne */}
-              <div style={fieldWrap}>
-                <label style={labelStyle}>Marge brute</label>
-                <div style={roInline}>
+              {/* MARGE SUR COÛTS VARIABLES - mise en avant */}
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  marginTop: 10,
+                  paddingTop: 10,
+                  borderTop: "2px solid #cbd5e1",
+                }}
+              >
+                <span style={{ fontWeight: 700, fontSize: 14, color: "#1e293b" }}>
+                  = Marge sur coûts variables
+                </span>
+                <div
+                  style={{
+                    display: "flex",
+                    gap: 8,
+                    alignItems: "center",
+                    padding: "6px 12px",
+                    borderRadius: 6,
+                    fontWeight: 700,
+                    fontSize: 15,
+                    background: pricingRow?.gross_margin_eur >= 0 ? "#dcfce7" : "#fee2e2",
+                    color: pricingRow?.gross_margin_eur >= 0 ? "#166534" : "#991b1b",
+                  }}
+                >
                   <span>{fmt(pricingRow?.gross_margin_eur)}</span>
-                  <span style={{ opacity: 0.75 }}>{fmtPct(pricingRow?.gross_margin_pct)}</span>
+                  <span style={{ opacity: 0.8, fontSize: 13 }}>{fmtPct(pricingRow?.gross_margin_pct)}</span>
                 </div>
               </div>
             </div>
