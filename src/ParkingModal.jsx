@@ -148,60 +148,57 @@ export default function ParkingModal(props) {
   const sizeRows = buildGapRows ? buildGapRows(distSize.out, distSize.totalUnits, parkingRules?.sizePct, objTotalForSize) : [];
   const priceRows = buildGapRows ? buildGapRows(distPrice.out, distPrice.totalUnits, parkingRules?.pricePct, objTotalForPrice) : [];
 
-  // computeCatMarDistribution_STRICT inline (simplified reuse)
-  function computeCatMarDistribution_STRICT(rows, sel, bands, getCatMarFromRow, tierPctMap) {
-    const normStrLocal = (s) => String(s ?? "").toLowerCase().trim();
+  // Calcul des vélos filtrés progressivement, groupés par tier A/B/C/D
+  const velosByTier = useMemo(() => {
     const tiers = ["A", "B", "C", "D"];
-    let filtered = rows || [];
-    if (sel.category) filtered = filtered.filter((r) => normStrLocal(getCategoryFromRow?.(r)) === normStrLocal(sel.category));
-    const sizeLetter = sel.size ? String(sel.size).trim().toUpperCase() : null;
-    if (sizeLetter) filtered = filtered.filter((r) => {
-      const buckets = (getVariantSizeBucketsFromRow?.(r) || []).map((x) => String(x).trim().toUpperCase());
-      return buckets.includes(sizeLetter);
-    });
-    if (sel.priceBand) filtered = filtered.filter((r) => {
-      const b = getPriceBand?.(getPriceFromRow?.(r), bands);
-      return normStrLocal(b) === normStrLocal(sel.priceBand);
-    });
+    const result = { A: [], B: [], C: [], D: [] };
+    const normStrLocal = (s) => String(s ?? "").toLowerCase().trim();
 
-    const categoryPct = parkingRules?.categoryPct?.[sel.category] || 0;
-    const sizePct = sizeLetter ? (parkingRules?.sizePct?.[sizeLetter] || 0) : 0;
-    const bandObj = (bands || []).find((b) => normStrLocal(b.label) === normStrLocal(sel.priceBand));
-    const pricePct = bandObj?.share_pct > 1 ? bandObj.share_pct / 100 : (bandObj?.share_pct || 0);
-    const objectiveTotalLocal = Number(parkingRules?.objectiveTotal || 0);
-    const categoryTarget = Math.round(objectiveTotalLocal * categoryPct);
-    const sizeTarget = sizeLetter && sizePct > 0 && categoryTarget > 0 ? Math.round(categoryTarget * sizePct) : categoryTarget;
-    const priceTarget = sel.priceBand && pricePct > 0 && sizeTarget > 0 ? Math.round(sizeTarget * pricePct) : sizeTarget;
+    // On ne montre les vélos que si au moins la catégorie est sélectionnée
+    if (!parkingSelection.category) return result;
 
-    const sumUnits = (arr) => arr.reduce((s, r) => s + (getRowTotalStock?.(r) || 0), 0);
-    const sumUnitsForSize = (arr, targetSize) => {
-      let total = 0;
-      for (const r of arr) {
+    let filtered = baseRows.filter((r) => normStrLocal(getCategoryFromRow?.(r)) === normStrLocal(parkingSelection.category));
+
+    // Filtre par taille si sélectionnée
+    if (parkingSelection.size) {
+      const sizeLetter = String(parkingSelection.size).trim().toUpperCase();
+      filtered = filtered.filter((r) => {
         const sizeStocks = getSizeStocksFromRow?.(r);
-        if (sizeStocks && sizeStocks[targetSize]) { total += Number(sizeStocks[targetSize] || 0); continue; }
-        const totalStock = Number(getRowTotalStock?.(r) || 0);
-        const buckets = getVariantSizeBucketsFromRow?.(r) || [];
-        if (buckets && buckets.length > 0 && buckets.includes(targetSize)) total += totalStock / buckets.length;
+        if (sizeStocks) return Object.keys(sizeStocks).map(s => s.toUpperCase()).includes(sizeLetter);
+        const buckets = (getVariantSizeBucketsFromRow?.(r) || []).map((x) => String(x).trim().toUpperCase());
+        return buckets.includes(sizeLetter);
+      });
+    }
+
+    // Filtre par tranche de prix si sélectionnée
+    if (parkingSelection.priceBand) {
+      filtered = filtered.filter((r) => {
+        const b = getPriceBand?.(getPriceFromRow?.(r), bandsToUse);
+        return normStrLocal(b) === normStrLocal(parkingSelection.priceBand);
+      });
+    }
+
+    // Grouper par tier (A/B/C/D)
+    for (const row of filtered) {
+      const tier = String(getCatMarFromRow?.(row) || "").trim().toUpperCase();
+      if (tiers.includes(tier)) {
+        result[tier].push(row);
       }
-      return Math.round(total);
-    };
+    }
 
-    return tiers.map((tier) => {
-      let velosFiltered = filtered.filter((r) => String(getCatMarFromRow?.(r) || "").trim().toUpperCase() === tier);
-      let actualUnits = 0;
-      if (sizeLetter && sizePct > 0) actualUnits = sumUnitsForSize(velosFiltered, sizeLetter);
-      else actualUnits = sumUnits(velosFiltered);
-      const tierPct = tierPctMap?.[tier] || 0;
-      let baseTarget = categoryTarget;
-      if (sizeLetter && sizePct > 0) baseTarget = sizeTarget;
-      if (sel.priceBand && pricePct > 0) baseTarget = priceTarget;
-      const targetUnits = Math.round(baseTarget * tierPct);
-      const gapUnits = actualUnits - targetUnits;
-      return { key: tier, actualUnits, targetUnits, gapUnits, targetPct: tierPct, actualPct: baseTarget > 0 ? actualUnits / baseTarget : 0 };
-    });
-  }
+    return result;
+  }, [baseRows, parkingSelection, getCategoryFromRow, getSizeStocksFromRow, getVariantSizeBucketsFromRow, getPriceBand, getPriceFromRow, bandsToUse, getCatMarFromRow]);
 
-  const catMarRows = computeCatMarDistribution_STRICT(priceRows, parkingSelection, allPriceBandsByCategory?.[parkingSelection.category] || [], getCatMarFromRow, parkingRules?.tierPct || {});
+  // Fonction pour formater l'affichage d'un vélo
+  const formatVeloDisplay = (row) => {
+    const marque = row?.["Marque"] ?? "";
+    const modele = row?.["Modèle"] ?? "";
+    const annee = row?.["Année"] ?? "";
+    const taille = row?.["Taille du cadre"] ?? "";
+    const prix = getPriceFromRow?.(row);
+    const prixStr = Number.isFinite(prix) ? `${Math.round(prix)}€` : "";
+    return { marque, modele, annee, taille, prix: prixStr };
+  };
 
   if (!props) return null;
 
@@ -241,48 +238,163 @@ export default function ParkingModal(props) {
 
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
               <div>
-                <div style={{ fontWeight: 700, marginBottom: 8 }}>Catégories</div>
-                {catRows.map((r) => (
-                  <div key={r.key} style={{ padding: 8, borderBottom: "1px solid #eee" }}>
-                    <div style={{ fontWeight: 700 }}>{r.key}</div>
-                    <div style={{ color: "#555" }}>Actuel: {r.actualUnits} — Cible: {r.targetUnits}</div>
-                  </div>
-                ))}
+                <div style={{ fontWeight: 700, marginBottom: 8 }}>
+                  Étape 1 : Catégories
+                  {parkingSelection.category && (
+                    <button
+                      onClick={() => setParkingSelection({ category: null, size: null, priceBand: null })}
+                      style={{ marginLeft: 8, fontSize: 11, padding: "2px 6px", cursor: "pointer", background: "#eee", border: "none", borderRadius: 4 }}
+                    >
+                      Réinitialiser
+                    </button>
+                  )}
+                </div>
+                {catRows.map((r) => {
+                  const isSelected = parkingSelection.category === r.key;
+                  return (
+                    <div
+                      key={r.key}
+                      onClick={() => setParkingSelection({ category: r.key, size: null, priceBand: null })}
+                      style={{
+                        padding: 8,
+                        borderBottom: "1px solid #eee",
+                        cursor: "pointer",
+                        background: isSelected ? "#e0f2fe" : "transparent",
+                        borderLeft: isSelected ? "3px solid #0284c7" : "3px solid transparent",
+                        transition: "all 0.15s"
+                      }}
+                    >
+                      <div style={{ fontWeight: 700 }}>{r.key}</div>
+                      <div style={{ color: "#555" }}>Actuel: {r.actualUnits} — Cible: {r.targetUnits}</div>
+                    </div>
+                  );
+                })}
               </div>
 
-              <div>
-                <div style={{ fontWeight: 700, marginBottom: 8 }}>Tailles</div>
-                {sizeRows.map((r) => (
-                  <div key={r.key} style={{ padding: 8, borderBottom: "1px solid #eee" }}>
-                    <div style={{ fontWeight: 700 }}>{r.key}</div>
-                    <div style={{ color: "#555" }}>Actuel: {r.actualUnits} — Cible: {r.targetUnits}</div>
-                  </div>
-                ))}
+              <div style={{ opacity: parkingSelection.category ? 1 : 0.4 }}>
+                <div style={{ fontWeight: 700, marginBottom: 8 }}>
+                  Étape 2 : Tailles
+                  {parkingSelection.size && (
+                    <button
+                      onClick={() => setParkingSelection(prev => ({ ...prev, size: null, priceBand: null }))}
+                      style={{ marginLeft: 8, fontSize: 11, padding: "2px 6px", cursor: "pointer", background: "#eee", border: "none", borderRadius: 4 }}
+                    >
+                      Réinitialiser
+                    </button>
+                  )}
+                </div>
+                {sizeRows.map((r) => {
+                  const isSelected = parkingSelection.size === r.key;
+                  return (
+                    <div
+                      key={r.key}
+                      onClick={() => parkingSelection.category && setParkingSelection(prev => ({ ...prev, size: r.key, priceBand: null }))}
+                      style={{
+                        padding: 8,
+                        borderBottom: "1px solid #eee",
+                        cursor: parkingSelection.category ? "pointer" : "not-allowed",
+                        background: isSelected ? "#dcfce7" : "transparent",
+                        borderLeft: isSelected ? "3px solid #16a34a" : "3px solid transparent",
+                        transition: "all 0.15s"
+                      }}
+                    >
+                      <div style={{ fontWeight: 700 }}>{r.key}</div>
+                      <div style={{ color: "#555" }}>Actuel: {r.actualUnits} — Cible: {r.targetUnits}</div>
+                    </div>
+                  );
+                })}
               </div>
 
-              <div>
-                <div style={{ fontWeight: 700, marginBottom: 8 }}>Tranches Prix</div>
-                {priceRows.map((r) => (
-                  <div key={r.key} style={{ padding: 8, borderBottom: "1px solid #eee" }}>
-                    <div style={{ fontWeight: 700 }}>{r.key}</div>
-                    <div style={{ color: "#555" }}>Actuel: {r.actualUnits} — Cible: {r.targetUnits}</div>
-                  </div>
-                ))}
+              <div style={{ opacity: parkingSelection.size ? 1 : 0.4 }}>
+                <div style={{ fontWeight: 700, marginBottom: 8 }}>
+                  Étape 3 : Tranches Prix
+                  {parkingSelection.priceBand && (
+                    <button
+                      onClick={() => setParkingSelection(prev => ({ ...prev, priceBand: null }))}
+                      style={{ marginLeft: 8, fontSize: 11, padding: "2px 6px", cursor: "pointer", background: "#eee", border: "none", borderRadius: 4 }}
+                    >
+                      Réinitialiser
+                    </button>
+                  )}
+                </div>
+                {priceRows.map((r) => {
+                  const isSelected = parkingSelection.priceBand === r.key;
+                  return (
+                    <div
+                      key={r.key}
+                      onClick={() => parkingSelection.size && setParkingSelection(prev => ({ ...prev, priceBand: r.key }))}
+                      style={{
+                        padding: 8,
+                        borderBottom: "1px solid #eee",
+                        cursor: parkingSelection.size ? "pointer" : "not-allowed",
+                        background: isSelected ? "#fef3c7" : "transparent",
+                        borderLeft: isSelected ? "3px solid #d97706" : "3px solid transparent",
+                        transition: "all 0.15s"
+                      }}
+                    >
+                      <div style={{ fontWeight: 700 }}>{r.key}</div>
+                      <div style={{ color: "#555" }}>Actuel: {r.actualUnits} — Cible: {r.targetUnits}</div>
+                    </div>
+                  );
+                })}
               </div>
             </div>
 
-            <div style={{ marginTop: 12 }}>
-              <div style={{ fontWeight: 700, marginBottom: 8 }}>Tiers (A/B/C/D)</div>
-              <div style={{ display: "flex", gap: 8 }}>
-                {catMarRows.map((r) => (
-                  <div key={r.key} style={{ padding: 10, background: "#fff", borderRadius: 8, flex: 1 }}>
-                    <div style={{ fontWeight: 800 }}>{r.key}</div>
-                    <div style={{ color: "#444" }}>Actuel: {r.actualUnits}</div>
-                    <div style={{ color: "#666", fontSize: 13 }}>Cible: {r.targetUnits}</div>
-                  </div>
-                ))}
+            {/* Section vélos par colonnes A/B/C/D */}
+            {parkingSelection.category && (
+              <div style={{ marginTop: 16 }}>
+                <div style={{ fontWeight: 700, marginBottom: 10, fontSize: 15 }}>
+                  Vélos filtrés par Tier
+                  <span style={{ fontWeight: 400, color: "#666", marginLeft: 8, fontSize: 13 }}>
+                    ({velosByTier.A.length + velosByTier.B.length + velosByTier.C.length + velosByTier.D.length} vélos)
+                  </span>
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 10 }}>
+                  {["A", "B", "C", "D"].map((tier) => (
+                    <div key={tier} style={{
+                      background: "#fff",
+                      borderRadius: 10,
+                      padding: 10,
+                      boxShadow: "0 2px 8px rgba(0,0,0,0.06)",
+                      maxHeight: 300,
+                      overflowY: "auto"
+                    }}>
+                      <div style={{
+                        fontWeight: 800,
+                        marginBottom: 8,
+                        fontSize: 14,
+                        color: tier === "A" ? "#16a34a" : tier === "B" ? "#2563eb" : tier === "C" ? "#d97706" : "#dc2626",
+                        borderBottom: "2px solid",
+                        borderColor: tier === "A" ? "#16a34a" : tier === "B" ? "#2563eb" : tier === "C" ? "#d97706" : "#dc2626",
+                        paddingBottom: 6
+                      }}>
+                        Tier {tier} ({velosByTier[tier].length})
+                      </div>
+                      {velosByTier[tier].length === 0 ? (
+                        <div style={{ color: "#999", fontSize: 12, fontStyle: "italic" }}>Aucun vélo</div>
+                      ) : (
+                        velosByTier[tier].map((row, idx) => {
+                          const velo = formatVeloDisplay(row);
+                          return (
+                            <div key={idx} style={{
+                              padding: "6px 0",
+                              borderBottom: idx < velosByTier[tier].length - 1 ? "1px solid #eee" : "none",
+                              fontSize: 12
+                            }}>
+                              <div style={{ fontWeight: 600, color: "#333" }}>{velo.marque} {velo.modele}</div>
+                              <div style={{ color: "#666", fontSize: 11 }}>
+                                {[velo.annee, velo.taille, velo.prix].filter(Boolean).join(" · ")}
+                              </div>
+                            </div>
+                          );
+                        })
+                      )}
+                    </div>
+                  ))}
+                </div>
               </div>
-            </div>
+            )}
+
           </div>
         )}
 

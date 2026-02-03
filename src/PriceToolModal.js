@@ -1,8 +1,8 @@
-import React, { useState, useMemo, useEffect } from "react";
+import React, { useState, useMemo, useEffect, useCallback } from "react";
 import PricingRulesManager from "./PricingRulesManager";
 import {
-  loadRulesFromLocalStorage,
-  saveRulesToLocalStorage,
+  loadRulesFromSupabase,
+  saveRulesToSupabase,
   applyPricingRules,
   calculateStockStatus,
 } from "./pricingRulesUtils";
@@ -90,31 +90,35 @@ const PriceToolModal = ({
       .replace(/[\u0300-\u036f]/g, "");
   };
 
-  // Créer la clé du tier (comme dans App.js)
-  const makeTierKey = (category, bikeType, brand) =>
-    `${norm(category)}||${norm(bikeType)}||${norm(brand)}`.toLowerCase();
+  // Créer la clé du tier (clé simple: catégorie + marque, comme dans loadBrandTiersIndex de App.js)
+  const makeTierKey = (category, brand) =>
+    `${norm(category)}||${norm(brand)}`;
 
-  // Obtenir le tier de la marque basé sur catégorie + type + marque
-  const getBrandTier = () => {
+  // Obtenir le tier de la marque basé sur catégorie + marque (avec useMemo pour réactivité)
+  const brandTier = useMemo(() => {
     if (!form.brand || !form.category) return null;
 
-    // Extraire category et type de vélo du form.category (format: "VTT - Musculaire")
-    const [category, bikeType] = form.category.split(" - ").map(s => s.trim());
+    // Extraire la catégorie du form.category (format: "VTT - Musculaire" → "VTT")
+    const parts = form.category.split(" - ");
+    const category = parts[0]?.trim();
 
-    if (!category || !bikeType) return null;
+    if (!category) return null;
 
-    // 1) Chercher avec catégorie + type + marque
-    const k1 = makeTierKey(category, bikeType, form.brand);
-    const tier1 = brandTiersIndex?.get(k1);
-    if (tier1) return tier1;
+    // Chercher avec catégorie + marque (clé simple)
+    const key = makeTierKey(category, form.brand);
+    const tier = brandTiersIndex?.get(key);
 
-    // 2) Fallback avec catégorie + "Tous" + marque
-    const k2 = makeTierKey(category, "Tous", form.brand);
-    const tier2 = brandTiersIndex?.get(k2);
-    if (tier2) return tier2;
+    if (tier) {
+      console.log(`✅ Tier trouvé: ${key} → ${tier}`);
+      return tier;
+    }
 
+    console.log(`❌ Pas de tier pour: ${key} (brandTiersIndex size: ${brandTiersIndex?.size || 0})`);
     return null;
-  };
+  }, [form.brand, form.category, brandTiersIndex]);
+
+  // Fonction wrapper pour compatibilité avec le code existant
+  const getBrandTier = () => brandTier;
 
   // Calcul complet de l'algorithme de prix
   const calculateCompleteAlgo = () => {
@@ -129,8 +133,8 @@ const PriceToolModal = ({
     const marginRate = DESIRED_MARGIN / avgPrice;
     const priceAfterMargin = estimatedPrice * (1 - marginRate);
 
-    // Étape 2 : Frais de pièces (7% du prix de vente)
-    const partsFee = estimatedPrice * PARTS_FEE_RATE;
+    // Étape 2 : Frais de pièces (7% du prix de vente) - ignorés si vélo neuf
+    const partsFee = form.isNewBike ? 0 : estimatedPrice * PARTS_FEE_RATE;
     const priceAfterParts = priceAfterMargin - partsFee;
 
     // Étape 3 : Frais de transport (150€, optionnel)
@@ -320,6 +324,7 @@ const PriceToolModal = ({
       step2: {
         partsFeeRate: PARTS_FEE_RATE * 100,
         partsFee,
+        skipped: form.isNewBike,
         result: priceAfterParts,
       },
       // Étape 3 - Frais de transport
@@ -351,18 +356,33 @@ const PriceToolModal = ({
 
   // State pour les règles de prix
   const [pricingRules, setPricingRules] = useState(null);
+  const [rulesLoading, setRulesLoading] = useState(true);
 
-  // Charger les règles au montage du composant
+  // Charger les règles depuis Supabase au montage du composant
   useEffect(() => {
-    const loadedRules = loadRulesFromLocalStorage();
-    setPricingRules(loadedRules);
+    const loadRules = async () => {
+      setRulesLoading(true);
+      try {
+        const loadedRules = await loadRulesFromSupabase();
+        setPricingRules(loadedRules);
+      } catch (err) {
+        console.error("Erreur chargement règles:", err);
+      } finally {
+        setRulesLoading(false);
+      }
+    };
+    loadRules();
   }, []);
 
-  // Mettre à jour les règles
-  const updatePricingRules = (newRules) => {
+  // Mettre à jour les règles (sauvegarde dans Supabase)
+  const updatePricingRules = useCallback(async (newRules) => {
     setPricingRules(newRules);
-    saveRulesToLocalStorage(newRules);
-  };
+    try {
+      await saveRulesToSupabase(newRules);
+    } catch (err) {
+      console.error("Erreur sauvegarde règles:", err);
+    }
+  }, []);
 
   const filteredBrands = useMemo(() => {
     if (!brandInput) return allBrands.slice(0, 10);
@@ -410,7 +430,21 @@ const PriceToolModal = ({
         style={{ zIndex: 1000 }}
       />
 
-      <div className="modal-preview" style={{ zIndex: 1001, maxWidth: "800px", maxHeight: "90vh", overflowY: "auto" }}>
+      <div className="modal-preview" style={{
+        zIndex: 1001,
+        position: "fixed",
+        inset: "24px",
+        transform: "none",
+        top: "24px",
+        left: "24px",
+        width: "auto",
+        maxWidth: "none",
+        height: "auto",
+        maxHeight: "none",
+        overflowY: "auto",
+        borderRadius: 16,
+        boxShadow: "0 25px 50px -12px rgba(0,0,0,0.25)"
+      }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
           <h2>💲 Outil Prix - Reprise Vélo</h2>
           <button
@@ -463,9 +497,49 @@ const PriceToolModal = ({
           <>
             {/* ===== PARTIE 1: Informations Vélo ===== */}
         <div style={{ marginBottom: 24, paddingBottom: 16, borderBottom: "2px solid #e5e7eb" }}>
-          <h3 style={{ marginBottom: 12, fontSize: 14, fontWeight: 600, color: "#1f2937" }}>
-            1️⃣ Informations du Vélo
-          </h3>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+            <h3 style={{ fontSize: 14, fontWeight: 600, color: "#1f2937", margin: 0 }}>
+              1️⃣ Informations du Vélo
+            </h3>
+            <button
+              onClick={() => {
+                onFormChange({
+                  brand: "",
+                  model: "",
+                  year: "",
+                  category: "",
+                  size: "",
+                  estimatedPrice: "",
+                  skipTransportCost: false,
+                  isNewBike: false,
+                });
+                setBrandInput("");
+              }}
+              style={{
+                padding: "4px 10px",
+                background: "#f3f4f6",
+                color: "#6b7280",
+                border: "1px solid #d1d5db",
+                borderRadius: 4,
+                fontSize: 11,
+                fontWeight: 500,
+                cursor: "pointer",
+                transition: "all 0.2s",
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = "#fee2e2";
+                e.currentTarget.style.color = "#dc2626";
+                e.currentTarget.style.borderColor = "#fca5a5";
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = "#f3f4f6";
+                e.currentTarget.style.color = "#6b7280";
+                e.currentTarget.style.borderColor = "#d1d5db";
+              }}
+            >
+              Reset
+            </button>
+          </div>
 
           {/* Ligne 1: Marque, Modèle, Année */}
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 150px", gap: 12, marginBottom: 16 }}>
@@ -586,77 +660,6 @@ const PriceToolModal = ({
             </div>
           </div>
 
-        </div>
-
-        {/* ===== BOUTON RECHERCHE ANNONCES ===== */}
-        <div style={{ marginBottom: 24, textAlign: "center" }}>
-          <button
-            onClick={() => onSearchCompetitors()}
-            disabled={!form.brand || !form.model || !form.year}
-            style={{
-              padding: "10px 20px",
-              background: form.brand && form.model && form.year ? "#3b82f6" : "#cbd5e1",
-              color: "#fff",
-              border: "none",
-              borderRadius: 6,
-              fontSize: 13,
-              fontWeight: 600,
-              cursor: form.brand && form.model && form.year ? "pointer" : "not-allowed",
-              transition: "all 0.2s",
-            }}
-            onMouseEnter={(e) => {
-              if (form.brand && form.model && form.year) {
-                e.currentTarget.style.background = "#2563eb";
-              }
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.background = form.brand && form.model && form.year ? "#3b82f6" : "#cbd5e1";
-            }}
-          >
-            🔎 Recherche Annonces Concurrence
-          </button>
-        </div>
-
-        {/* Afficher les liens si recherche effectuée */}
-        {showCompetitors && competitorLinks.length > 0 && (
-          <div style={{ marginBottom: 24, padding: 16, background: "#f9fafb", borderRadius: 6 }}>
-            <h4 style={{ marginBottom: 12, fontSize: 13, fontWeight: 600 }}>
-              Annonces Concurrence ({competitorLinks.length})
-            </h4>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-              {competitorLinks.map((link, idx) => (
-                <a
-                  key={idx}
-                  href={link.url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  style={{
-                    display: "inline-block",
-                    padding: "6px 12px",
-                    background: link.color,
-                    color: "#fff",
-                    textDecoration: "none",
-                    borderRadius: 4,
-                    fontSize: 12,
-                    fontWeight: 600,
-                    transition: "opacity 0.2s",
-                  }}
-                  onMouseEnter={(e) => (e.currentTarget.style.opacity = "0.8")}
-                  onMouseLeave={(e) => (e.currentTarget.style.opacity = "1")}
-                >
-                  {link.label}
-                </a>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* ===== PARTIE 2: Algorithme Prix ===== */}
-        <div style={{ marginBottom: 24, paddingTop: 16, borderTop: "2px solid #e5e7eb" }}>
-          <h3 style={{ marginBottom: 12, fontSize: 14, fontWeight: 600, color: "#1f2937" }}>
-            2️⃣ Calcul du Prix de Reprise
-          </h3>
-
           {/* Catégorie + Type de Vélo */}
           <div style={{ marginBottom: 16 }}>
             <label style={{ display: "block", fontSize: 12, fontWeight: 600, marginBottom: 4, color: "#666" }}>
@@ -685,17 +688,14 @@ const PriceToolModal = ({
               </select>
 
               {/* Afficher la catégorie de marque (tier) */}
-              {(() => {
-                const tier = getBrandTier();
-                if (!tier) return null;
-
+              {brandTier && (() => {
                 const tierColors = {
                   "A": { bg: "#dcfce7", border: "#86efac", text: "#059669", label: "Tier A" },
                   "B": { bg: "#dbeafe", border: "#93c5fd", text: "#0369a1", label: "Tier B" },
                   "C": { bg: "#fef3c7", border: "#fcd34d", text: "#b45309", label: "Tier C" },
                   "D": { bg: "#fee2e2", border: "#fca5a5", text: "#991b1b", label: "Tier D" },
                 };
-                const tierColor = tierColors[tier] || { bg: "#f3f4f6", border: "#d1d5db", text: "#6b7280" };
+                const tierColor = tierColors[brandTier] || { bg: "#f3f4f6", border: "#d1d5db", text: "#6b7280" };
 
                 return (
                   <div
@@ -712,7 +712,7 @@ const PriceToolModal = ({
                       textAlign: "center",
                     }}
                   >
-                    {tier}
+                    {brandTier}
                   </div>
                 );
               })()}
@@ -720,7 +720,7 @@ const PriceToolModal = ({
           </div>
 
           {/* Taille - Input texte avec suggestions */}
-          <div style={{ marginBottom: 16, position: "relative" }}>
+          <div style={{ position: "relative" }}>
             <label style={{ display: "block", fontSize: 12, fontWeight: 600, marginBottom: 4, color: "#666" }}>
               Taille Cadre
             </label>
@@ -782,6 +782,77 @@ const PriceToolModal = ({
             )}
           </div>
 
+        </div>
+
+        {/* ===== PARTIE 2: Calcul du Prix de Reprise ===== */}
+        <div style={{ marginBottom: 24, paddingTop: 16, borderTop: "2px solid #e5e7eb" }}>
+          <h3 style={{ marginBottom: 12, fontSize: 14, fontWeight: 600, color: "#1f2937" }}>
+            2️⃣ Calcul du Prix de Reprise
+          </h3>
+
+          {/* ===== BOUTON RECHERCHE ANNONCES ===== */}
+          <div style={{ marginBottom: 16, textAlign: "center" }}>
+            <button
+              onClick={() => onSearchCompetitors()}
+              disabled={!form.brand || !form.model || !form.year}
+              style={{
+                padding: "10px 20px",
+                background: form.brand && form.model && form.year ? "#3b82f6" : "#cbd5e1",
+                color: "#fff",
+                border: "none",
+                borderRadius: 6,
+                fontSize: 13,
+                fontWeight: 600,
+                cursor: form.brand && form.model && form.year ? "pointer" : "not-allowed",
+                transition: "all 0.2s",
+              }}
+              onMouseEnter={(e) => {
+                if (form.brand && form.model && form.year) {
+                  e.currentTarget.style.background = "#2563eb";
+                }
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = form.brand && form.model && form.year ? "#3b82f6" : "#cbd5e1";
+              }}
+            >
+              🔎 Recherche Annonces Concurrence
+            </button>
+          </div>
+
+          {/* Afficher les liens si recherche effectuée */}
+          {showCompetitors && competitorLinks.length > 0 && (
+            <div style={{ marginBottom: 16, padding: 16, background: "#f9fafb", borderRadius: 6 }}>
+              <h4 style={{ marginBottom: 12, fontSize: 13, fontWeight: 600 }}>
+                Annonces Concurrence ({competitorLinks.length})
+              </h4>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                {competitorLinks.map((link, idx) => (
+                  <a
+                    key={idx}
+                    href={link.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{
+                      display: "inline-block",
+                      padding: "6px 12px",
+                      background: link.color,
+                      color: "#fff",
+                      textDecoration: "none",
+                      borderRadius: 4,
+                      fontSize: 12,
+                      fontWeight: 600,
+                      transition: "opacity 0.2s",
+                    }}
+                    onMouseEnter={(e) => (e.currentTarget.style.opacity = "0.8")}
+                    onMouseLeave={(e) => (e.currentTarget.style.opacity = "1")}
+                  >
+                    {link.label}
+                  </a>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* Prix de vente estimé */}
           <div style={{ marginBottom: 16 }}>
             <label style={{ display: "block", fontSize: 12, fontWeight: 600, marginBottom: 4, color: "#666" }}>
@@ -811,30 +882,59 @@ const PriceToolModal = ({
             )}
           </div>
 
-          {/* Checkbox pour les frais de transport */}
-          <div style={{ marginBottom: 16, display: "flex", alignItems: "center", gap: 8 }}>
-            <input
-              type="checkbox"
-              id="skipTransport"
-              checked={form.skipTransportCost || false}
-              onChange={(e) => handleInputChange("skipTransportCost", e.target.checked)}
-              style={{
-                width: 16,
-                height: 16,
-                cursor: "pointer",
-              }}
-            />
-            <label
-              htmlFor="skipTransport"
-              style={{
-                fontSize: 12,
-                color: "#666",
-                cursor: "pointer",
-                userSelect: "none",
-              }}
-            >
-              Le client pose le vélo à l'entrepôt (pas de frais de transport)
-            </label>
+          {/* Checkboxes pour les options */}
+          <div style={{ marginBottom: 16, display: "flex", flexDirection: "column", gap: 10 }}>
+            {/* Checkbox vélo neuf */}
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <input
+                type="checkbox"
+                id="isNewBike"
+                checked={form.isNewBike || false}
+                onChange={(e) => handleInputChange("isNewBike", e.target.checked)}
+                style={{
+                  width: 16,
+                  height: 16,
+                  cursor: "pointer",
+                }}
+              />
+              <label
+                htmlFor="isNewBike"
+                style={{
+                  fontSize: 12,
+                  color: "#666",
+                  cursor: "pointer",
+                  userSelect: "none",
+                }}
+              >
+                Le vélo est neuf (pas de frais de réparation)
+              </label>
+            </div>
+
+            {/* Checkbox pour les frais de transport */}
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <input
+                type="checkbox"
+                id="skipTransport"
+                checked={form.skipTransportCost || false}
+                onChange={(e) => handleInputChange("skipTransportCost", e.target.checked)}
+                style={{
+                  width: 16,
+                  height: 16,
+                  cursor: "pointer",
+                }}
+              />
+              <label
+                htmlFor="skipTransport"
+                style={{
+                  fontSize: 12,
+                  color: "#666",
+                  cursor: "pointer",
+                  userSelect: "none",
+                }}
+              >
+                Le client pose le vélo à l'entrepôt (pas de frais de transport)
+              </label>
+            </div>
           </div>
 
           {/* Affichage des résultats */}
@@ -1060,34 +1160,29 @@ const PriceToolModal = ({
               }
 
               // ========== Résultat FINAL (le plus granulaire disponible) ==========
-              // On prend le statut le plus spécifique (tier > price > size > category)
+              // On prend le statut le plus spécifique (price > size > category)
+              // NOTE: On s'arrête au niveau prix, on n'inclut PAS le tier (CAT_MAR)
               let finalStatus = categoryStatus;
               let finalDiff = Math.abs(categoryDiff);
               let finalActual = categoryActual;
               let finalTarget = categoryTarget;
-              let finalLevel = "category";
+              let finalLevel = "catégorie";
 
               if (sizeLetter && sizeTarget > 0) {
                 finalStatus = sizeStatus;
                 finalDiff = Math.abs(sizeDiff);
                 finalActual = sizeActual;
                 finalTarget = sizeTarget;
-                finalLevel = "size";
+                finalLevel = "taille";
               }
               if (priceBandLabel && priceTarget > 0) {
                 finalStatus = priceStatus;
                 finalDiff = Math.abs(priceDiff);
                 finalActual = priceActual;
                 finalTarget = priceTarget;
-                finalLevel = "price";
+                finalLevel = "prix";
               }
-              if (tier && tierTarget > 0) {
-                finalStatus = tierStatus;
-                finalDiff = Math.abs(tierDiff);
-                finalActual = tierActual;
-                finalTarget = tierTarget;
-                finalLevel = "tier";
-              }
+              // On ne prend PAS en compte le tier pour le calcul final du stock
 
               return {
                 // Niveau catégorie
@@ -1095,24 +1190,30 @@ const PriceToolModal = ({
                 categoryTarget,
                 categoryStatus,
                 categoryDiff: Math.abs(categoryDiff),
+                categoryPct,
                 // Niveau taille
                 sizeLetter,
                 sizeActual,
                 sizeTarget,
                 sizeStatus,
                 sizeDiff: Math.abs(sizeDiff),
+                sizePct,
                 // Niveau prix
                 priceBandLabel,
                 priceActual,
                 priceTarget,
                 priceStatus,
                 priceDiff: Math.abs(priceDiff),
+                pricePct,
                 // Niveau tier
                 tier,
                 tierActual,
                 tierTarget,
                 tierStatus,
                 tierDiff: Math.abs(tierDiff),
+                tierPct,
+                // Objectif total
+                objectiveTotal,
                 // Résultat final (le plus granulaire)
                 finalStatus,
                 finalDiff,
@@ -1131,99 +1232,6 @@ const PriceToolModal = ({
 
             return (
               <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                {/* Affichage de l'état du stock MULTI-CRITÈRES */}
-                {stockInfo && form.category && (
-                  <div style={{ padding: 10, background: "#fef3c7", border: "1px solid #fcd34d", borderRadius: 6, fontSize: 11 }}>
-                    <div style={{ fontWeight: 600, marginBottom: 8 }}>📦 État du stock - Analyse multi-critères</div>
-
-                    {/* Tableau des critères */}
-                    <div style={{ display: "flex", flexDirection: "column", gap: 4, marginBottom: 8 }}>
-                      {/* Ligne Catégorie */}
-                      <div style={{ display: "grid", gridTemplateColumns: "100px 50px 50px 1fr", gap: 4, alignItems: "center", padding: 4, background: "#fff", borderRadius: 4 }}>
-                        <div style={{ fontSize: 10, color: "#666" }}>Catégorie</div>
-                        <div style={{ fontSize: 11, fontWeight: 600, textAlign: "center" }}>{stockInfo.categoryActual}</div>
-                        <div style={{ fontSize: 11, fontWeight: 600, textAlign: "center", color: "#666" }}>{stockInfo.categoryTarget || "—"}</div>
-                        {stockInfo.categoryStatus && (
-                          <div style={{ fontSize: 10, fontWeight: 600, color: stockInfo.categoryStatus === "Surstock" ? "#dc2626" : "#2563eb", textAlign: "right" }}>
-                            {stockInfo.categoryStatus === "Surstock" ? `+${stockInfo.categoryDiff}` : `-${stockInfo.categoryDiff}`}
-                          </div>
-                        )}
-                      </div>
-
-                      {/* Ligne Taille (si sélectionnée) */}
-                      {stockInfo.sizeLetter && stockInfo.sizeTarget > 0 && (
-                        <div style={{ display: "grid", gridTemplateColumns: "100px 50px 50px 1fr", gap: 4, alignItems: "center", padding: 4, background: "#fff", borderRadius: 4 }}>
-                          <div style={{ fontSize: 10, color: "#666" }}>Taille {stockInfo.sizeLetter}</div>
-                          <div style={{ fontSize: 11, fontWeight: 600, textAlign: "center" }}>{stockInfo.sizeActual}</div>
-                          <div style={{ fontSize: 11, fontWeight: 600, textAlign: "center", color: "#666" }}>{stockInfo.sizeTarget}</div>
-                          {stockInfo.sizeStatus && (
-                            <div style={{ fontSize: 10, fontWeight: 600, color: stockInfo.sizeStatus === "Surstock" ? "#dc2626" : "#2563eb", textAlign: "right" }}>
-                              {stockInfo.sizeStatus === "Surstock" ? `+${stockInfo.sizeDiff}` : `-${stockInfo.sizeDiff}`}
-                            </div>
-                          )}
-                        </div>
-                      )}
-
-                      {/* Ligne Prix (si applicable) */}
-                      {stockInfo.priceBandLabel && (
-                        <div style={{ display: "grid", gridTemplateColumns: "100px 50px 50px 1fr", gap: 4, alignItems: "center", padding: 4, background: stockInfo.priceTarget > 0 ? "#fff" : "#f9fafb", borderRadius: 4 }}>
-                          <div style={{ fontSize: 10, color: "#666" }}>Prix: {stockInfo.priceBandLabel}</div>
-                          <div style={{ fontSize: 11, fontWeight: 600, textAlign: "center" }}>{stockInfo.priceActual}</div>
-                          <div style={{ fontSize: 11, fontWeight: 600, textAlign: "center", color: "#666" }}>{stockInfo.priceTarget || "—"}</div>
-                          {stockInfo.priceStatus ? (
-                            <div style={{ fontSize: 10, fontWeight: 600, color: stockInfo.priceStatus === "Surstock" ? "#dc2626" : "#2563eb", textAlign: "right" }}>
-                              {stockInfo.priceStatus === "Surstock" ? `+${stockInfo.priceDiff}` : `-${stockInfo.priceDiff}`}
-                            </div>
-                          ) : stockInfo.priceTarget === 0 && (
-                            <div style={{ fontSize: 9, color: "#999", textAlign: "right" }}>
-                              (non configuré)
-                            </div>
-                          )}
-                        </div>
-                      )}
-
-                      {/* Ligne Tier (si marque sélectionnée) */}
-                      {stockInfo.tier && stockInfo.tierTarget > 0 && (
-                        <div style={{ display: "grid", gridTemplateColumns: "100px 50px 50px 1fr", gap: 4, alignItems: "center", padding: 4, background: "#fff", borderRadius: 4 }}>
-                          <div style={{ fontSize: 10, color: "#666" }}>Tier {stockInfo.tier}</div>
-                          <div style={{ fontSize: 11, fontWeight: 600, textAlign: "center" }}>{stockInfo.tierActual}</div>
-                          <div style={{ fontSize: 11, fontWeight: 600, textAlign: "center", color: "#666" }}>{stockInfo.tierTarget}</div>
-                          {stockInfo.tierStatus && (
-                            <div style={{ fontSize: 10, fontWeight: 600, color: stockInfo.tierStatus === "Surstock" ? "#dc2626" : "#2563eb", textAlign: "right" }}>
-                              {stockInfo.tierStatus === "Surstock" ? `+${stockInfo.tierDiff}` : `-${stockInfo.tierDiff}`}
-                            </div>
-                          )}
-                        </div>
-                      )}
-                    </div>
-
-                    {/* En-tête des colonnes */}
-                    <div style={{ display: "grid", gridTemplateColumns: "100px 50px 50px 1fr", gap: 4, marginBottom: 4, fontSize: 9, color: "#999" }}>
-                      <div>Critère</div>
-                      <div style={{ textAlign: "center" }}>Actuel</div>
-                      <div style={{ textAlign: "center" }}>Objectif</div>
-                      <div style={{ textAlign: "right" }}>Écart</div>
-                    </div>
-
-                    {/* Résultat final */}
-                    {stockInfo.finalStatus && (
-                      <div style={{
-                        padding: 8,
-                        borderRadius: 4,
-                        background: stockInfo.finalStatus === "Surstock" ? "#fee2e2" : "#dbeafe",
-                        color: stockInfo.finalStatus === "Surstock" ? "#dc2626" : "#2563eb",
-                        fontWeight: 600,
-                        textAlign: "center",
-                        marginTop: 4
-                      }}>
-                        {stockInfo.finalStatus === "Surstock"
-                          ? `⚠️ SURSTOCK +${stockInfo.finalDiff} unités (niveau: ${stockInfo.finalLevel})`
-                          : `📉 Sousstock -${stockInfo.finalDiff} unités (niveau: ${stockInfo.finalLevel})`}
-                      </div>
-                    )}
-                  </div>
-                )}
-
                 {/* ÉTAPE 1 - Marge */}
                 <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
                   <div
@@ -1303,16 +1311,16 @@ const PriceToolModal = ({
                     style={{
                       flex: 1,
                       padding: 12,
-                      background: "#fef3c7",
-                      border: "1px solid #fcd34d",
+                      background: form.isNewBike ? "#e0e7ff" : "#fef3c7",
+                      border: form.isNewBike ? "1px solid #a5b4fc" : "1px solid #fcd34d",
                       borderRadius: 6,
                     }}
                   >
                     <div style={{ fontSize: 10, color: "#666", marginBottom: 3 }}>
-                      Étape 2 - Frais de pièces ({(result.step2.partsFeeRate).toFixed(1)}%)
+                      Étape 2 - Frais de pièces {form.isNewBike ? "✨ (vélo neuf)" : `(${(result.step2.partsFeeRate).toFixed(1)}%)`}
                     </div>
-                    <div style={{ fontSize: 16, fontWeight: 700, color: "#b45309" }}>
-                      -{result.step2.partsFee.toFixed(2)}€
+                    <div style={{ fontSize: 16, fontWeight: 700, color: form.isNewBike ? "#4c51bf" : "#b45309" }}>
+                      {form.isNewBike ? "0€" : `-${result.step2.partsFee.toFixed(2)}€`}
                     </div>
                     <div style={{ fontSize: 10, color: "#999", marginTop: 3 }}>
                       → {result.step2.result.toFixed(2)}€
@@ -1348,22 +1356,28 @@ const PriceToolModal = ({
                       marginTop: -5,
                       marginLeft: 40,
                       padding: 10,
-                      background: "#fffbeb",
-                      border: "1px solid #fcd34d",
+                      background: form.isNewBike ? "#e0e7ff" : "#fffbeb",
+                      border: form.isNewBike ? "1px solid #a5b4fc" : "1px solid #fcd34d",
                       borderRadius: 4,
                       fontSize: 10,
                       color: "#666",
                     }}
                   >
-                    <div style={{ marginBottom: 4 }}>
-                      <strong>Taux de frais de pièces :</strong> {result.step2.partsFeeRate.toFixed(1)}%
-                    </div>
-                    <div style={{ marginBottom: 4 }}>
-                      <strong>Montant de frais :</strong> {result.step2.partsFee.toFixed(2)}€
-                    </div>
-                    <div style={{ marginTop: 4, paddingTop: 4, borderTop: "1px solid #fcd34d" }}>
-                      {result.step1.result.toFixed(2)}€ - {result.step2.partsFee.toFixed(2)}€ = <span style={{ color: "#b45309", fontWeight: 600 }}>{result.step2.result.toFixed(2)}€</span>
-                    </div>
+                    {form.isNewBike ? (
+                      <div>Les frais de pièces sont <strong>ignorés</strong> (vélo neuf, pas de réparation nécessaire)</div>
+                    ) : (
+                      <>
+                        <div style={{ marginBottom: 4 }}>
+                          <strong>Taux de frais de pièces :</strong> {result.step2.partsFeeRate.toFixed(1)}%
+                        </div>
+                        <div style={{ marginBottom: 4 }}>
+                          <strong>Montant de frais :</strong> {result.step2.partsFee.toFixed(2)}€
+                        </div>
+                        <div style={{ marginTop: 4, paddingTop: 4, borderTop: "1px solid #fcd34d" }}>
+                          {result.step1.result.toFixed(2)}€ - {result.step2.partsFee.toFixed(2)}€ = <span style={{ color: "#b45309", fontWeight: 600 }}>{result.step2.result.toFixed(2)}€</span>
+                        </div>
+                      </>
+                    )}
                   </div>
                 )}
 
@@ -1486,7 +1500,7 @@ const PriceToolModal = ({
                             <div><strong>Catégorie :</strong> {form.category}</div>
                             <div><strong>Multiplicateur :</strong> ×{result.step4.categoryTypeMultiplier.toFixed(2)}</div>
                             <div style={{ marginTop: 4, paddingTop: 4, borderTop: "1px solid #93c5fd" }}>
-                              {result.step3.result.toFixed(2)}€ × {result.step4.categoryTypeMultiplier.toFixed(2)} = <span style={{ fontWeight: 600 }}>{result.step4.afterCategoryType.toFixed(2)}€</span>
+                              {result.step3.result.toFixed(2)}€ × {result.step4.categoryTypeMultiplier.toFixed(2)} = <span style={{ fontWeight: 600 }}>{(result.step4.afterCategoryType ?? result.step3.result * result.step4.categoryTypeMultiplier).toFixed(2)}€</span>
                             </div>
                           </div>
                         )}
@@ -1537,7 +1551,7 @@ const PriceToolModal = ({
                             <div><strong>Prix estimé :</strong> {form.estimatedPrice}€</div>
                             <div><strong>Multiplicateur :</strong> ×{result.step4.priceBandMultiplier.toFixed(2)}</div>
                             <div style={{ marginTop: 4, paddingTop: 4, borderTop: "1px solid #fcd34d" }}>
-                              {result.step4.afterCategoryType.toFixed(2)}€ × {result.step4.priceBandMultiplier.toFixed(2)} = <span style={{ fontWeight: 600 }}>{result.step4.afterPriceBand.toFixed(2)}€</span>
+                              {(result.step4.afterCategoryType ?? result.step3.result).toFixed(2)}€ × {result.step4.priceBandMultiplier.toFixed(2)} = <span style={{ fontWeight: 600 }}>{(result.step4.afterPriceBand ?? result.step3.result * result.step4.priceBandMultiplier).toFixed(2)}€</span>
                             </div>
                           </div>
                         )}
@@ -1587,7 +1601,7 @@ const PriceToolModal = ({
                             <div><strong>Taille :</strong> {mapFrameSizeToLetter(form.size)}</div>
                             <div><strong>Multiplicateur :</strong> ×{result.step4.sizeMultiplier.toFixed(2)}</div>
                             <div style={{ marginTop: 4, paddingTop: 4, borderTop: "1px solid #fbcfe8" }}>
-                              {result.step4.afterPriceBand.toFixed(2)}€ × {result.step4.sizeMultiplier.toFixed(2)} = <span style={{ fontWeight: 600 }}>{result.step4.afterSize.toFixed(2)}€</span>
+                              {(result.step4.afterPriceBand ?? result.step4.afterCategoryType ?? result.step3.result).toFixed(2)}€ × {result.step4.sizeMultiplier.toFixed(2)} = <span style={{ fontWeight: 600 }}>{(result.step4.afterSize ?? result.step3.result * result.step4.sizeMultiplier).toFixed(2)}€</span>
                             </div>
                           </div>
                         )}
@@ -1637,7 +1651,7 @@ const PriceToolModal = ({
                             <div><strong>Tier de marque :</strong> {getBrandTier()}</div>
                             <div><strong>Multiplicateur :</strong> ×{result.step4.tierMultiplier.toFixed(2)}</div>
                             <div style={{ marginTop: 4, paddingTop: 4, borderTop: "1px solid #86efac" }}>
-                              {result.step4.afterSize.toFixed(2)}€ × {result.step4.tierMultiplier.toFixed(2)} = <span style={{ fontWeight: 600 }}>{result.step4.afterTier.toFixed(2)}€</span>
+                              {(result.step4.afterSize ?? result.step4.afterPriceBand ?? result.step4.afterCategoryType ?? result.step3.result).toFixed(2)}€ × {result.step4.tierMultiplier.toFixed(2)} = <span style={{ fontWeight: 600 }}>{(result.step4.afterTier ?? result.step3.result * result.step4.tierMultiplier).toFixed(2)}€</span>
                             </div>
                           </div>
                         )}
@@ -1646,29 +1660,47 @@ const PriceToolModal = ({
                   </>
                 )}
 
-                {/* ÉTAPE 5 - Ajustement par état du stock */}
-                {result.step4?.stockMultiplier && (
+                {/* ÉTAPE 5 - Ajustement par état du stock (avec analyse multi-critères) */}
+                {stockInfo && form.category && (
                   <>
                     <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                      <div style={{ flex: 1, padding: 12, background: "#fef3c7", border: "1px solid #fcd34d", borderRadius: 6 }}>
+                      <div style={{
+                        flex: 1,
+                        padding: 12,
+                        background: stockInfo.finalStatus === "Surstock" ? "#fee2e2" : stockInfo.finalStatus === "Sousstock" ? "#dbeafe" : "#f3f4f6",
+                        border: `1px solid ${stockInfo.finalStatus === "Surstock" ? "#fca5a5" : stockInfo.finalStatus === "Sousstock" ? "#93c5fd" : "#d1d5db"}`,
+                        borderRadius: 6
+                      }}>
                         <div style={{ fontSize: 10, color: "#666", marginBottom: 3 }}>
-                          Étape 5 - Ajustement par État du Stock
+                          Étape 5 - État du Stock
                         </div>
-                        <div style={{ fontSize: 16, fontWeight: 700, color: result.step4.stockMultiplier > 1 ? "#059669" : "#dc2626" }}>
-                          {result.step4.stockMultiplier > 1 ? "+" : ""}
-                          {((result.step4.stockMultiplier - 1) * 100).toFixed(1)}%
-                        </div>
-                        <div style={{ fontSize: 10, color: "#999", marginTop: 3 }}>
-                          → {result.step4.afterStock.toFixed(2)}€
+                        {result.step4?.stockMultiplier ? (
+                          <>
+                            <div style={{ fontSize: 16, fontWeight: 700, color: result.step4.stockMultiplier > 1 ? "#059669" : "#dc2626" }}>
+                              {result.step4.stockMultiplier > 1 ? "+" : ""}
+                              {((result.step4.stockMultiplier - 1) * 100).toFixed(1)}%
+                            </div>
+                            <div style={{ fontSize: 10, color: "#999", marginTop: 3 }}>
+                              → {result.step4.afterStock.toFixed(2)}€
+                            </div>
+                          </>
+                        ) : (
+                          <div style={{ fontSize: 16, fontWeight: 700, color: "#6b7280" }}>
+                            0%
+                          </div>
+                        )}
+                        {/* Mini résumé inline */}
+                        <div style={{ fontSize: 9, color: stockInfo.finalStatus === "Surstock" ? "#dc2626" : stockInfo.finalStatus === "Sousstock" ? "#2563eb" : "#666", marginTop: 4 }}>
+                          {stockInfo.finalActual}/{stockInfo.finalTarget} unités • {stockInfo.finalStatus || "équilibré"}
                         </div>
                       </div>
                       <button
                         onClick={() => setShowAlgoDetails(showAlgoDetails === 50 ? null : 50)}
                         style={{
                           width: 28, height: 28, borderRadius: "50%",
-                          border: "2px solid #3b82f6",
-                          background: showAlgoDetails === 50 ? "#3b82f6" : "#fff",
-                          color: showAlgoDetails === 50 ? "#fff" : "#3b82f6",
+                          border: `2px solid ${stockInfo.finalStatus === "Surstock" ? "#dc2626" : stockInfo.finalStatus === "Sousstock" ? "#2563eb" : "#6b7280"}`,
+                          background: showAlgoDetails === 50 ? (stockInfo.finalStatus === "Surstock" ? "#dc2626" : stockInfo.finalStatus === "Sousstock" ? "#2563eb" : "#6b7280") : "#fff",
+                          color: showAlgoDetails === 50 ? "#fff" : (stockInfo.finalStatus === "Surstock" ? "#dc2626" : stockInfo.finalStatus === "Sousstock" ? "#2563eb" : "#6b7280"),
                           fontSize: 12, fontWeight: 700, cursor: "pointer",
                           padding: 0, display: "flex", alignItems: "center", justifyContent: "center"
                         }}
@@ -1677,13 +1709,106 @@ const PriceToolModal = ({
                       </button>
                     </div>
                     {showAlgoDetails === 50 && (
-                      <div style={{ marginTop: -5, marginLeft: 40, padding: 10, background: "#fef9e7", border: "1px solid #fcd34d", borderRadius: 4, fontSize: 10, color: "#666" }}>
-                        <div><strong>État du stock :</strong> {result.step4.stockCondition?.stockStatus}</div>
-                        <div><strong>Seuil d'unités :</strong> {result.step4.stockCondition?.unitDifference}</div>
-                        <div><strong>Multiplicateur :</strong> ×{result.step4.stockMultiplier.toFixed(2)}</div>
-                        <div style={{ marginTop: 4, paddingTop: 4, borderTop: "1px solid #fcd34d" }}>
-                          {result.step4.afterTier?.toFixed(2) || result.step4.afterSize?.toFixed(2) || result.step3.result.toFixed(2)}€ × {result.step4.stockMultiplier.toFixed(2)} = <span style={{ fontWeight: 600 }}>{result.step4.afterStock.toFixed(2)}€</span>
+                      <div style={{ marginTop: -5, marginLeft: 40, padding: 10, background: "#f9fafb", border: "1px solid #e5e7eb", borderRadius: 4, fontSize: 10, color: "#666" }}>
+                        {/* Objectif total */}
+                        <div style={{ marginBottom: 8, fontSize: 9, color: "#888" }}>
+                          Objectif total: <strong>{stockInfo.objectiveTotal}</strong> unités
                         </div>
+                        {/* En-tête */}
+                        <div style={{ display: "grid", gridTemplateColumns: "70px 35px 65px 45px 70px", gap: 4, marginBottom: 6, fontSize: 9, color: "#999", fontWeight: 600 }}>
+                          <div>Critère</div>
+                          <div style={{ textAlign: "center" }}>%obj</div>
+                          <div style={{ textAlign: "center" }}>Actuel</div>
+                          <div style={{ textAlign: "center" }}>Obj.</div>
+                          <div style={{ textAlign: "left" }}>Écart</div>
+                        </div>
+                        {/* Lignes */}
+                        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                          {/* Catégorie */}
+                          {(() => {
+                            const pctActuel = stockInfo.categoryTarget > 0 ? (stockInfo.categoryActual / stockInfo.categoryTarget * 100) : 0;
+                            return (
+                              <div style={{ display: "grid", gridTemplateColumns: "70px 35px 65px 45px 70px", gap: 4, alignItems: "center" }}>
+                                <div style={{ fontSize: 9 }}>Catégorie</div>
+                                <div style={{ fontSize: 8, textAlign: "center", color: "#888" }}>{stockInfo.categoryPct ? `${(stockInfo.categoryPct * 100).toFixed(0)}%` : "—"}</div>
+                                <div style={{ fontSize: 9, textAlign: "center" }}>
+                                  <span style={{ fontWeight: 600 }}>{stockInfo.categoryActual}</span>
+                                  <span style={{ color: "#888", marginLeft: 2 }}>({pctActuel.toFixed(0)}%)</span>
+                                </div>
+                                <div style={{ fontSize: 9, textAlign: "center", color: "#888" }}>{stockInfo.categoryTarget || "—"}</div>
+                                <div style={{ fontSize: 9, fontWeight: 600, color: stockInfo.categoryStatus === "Surstock" ? "#dc2626" : stockInfo.categoryStatus === "Sousstock" ? "#2563eb" : "#666", textAlign: "left" }}>
+                                  {stockInfo.categoryStatus ? (
+                                    <>
+                                      {stockInfo.categoryStatus === "Surstock" ? `+${stockInfo.categoryDiff}` : `-${stockInfo.categoryDiff}`}
+                                      <span style={{ color: "#888", fontWeight: 400, marginLeft: 2 }}>
+                                        ({stockInfo.categoryStatus === "Surstock" ? "+" : "-"}{stockInfo.categoryTarget > 0 ? (stockInfo.categoryDiff / stockInfo.categoryTarget * 100).toFixed(0) : 0}%)
+                                      </span>
+                                    </>
+                                  ) : "—"}
+                                </div>
+                              </div>
+                            );
+                          })()}
+                          {/* Taille */}
+                          {stockInfo.sizeLetter && (() => {
+                            const pctActuel = stockInfo.sizeTarget > 0 ? (stockInfo.sizeActual / stockInfo.sizeTarget * 100) : 0;
+                            return (
+                              <div style={{ display: "grid", gridTemplateColumns: "70px 35px 65px 45px 70px", gap: 4, alignItems: "center" }}>
+                                <div style={{ fontSize: 9 }}>Taille {stockInfo.sizeLetter}</div>
+                                <div style={{ fontSize: 8, textAlign: "center", color: "#888" }}>{stockInfo.sizePct ? `${(stockInfo.sizePct * 100).toFixed(0)}%` : "—"}</div>
+                                <div style={{ fontSize: 9, textAlign: "center" }}>
+                                  <span style={{ fontWeight: 600 }}>{stockInfo.sizeActual}</span>
+                                  <span style={{ color: "#888", marginLeft: 2 }}>({pctActuel.toFixed(0)}%)</span>
+                                </div>
+                                <div style={{ fontSize: 9, textAlign: "center", color: "#888" }}>{stockInfo.sizeTarget || "—"}</div>
+                                <div style={{ fontSize: 9, fontWeight: 600, color: stockInfo.sizeStatus === "Surstock" ? "#dc2626" : stockInfo.sizeStatus === "Sousstock" ? "#2563eb" : "#666", textAlign: "left" }}>
+                                  {stockInfo.sizeStatus ? (
+                                    <>
+                                      {stockInfo.sizeStatus === "Surstock" ? `+${stockInfo.sizeDiff}` : `-${stockInfo.sizeDiff}`}
+                                      <span style={{ color: "#888", fontWeight: 400, marginLeft: 2 }}>
+                                        ({stockInfo.sizeStatus === "Surstock" ? "+" : "-"}{stockInfo.sizeTarget > 0 ? (stockInfo.sizeDiff / stockInfo.sizeTarget * 100).toFixed(0) : 0}%)
+                                      </span>
+                                    </>
+                                  ) : "—"}
+                                </div>
+                              </div>
+                            );
+                          })()}
+                          {/* Prix */}
+                          {stockInfo.priceBandLabel && (() => {
+                            const pctActuel = stockInfo.priceTarget > 0 ? (stockInfo.priceActual / stockInfo.priceTarget * 100) : 0;
+                            return (
+                              <div style={{ display: "grid", gridTemplateColumns: "70px 35px 65px 45px 70px", gap: 4, alignItems: "center" }}>
+                                <div style={{ fontSize: 9 }}>{stockInfo.priceBandLabel}</div>
+                                <div style={{ fontSize: 8, textAlign: "center", color: "#888" }}>{stockInfo.pricePct ? `${(stockInfo.pricePct * 100).toFixed(0)}%` : "—"}</div>
+                                <div style={{ fontSize: 9, textAlign: "center" }}>
+                                  <span style={{ fontWeight: 600 }}>{stockInfo.priceActual}</span>
+                                  <span style={{ color: "#888", marginLeft: 2 }}>({pctActuel.toFixed(0)}%)</span>
+                                </div>
+                                <div style={{ fontSize: 9, textAlign: "center", color: "#888" }}>{stockInfo.priceTarget || "—"}</div>
+                                <div style={{ fontSize: 9, fontWeight: 600, color: stockInfo.priceStatus === "Surstock" ? "#dc2626" : stockInfo.priceStatus === "Sousstock" ? "#2563eb" : "#666", textAlign: "left" }}>
+                                  {stockInfo.priceStatus ? (
+                                    <>
+                                      {stockInfo.priceStatus === "Surstock" ? `+${stockInfo.priceDiff}` : `-${stockInfo.priceDiff}`}
+                                      <span style={{ color: "#888", fontWeight: 400, marginLeft: 2 }}>
+                                        ({stockInfo.priceStatus === "Surstock" ? "+" : "-"}{stockInfo.priceTarget > 0 ? (stockInfo.priceDiff / stockInfo.priceTarget * 100).toFixed(0) : 0}%)
+                                      </span>
+                                    </>
+                                  ) : "—"}
+                                </div>
+                              </div>
+                            );
+                          })()}
+                        </div>
+                        {/* Règle appliquée */}
+                        {result.step4?.stockMultiplier && (
+                          <div style={{ marginTop: 8, paddingTop: 6, borderTop: "1px solid #e5e7eb" }}>
+                            <div><strong>Règle appliquée :</strong> {result.step4.stockCondition?.stockStatus} ≥{result.step4.stockCondition?.unitDifference} unités → ×{result.step4.stockMultiplier.toFixed(2)}</div>
+                            <div style={{ marginTop: 4 }}>
+                              {(result.step4.afterTier ?? result.step4.afterSize ?? result.step4.afterPriceBand ?? result.step4.afterCategoryType ?? result.step3.result).toFixed(2)}€ × {result.step4.stockMultiplier.toFixed(2)} = <span style={{ fontWeight: 600 }}>{(result.step4.afterStock ?? result.step3.result).toFixed(2)}€</span>
+                            </div>
+                          </div>
+                        )}
                       </div>
                     )}
                   </>

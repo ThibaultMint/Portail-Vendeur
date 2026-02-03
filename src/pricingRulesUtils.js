@@ -1,4 +1,5 @@
 // Utilitaires pour la gestion des règles de prix
+import { supabase } from "./supabaseClient";
 
 const DEFAULT_RULES = {
   version: 1,
@@ -9,25 +10,31 @@ const DEFAULT_RULES = {
   stockRules: [],
 };
 
-// Charger les règles depuis localStorage
-export const loadRulesFromLocalStorage = () => {
+// Charger les règles depuis Supabase
+export const loadRulesFromSupabase = async () => {
   try {
-    const stored = localStorage.getItem("priceToolRules");
-    if (!stored) {
+    const { data, error } = await supabase
+      .from("pricing_rules")
+      .select("*")
+      .eq("id", "global")
+      .single();
+
+    if (error) {
+      console.warn("⚠️ Erreur chargement règles Supabase:", error.message);
       return DEFAULT_RULES;
     }
 
-    const parsed = JSON.parse(stored);
-
-    // Valider la structure
-    if (!parsed.version || parsed.version !== 1) {
-      console.warn("❌ Version invalide des règles, utilisation des valeurs par défaut");
+    if (!data) {
       return DEFAULT_RULES;
     }
 
     return {
-      ...DEFAULT_RULES,
-      ...parsed,
+      version: data.version || 1,
+      categoryTypeRules: data.category_type_rules || [],
+      priceBandRules: data.price_band_rules || [],
+      sizeRules: data.size_rules || [],
+      tierRules: data.tier_rules || [],
+      stockRules: data.stock_rules || [],
     };
   } catch (err) {
     console.error("❌ Erreur chargement des règles de prix:", err);
@@ -35,15 +42,45 @@ export const loadRulesFromLocalStorage = () => {
   }
 };
 
-// Sauvegarder les règles dans localStorage
-export const saveRulesToLocalStorage = (rules) => {
+// Sauvegarder les règles dans Supabase
+export const saveRulesToSupabase = async (rules) => {
   try {
-    localStorage.setItem("priceToolRules", JSON.stringify(rules));
-    console.log("✅ Règles de prix sauvegardées");
+    const { error } = await supabase
+      .from("pricing_rules")
+      .upsert({
+        id: "global",
+        version: rules.version || 1,
+        category_type_rules: rules.categoryTypeRules || [],
+        price_band_rules: rules.priceBandRules || [],
+        size_rules: rules.sizeRules || [],
+        tier_rules: rules.tierRules || [],
+        stock_rules: rules.stockRules || [],
+        updated_at: new Date().toISOString(),
+      });
+
+    if (error) {
+      console.error("❌ Erreur sauvegarde Supabase:", error.message);
+      throw error;
+    }
+
+    console.log("✅ Règles de prix sauvegardées dans Supabase");
   } catch (err) {
     console.error("❌ Erreur sauvegarde des règles de prix:", err);
     throw err;
   }
+};
+
+// Fonctions legacy pour compatibilité (utilisent maintenant Supabase)
+export const loadRulesFromLocalStorage = () => {
+  // Retourne les règles par défaut - le chargement async se fait via loadRulesFromSupabase
+  console.warn("⚠️ loadRulesFromLocalStorage est déprécié, utiliser loadRulesFromSupabase");
+  return DEFAULT_RULES;
+};
+
+export const saveRulesToLocalStorage = (rules) => {
+  // Appelle la version Supabase
+  console.warn("⚠️ saveRulesToLocalStorage est déprécié, utiliser saveRulesToSupabase");
+  saveRulesToSupabase(rules);
 };
 
 // Générer un UUID v4
@@ -121,8 +158,15 @@ export const applyPricingRules = (basePrice, rules, context) => {
   }
 
   // 2. Règle tranche de prix (conditions numériques avec opérateurs)
+  // Si une règle a une catégorie spécifique, elle ne s'applique qu'à cette catégorie
   const priceRule = rules.priceBandRules.find((r) => {
     if (!r.enabled) return false;
+
+    // Vérifier si la règle a une catégorie spécifique
+    // Si oui, elle ne s'applique que si la catégorie correspond
+    if (r.category && r.category !== "" && r.category !== context.categoryType) {
+      return false;
+    }
 
     const estimatedPrice = context.estimatedPrice;
     const threshold = r.threshold;

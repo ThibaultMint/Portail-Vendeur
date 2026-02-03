@@ -647,7 +647,7 @@ const PricingRulesManager = ({
 
       {/* Section 5: Stock */}
       <RuleSection
-        title="5️⃣ Règles d'Ajustement par État du Stock"
+        title="5️⃣ Règles d'Ajustement par État du Stock (lié au Parking Virtuel)"
         rules={rules.stockRules}
         type="stock"
         conditionOptions={["Surstock", "Sousstock"]}

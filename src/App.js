@@ -38,6 +38,13 @@ import { CSS } from "@dnd-kit/utilities";
 import { useDroppable } from "@dnd-kit/core";
 import { pointerWithin } from "@dnd-kit/core";
 import { rectSortingStrategy } from "@dnd-kit/sortable";
+import {
+  loadParkingRulesFromSupabase,
+  saveParkingRulesToSupabase,
+  initializeCategoryPct,
+  initializeSizePct,
+  initializeTierPct
+} from "./parkingRulesUtils";
 
 // ====== "vide" helpers ======
 const EMPTY_TOKEN = "__EMPTY__";
@@ -1311,17 +1318,15 @@ function BrandTierBoard({ tierPct = {}, onTierPctChange, selectedCategoryType })
     setError("");
 
     try {
-      // 1) Marques du stock pour la catégorie choisie
+      // 1) Marques du stock - TOUTES les marques de tout le stock (sans filtre catégorie)
       const stockQuery = supabase
         .from("velosmint")
-        .select('Marque, "Catégorie", "Type de vélo"')
-        .eq("Catégorie", bikeCategory)
-        .eq("Type de vélo", bikeType);
+        .select("Marque");
 
       const { data: stockRows, error: e1 } = await stockQuery;
       if (e1) throw e1;
 
-      const brandsFromStock = uniq((stockRows || []).map((r) => normBrand(r.Marque)));
+      const brandsFromStock = uniq((stockRows || []).map((r) => normBrand(r.Marque)).filter(Boolean));
 
       // 2) Marques ajoutées à la main (catalog)
       const { data: catRows, error: eCat } = await supabase.from("brand_catalog").select("brand");
@@ -2189,25 +2194,18 @@ const getCategoryFromRow = (row) => {
 
 const getCatMarFromRow = (row) => {
   const category = norm(row?.["Catégorie"] ?? row?.["Categorie"] ?? "");
-  const bikeType = norm(row?.["Type de vélo"] ?? row?.["Type de velo"] ?? row?.["Type velo"] ?? ""); // "Electrique" | "Musculaire"
   const brand = norm(row?.["Marque"] ?? "");
 
-  if (!category || !bikeType || !brand) return "";
+  if (!category || !brand) return "";
 
-  // 1) règle spécifique (Catégorie + Type + Marque)
-  const k1 = makeTierKey(category, bikeType, brand);
-  const t1 = brandTiersIndex.get(k1);
-  if (t1) return t1;
+  // Clé simple: catégorie + marque (sans bike_type, car BrandTierBoard ne sauvegarde pas bike_type)
+  const key = `${category}||${brand}`;
+  const tier = brandTiersIndex.get(key);
 
-  // 2) fallback si tu utilises "Tous" côté brand_tiers (optionnel)
-  const k2 = makeTierKey(category, "Tous", brand);
-  const t2 = brandTiersIndex.get(k2);
-  if (t2) return t2;
+  if (tier) return tier;
 
-  // 🐛 Debug
-  if (category && bikeType && brand) {
-    console.log(`❌ Pas de tier pour: ${k1}`);
-  }
+  // 🐛 Debug (désactivé pour éviter le spam)
+  // console.log(`❌ Pas de tier pour: ${key}`);
 
   return "";
 };
@@ -2291,7 +2289,7 @@ const loadBrandTiersIndex = async () => {
   try {
     const { data, error } = await supabase
       .from("brand_tiers")
-      .select("bike_category,bike_type,brand,tier");
+      .select("bike_category,brand,tier");
 
     if (error) throw error;
 
@@ -2299,11 +2297,15 @@ const loadBrandTiersIndex = async () => {
 
     const m = new Map();
     (data || []).forEach((r) => {
-      const k = makeTierKey(r.bike_category, r.bike_type, r.brand);
+      // Clé simple: catégorie + marque (normalisées)
+      const cat = norm(r.bike_category);
+      const brand = norm(r.brand);
       const t = norm(r.tier).toUpperCase();
-      if (k && ["A", "B", "C", "D"].includes(t)) {
-        m.set(k, t);
-        console.log(`  ✅ ${k} → ${t}`);
+
+      if (cat && brand && ["A", "B", "C", "D"].includes(t)) {
+        const key = `${cat}||${brand}`;
+        m.set(key, t);
+        console.log(`  ✅ ${key} → ${t}`);
       }
     });
 
@@ -2753,6 +2755,7 @@ const promo_modifyExisting = async () => {
 // ===== EXPORT MODAL =====
 const [exportModalOpen, setExportModalOpen] = useState(false);
 const [exportBase, setExportBase] = useState("url"); // "url" | "serial" | "variant_id"
+const [exportPromoSource, setExportPromoSource] = useState("configured"); // "configured" (mode_pricing) | "actual" (velosmint)
 
 const openExportModal = () => setExportModalOpen(true);
 const closeExportModal = () => setExportModalOpen(false);
@@ -2783,11 +2786,18 @@ const exportDbNow = () => {
   const rows = [];
 
   velos.forEach((v) => {
-    // promo depuis pricingByUrl
-    const promoAmount =
-      v?.URL && pricingByUrl?.[v.URL]?.mint_promo_amount != null
-        ? pricingByUrl[v.URL].mint_promo_amount
-        : "";
+    // promo selon la source choisie
+    let promoAmount = "";
+    if (exportPromoSource === "configured") {
+      // Promo configurée dans mode_pricing (mint_promo_amount)
+      promoAmount =
+        v?.URL && pricingByUrl?.[v.URL]?.mint_promo_amount != null
+          ? pricingByUrl[v.URL].mint_promo_amount
+          : "";
+    } else {
+      // Promo actuelle dans velosmint (Montant promo)
+      promoAmount = v?.["Montant promo"] ?? "";
+    }
 
     const prixReduit = v?.["Prix réduit"] ?? "";
 
@@ -2839,7 +2849,7 @@ const exportDbNow = () => {
       ? "Numéro de série"
       : "URL",
     "Prix réduit",
-    "mint_promo_amount",
+    exportPromoSource === "configured" ? "mint_promo_amount" : "Montant promo (actuel)",
   ];
 
   const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
@@ -3204,32 +3214,38 @@ const [priceBands, setPriceBands] = useState([]); // Tranches actuelles (pour l'
 const [allPriceBandsByCategory, setAllPriceBandsByCategory] = useState({}); // Toutes les tranches de toutes les catégories
 const [priceBandsLoading, setPriceBandsLoading] = useState(true); // Loading state pour le cache
 
-// Charger les objectifs de catégorie depuis Supabase au chargement
+// Charger toutes les règles parking depuis la table unifiée pv_parking_rules
 useEffect(() => {
-  async function loadCategoryPct() {
-    if (parkingCategoryTypeOptions.length === 0) {
-      setParkingRules(prev => ({ ...prev, categoryPct: {} }));
-      return;
-    }
-    // Lire depuis la table pv_category_targets
-    const { data, error } = await supabase
-      .from("pv_category_targets")
-      .select("category, target_pct");
-    let categoryPct = {};
-    if (!error && data && data.length > 0) {
-      data.forEach(row => {
-        categoryPct[row.category] = (row.target_pct ?? 0) / 100;
+  async function loadAllParkingRules() {
+    try {
+      const rules = await loadParkingRulesFromSupabase();
+
+      // Initialiser les catégories avec les valeurs par défaut si nécessaire
+      const categoryLabels = parkingCategoryTypeOptions.map(opt => opt.label);
+      const categoryPct = initializeCategoryPct(categoryLabels, rules.categoryPct);
+
+      // Initialiser les tailles
+      const STANDARD_SIZES = ["XS", "S", "M", "L", "XL"];
+      const sizePct = initializeSizePct(STANDARD_SIZES, rules.sizePct);
+
+      // Initialiser les tiers
+      const tierPct = initializeTierPct(rules.tierPct);
+
+      setParkingRules({
+        objectiveTotal: rules.objectiveTotal,
+        categoryPct,
+        sizePct,
+        pricePct: {}, // pricePct vient des tranches de prix par catégorie
       });
+
+      setParkingTierPct(tierPct);
+
+      console.log("✅ Règles parking chargées depuis pv_parking_rules:", { objectiveTotal: rules.objectiveTotal, categoryPct, sizePct, tierPct });
+    } catch (err) {
+      console.error("❌ Erreur chargement règles parking:", err);
     }
-    // S'assurer que toutes les catégories sont présentes
-    parkingCategoryTypeOptions.forEach(opt => {
-      if (!(opt.label in categoryPct)) {
-        categoryPct[opt.label] = 1 / parkingCategoryTypeOptions.length;
-      }
-    });
-    setParkingRules(prev => ({ ...prev, categoryPct }));
   }
-  loadCategoryPct();
+  loadAllParkingRules();
 }, [parkingCategoryTypeOptions]);
 
 
@@ -3378,190 +3394,63 @@ useEffect(() => {
   }
 }, [allPriceBandsByCategory, parkingCategory]);
 
-// Charger les objectifs de taille depuis Supabase au chargement
-useEffect(() => {
-  async function loadSizePct() {
-    // Toujours avoir les 5 tailles standards
-    const STANDARD_SIZES = ["XS", "S", "M", "L", "XL"];
-    // Chercher si on a des tailles dans le stock
-    const tailles = velos
-      .flatMap(v => {
-        const sizeLetters = [];
-        for (let i = 1; i <= 4; i++) {
-          const sizeCol = `Taille cadre variant ${i}`;
-          const sizeValue = v[sizeCol];
-          if (sizeValue && sizeValue !== "N/A") {
-            const letter = mapFrameSizeToLetter(sizeValue);
-            if (letter) sizeLetters.push(letter);
-          }
-        }
-        return sizeLetters;
-      })
-      .filter(Boolean);
-    const uniqueTailles = [...new Set(tailles)].length > 0 
-      ? [...new Set(tailles)].sort((a, b) => {
-          return STANDARD_SIZES.indexOf(a) - STANDARD_SIZES.indexOf(b);
-        })
-      : STANDARD_SIZES;
-    // Lire depuis la table pv_size_targets
-    const { data, error } = await supabase
-      .from("pv_size_targets")
-      .select("size, target_pct");
-    if (!error && data && data.length > 0) {
-      const sizePct = {};
-      data.forEach(row => {
-        sizePct[row.size] = (row.target_pct ?? 0) / 100;
-      });
-      // S'assurer que toutes les tailles sont présentes
-      uniqueTailles.forEach(taille => {
-        if (!(taille in sizePct)) {
-          sizePct[taille] = 1 / uniqueTailles.length;
-        }
-      });
-      setParkingRules(prev => ({ ...prev, sizePct }));
-    } else {
-      // Si pas de données, initialiser par défaut
-      const defaultPct = 1 / uniqueTailles.length;
-      const sizePct = {};
-      uniqueTailles.forEach(taille => {
-        sizePct[taille] = defaultPct;
-      });
-      setParkingRules(prev => ({ ...prev, sizePct }));
-    }
-  }
-  loadSizePct();
-}, [velos]);
-
 // Mapping des tailles numériques ou texte vers lettres standardisées (XS, S, M, L, XL)
 const mapFrameSizeToLetter = (sizeValue) => {
   if (!sizeValue) return null;
-  
+
   // Si c'est du texte, mapper XXS/XXL
   const str = String(sizeValue).trim().toUpperCase();
   if (str === "XXS") return "XS";
   if (str === "XXL") return "XL";
   if (["XS", "S", "M", "L", "XL"].includes(str)) return str;
-  
+
   // Si c'est numérique
   const size = Number(sizeValue);
   if (isNaN(size)) return null;
-  
+
   if (size <= 48) return "XS";
   if (size <= 52) return "S";
   if (size <= 56) return "M";
   if (size <= 60) return "L";
   return "XL";
 };
-const parkingScopeId = (cat, type) => `${cat || "ALL"}__${type || "ALL"}`;
 
-// Charge les réglages depuis pv_settings pour le scope courant
-useEffect(() => {
-  const loadParkingSettings = async () => {
-    // 1. Charger les paramètres GLOBAUX (category_pct, size_pct, objective_total)
-    const { data: globalData } = await supabase
-      .from("pv_settings")
-      .select("id, objective_total, category_pct, size_pct")
-      .eq("id", "global")
-      .maybeSingle();
-
-    if (globalData) {
-      setParkingRules((p) => ({
-        ...p,
-        objectiveTotal: globalData.objective_total ?? p.objectiveTotal,
-        categoryPct: globalData.category_pct ?? p.categoryPct,
-        // Ne charger size_pct que s'il n'est pas vide dans la DB ET qu'on n'a pas déjà des tailles
-        sizePct: (globalData.size_pct && Object.keys(globalData.size_pct).length > 0) 
-          ? globalData.size_pct 
-          : p.sizePct,
-      }));
-    }
-
-    // 2. Charger les paramètres SCOPÉS par catégorie (price_pct, cat_mar_pct)
-    const scope = parkingScopeId(parkingCategory, parkingType);
-    const { data: scopedData, error } = await supabase
-      .from("pv_settings")
-      .select("id, price_pct, cat_mar_pct")
-      .eq("id", scope)
-      .maybeSingle();
-
-    if (!error && scopedData) {
-      setParkingRules((p) => ({
-        ...p,
-        pricePct: scopedData.price_pct ?? p.pricePct,
-      }));
-      setParkingTierPct(scopedData.cat_mar_pct ?? parkingTierPct);
-    }
-  };
-
-  loadParkingSettings();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-}, [parkingCategory, parkingType]);
-
-// Persiste les réglages parking dans pv_settings
+// Persiste les réglages parking dans la table unifiée pv_parking_rules
 const saveParkingSettings = useCallback(
   async (updates) => {
     try {
-      // Sauvegarder les catégories
-      if (updates.categoryPct) {
-        const rows = Object.entries(updates.categoryPct).map(([category, pct]) => ({
-          category,
-          target_pct: Math.round(pct * 100), // Convertir 0.4 → 40
-          updated_at: new Date().toISOString()
-        }));
-        
-        const { error } = await supabase
-          .from("pv_category_targets")
-          .upsert(rows, { onConflict: "category" });
-        
-        if (error) console.error("❌ Erreur catégories:", error);
-        else console.log("✅ Catégories sauvegardées:", rows);
-      }
-      
-      // Sauvegarder les tailles
-      if (updates.sizePct) {
-        const rows = Object.entries(updates.sizePct).map(([size, pct]) => ({
-          size,
-          target_pct: Math.round(pct * 100),
-          updated_at: new Date().toISOString()
-        }));
-        
-        const { error } = await supabase
-          .from("pv_size_targets")
-          .upsert(rows, { onConflict: "size" });
-        
-        if (error) console.error("❌ Erreur tailles:", error);
-        else console.log("✅ Tailles sauvegardées:", rows);
-      }
-      
-      // Objectif total (table simple avec une seule ligne)
-      if (updates.objectiveTotal !== undefined) {
-        const { error } = await supabase
-          .from("pv_settings")
-          .upsert({ 
-            id: "main", 
-            objective_total: Number(updates.objectiveTotal),
-            updated_at: new Date().toISOString()
-          }, { onConflict: "id" });
-        
-        if (error) console.error("❌ Erreur objectif:", error);
-        else console.log("✅ Objectif sauvegardé:", updates.objectiveTotal);
-      }
+      // Construire l'objet complet à sauvegarder
+      const rulesToSave = {
+        objectiveTotal: updates.objectiveTotal ?? parkingRules.objectiveTotal,
+        categoryPct: updates.categoryPct ?? parkingRules.categoryPct,
+        sizePct: updates.sizePct ?? parkingRules.sizePct,
+        tierPct: updates.tierPct ?? parkingTierPct,
+      };
+
+      await saveParkingRulesToSupabase(rulesToSave);
+      console.log("✅ Règles parking sauvegardées:", rulesToSave);
     } catch (err) {
-      console.error("❌ Exception sauvegarde:", err);
+      console.error("❌ Exception sauvegarde règles parking:", err);
     }
   },
-  []
+  [parkingRules, parkingTierPct]
 );
 
 const handleTierPctChange = useCallback(
   (tier, pct) => {
     setParkingTierPct((prev) => {
       const next = { ...prev, [tier]: pct };
-      saveParkingSettings({ tierPct: next });
+      // Sauvegarder immédiatement
+      saveParkingRulesToSupabase({
+        objectiveTotal: parkingRules.objectiveTotal,
+        categoryPct: parkingRules.categoryPct,
+        sizePct: parkingRules.sizePct,
+        tierPct: next,
+      }).catch(err => console.error("❌ Erreur sauvegarde tierPct:", err));
       return next;
     });
   },
-  [saveParkingSettings]
+  [parkingRules]
 );
 
 // Sauvegarder une tranche de prix dans pv_price_bands
@@ -9195,8 +9084,8 @@ const objTotalForCatMar = objectiveTotal * multCategory * multSize * multPrice;
 
 
 
-          // ✅ Récupère TOUS les vélos d'un tier pour la catégorie sélectionnée (avec filtres actifs)
-          const getVelosByTier = (tier) => {
+          // ✅ Récupère les vélos filtrés selon la sélection actuelle
+          const getFilteredVelos = () => {
             let filtered = rowsForPrices || [];
             if (parkingSelection.category) {
               filtered = filtered.filter(r => normStr(getCategoryFromRow(r)) === normStr(parkingSelection.category));
@@ -9204,6 +9093,8 @@ const objTotalForCatMar = objectiveTotal * multCategory * multSize * multPrice;
             if (parkingSelection.size) {
               const wanted = String(parkingSelection.size).trim().toUpperCase();
               filtered = filtered.filter(r => {
+                const sizeStocks = getSizeStocksFromRow(r);
+                if (sizeStocks) return Object.keys(sizeStocks).map(s => s.toUpperCase()).includes(wanted);
                 const buckets = (getVariantSizeBucketsFromRow(r) || []).map(x => String(x).trim().toUpperCase());
                 return buckets.includes(wanted);
               });
@@ -9214,15 +9105,51 @@ const objTotalForCatMar = objectiveTotal * multCategory * multSize * multPrice;
                 return normStr(b) === normStr(parkingSelection.priceBand);
               });
             }
-            return filtered.filter(r => {
+            return filtered;
+          };
+
+          // ✅ Récupère TOUS les vélos d'un tier pour la catégorie sélectionnée (avec filtres actifs)
+          const getVelosByTier = (tier) => {
+            return getFilteredVelos().filter(r => {
               const t = String(getCatMarFromRow(r) || "").trim().toUpperCase();
               return t === tier;
             });
           };
 
+          // ✅ Récupère les vélos NON CLASSÉS (pas de tier A/B/C/D)
+          const getVelosWithoutTier = () => {
+            return getFilteredVelos().filter(r => {
+              const t = String(getCatMarFromRow(r) || "").trim().toUpperCase();
+              return !["A", "B", "C", "D"].includes(t);
+            });
+          };
+
           // ✅ Récupère le nombre d'unités pour un tier donné (avec les filtres actifs)
+          // Si une taille est sélectionnée, ne compte que les unités de cette taille
           const getUnitsByTier = (tier) => {
-            return getVelosByTier(tier).reduce((sum, v) => sum + (getRowTotalStock(v) || 0), 0);
+            const velosInTier = getVelosByTier(tier);
+            if (parkingSelection.size) {
+              const wanted = String(parkingSelection.size).trim().toUpperCase();
+              let total = 0;
+              for (const v of velosInTier) {
+                const sizeStocks = getSizeStocksFromRow(v);
+                if (sizeStocks && sizeStocks[wanted]) {
+                  total += Number(sizeStocks[wanted] || 0);
+                } else if (sizeStocks) {
+                  // Chercher avec case insensitive
+                  const key = Object.keys(sizeStocks).find(k => k.toUpperCase() === wanted);
+                  if (key) total += Number(sizeStocks[key] || 0);
+                } else {
+                  // Fallback: split égal entre les tailles
+                  const buckets = getVariantSizeBucketsFromRow(v) || [];
+                  if (buckets.length > 0 && buckets.map(b => String(b).toUpperCase()).includes(wanted)) {
+                    total += (getRowTotalStock(v) || 0) / buckets.length;
+                  }
+                }
+              }
+              return Math.round(total);
+            }
+            return velosInTier.reduce((sum, v) => sum + (getRowTotalStock(v) || 0), 0);
           };
 
           // ✅ Récupère TOUTES les marques d'un tier pour la catégorie sélectionnée (sans filtre prix)
@@ -9322,59 +9249,58 @@ const objTotalForCatMar = objectiveTotal * multCategory * multSize * multPrice;
             };
 
           return (
-            <div className="parking-body">
-              {/* Barre filtres ultra-compacte - affichée SEULEMENT si un filtre est actif */}
-              {Object.values(parkingSelection).some(v => v) && (
-              <div style={{
-                gridColumn: "1 / -1",
-                padding: "4px 8px",
-                background: "#f0f9ff",
-                border: "1px solid #bfdbfe",
-                borderRadius: 6,
-                display: "flex",
-                gap: 6,
-                alignItems: "center",
-                flexWrap: "wrap",
-                fontSize: 11,
-                marginBottom: 16
-              }}>
-                {parkingSelection.category && (
-                  <span style={{ fontWeight: 700, padding: "2px 6px", background: "#3b82f6", color: "white", borderRadius: 3, fontSize: 10 }}>
-                    CAT: {parkingSelection.category}
-                  </span>
-                )}
-                {parkingSelection.size && (
-                  <span style={{ fontWeight: 700, padding: "2px 6px", background: "#8b5cf6", color: "white", borderRadius: 3, fontSize: 10 }}>
-                    TAILLE: {parkingSelection.size}
-                  </span>
-                )}
-                {parkingSelection.priceBand && (
-                  <span style={{ fontWeight: 700, padding: "2px 6px", background: "#ec4899", color: "white", borderRadius: 3, fontSize: 10 }}>
-                    PRIX: {parkingSelection.priceBand}
-                  </span>
-                )}
-                <div style={{ marginLeft: "auto", color: "#1f2937", fontWeight: 600, fontSize: 11 }}>
-                  {Math.round(filteredUnits)} / {Math.round(baseUnits)} u
-                </div>
+            <div className="parking-body" style={{ display: "flex", gap: 20, padding: 16 }}>
+              {/* COLONNE GAUCHE: Arbre de décision */}
+              <div style={{ flex: "1 1 55%", minWidth: 0 }}>
+                {/* Barre filtres ultra-compacte */}
                 {Object.values(parkingSelection).some(v => v) && (
+                <div style={{
+                  padding: "6px 10px",
+                  background: "linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 100%)",
+                  border: "1px solid #bfdbfe",
+                  borderRadius: 8,
+                  display: "flex",
+                  gap: 8,
+                  alignItems: "center",
+                  flexWrap: "wrap",
+                  fontSize: 11,
+                  marginBottom: 16
+                }}>
+                  {parkingSelection.category && (
+                    <span style={{ fontWeight: 700, padding: "3px 8px", background: "#3b82f6", color: "white", borderRadius: 4, fontSize: 10 }}>
+                      {parkingSelection.category}
+                    </span>
+                  )}
+                  {parkingSelection.size && (
+                    <span style={{ fontWeight: 700, padding: "3px 8px", background: "#8b5cf6", color: "white", borderRadius: 4, fontSize: 10 }}>
+                      Taille {parkingSelection.size}
+                    </span>
+                  )}
+                  {parkingSelection.priceBand && (
+                    <span style={{ fontWeight: 700, padding: "3px 8px", background: "#ec4899", color: "white", borderRadius: 4, fontSize: 10 }}>
+                      {parkingSelection.priceBand}
+                    </span>
+                  )}
+                  <div style={{ marginLeft: "auto", color: "#1f2937", fontWeight: 600, fontSize: 11 }}>
+                    {Math.round(filteredUnits)} / {Math.round(baseUnits)} u
+                  </div>
                   <button type="button" onClick={clearParkingFilters} style={{
-                    padding: "2px 4px",
+                    padding: "3px 6px",
                     fontSize: 10,
                     background: "#ef4444",
                     color: "white",
                     border: "none",
-                    borderRadius: 3,
+                    borderRadius: 4,
                     cursor: "pointer",
                     fontWeight: 700
                   }}>
-                    ✕
+                    ✕ Reset
                   </button>
+                </div>
                 )}
-              </div>
-              )}
 
-              {/* Arbre de décision interactif */}
-              <div style={{ gridColumn: "1 / -1" }}>
+                {/* Arbre de décision interactif */}
+                <div>
                 {/* ÉTAPE 1: CATÉGORIES */}
                 <div style={{ marginBottom: 24 }}>
                   <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 12, color: "#1f2937" }}>
@@ -9387,9 +9313,10 @@ const objTotalForCatMar = objectiveTotal * multCategory * multSize * multPrice;
                       return filtered.sort((a, b) => a.key.localeCompare(b.key));
                     })().map((r) => {
                       const active = parkingSelection.category && normStr(parkingSelection.category) === normStr(r.key);
-                      const isOverTarget = r.gapUnits > 0;
-                      const isUnderTarget = r.gapUnits < 0;
-                      const gapColor = isOverTarget ? "#ef4444" : isUnderTarget ? "#10b981" : "#6b7280";
+                      const isOk = Math.abs(r.gapUnits) <= 3;
+                      const isOverTarget = !isOk && r.gapUnits > 0;
+                      const isUnderTarget = !isOk && r.gapUnits < 0;
+                      const gapColor = isOk ? "#3b82f6" : isOverTarget ? "#ef4444" : isUnderTarget ? "#10b981" : "#6b7280";
 
                       // Formater le label: supprimer le type et ajouter un logo
                       const isElectric = r.key.includes("Électrique");
@@ -9405,7 +9332,7 @@ const objTotalForCatMar = objectiveTotal * multCategory * multSize * multPrice;
                             padding: 16,
                             borderRadius: 12,
                             border: active ? `3px solid ${gapColor}` : "2px solid #e5e7eb",
-                            background: active ? (isOverTarget ? "rgba(239, 68, 68, 0.1)" : isUnderTarget ? "rgba(16, 185, 129, 0.1)" : "#f3f4f6") : "#fff",
+                            background: active ? (isOk ? "rgba(59, 130, 246, 0.1)" : isOverTarget ? "rgba(239, 68, 68, 0.1)" : isUnderTarget ? "rgba(16, 185, 129, 0.1)" : "#f3f4f6") : "#fff",
                             cursor: "pointer",
                             transition: "all 0.2s",
                             boxShadow: active ? `0 0 0 3px ${gapColor}33` : "none"
@@ -9440,7 +9367,7 @@ const objTotalForCatMar = objectiveTotal * multCategory * multSize * multPrice;
                             textAlign: "center",
                             transform: isOverTarget ? "scale(1.05)" : "scale(1)"
                           }}>
-                            {isOverTarget ? `⚠️ SURSTOCK +${Math.round(r.gapUnits)} u` : isUnderTarget ? `${Math.round(Math.abs(r.gapUnits))} u manquants` : "✓ Équilibré"}
+                            {isOk ? "✓ OK" : isOverTarget ? `⚠️ SURSTOCK +${Math.round(r.gapUnits)} u` : isUnderTarget ? `${Math.round(Math.abs(r.gapUnits))} u manquants` : "✓ Équilibré"}
                           </div>
                         </div>
                       );
@@ -9464,9 +9391,10 @@ const objTotalForCatMar = objectiveTotal * multCategory * multSize * multPrice;
                         });
                       })().map((r) => {
                         const active = parkingSelection.size && normStr(parkingSelection.size) === normStr(r.key);
-                        const isOverTarget = r.gapUnits > 0;
-                        const isUnderTarget = r.gapUnits < 0;
-                        const gapColor = isOverTarget ? "#ef4444" : isUnderTarget ? "#10b981" : "#6b7280";
+                        const isOk = Math.abs(r.gapUnits) <= 3;
+                        const isOverTarget = !isOk && r.gapUnits > 0;
+                        const isUnderTarget = !isOk && r.gapUnits < 0;
+                        const gapColor = isOk ? "#3b82f6" : isOverTarget ? "#ef4444" : isUnderTarget ? "#10b981" : "#6b7280";
 
                         return (
                           <div
@@ -9476,7 +9404,7 @@ const objTotalForCatMar = objectiveTotal * multCategory * multSize * multPrice;
                               padding: 16,
                               borderRadius: 12,
                               border: active ? `3px solid ${gapColor}` : "2px solid #e5e7eb",
-                              background: active ? (isOverTarget ? "rgba(239, 68, 68, 0.1)" : isUnderTarget ? "rgba(16, 185, 129, 0.1)" : "#f3f4f6") : "#fff",
+                              background: active ? (isOk ? "rgba(59, 130, 246, 0.1)" : isOverTarget ? "rgba(239, 68, 68, 0.1)" : isUnderTarget ? "rgba(16, 185, 129, 0.1)" : "#f3f4f6") : "#fff",
                               cursor: "pointer",
                               transition: "all 0.2s",
                               boxShadow: active ? `0 0 0 3px ${gapColor}33` : "none"
@@ -9511,7 +9439,7 @@ const objTotalForCatMar = objectiveTotal * multCategory * multSize * multPrice;
                               textAlign: "center",
                               transform: isOverTarget ? "scale(1.05)" : "scale(1)"
                             }}>
-                              {isOverTarget ? `⚠️ SURSTOCK +${Math.round(r.gapUnits)} u` : isUnderTarget ? `${Math.round(Math.abs(r.gapUnits))} u` : "✓"}
+                              {isOk ? "✓ OK" : isOverTarget ? `⚠️ SURSTOCK +${Math.round(r.gapUnits)} u` : isUnderTarget ? `${Math.round(Math.abs(r.gapUnits))} u manquants` : "✓"}
                             </div>
                           </div>
                         );
@@ -9555,10 +9483,11 @@ const objTotalForCatMar = objectiveTotal * multCategory * multSize * multPrice;
                         const targetUnits = Math.round(objectiveTotal * categoryPct * sizePct * pricePct);
                         const actualUnits = r.actualUnits;
                         const actualPct = actualUnits / (objectiveTotal * categoryPct * sizePct || 1);
-                        const isOverTarget = actualUnits > targetUnits;
-                        const isUnderTarget = actualUnits < targetUnits;
                         const gapUnits = actualUnits - targetUnits;
-                        const gapColor = isOverTarget ? "#ef4444" : isUnderTarget ? "#10b981" : "#6b7280";
+                        const isOk = Math.abs(gapUnits) <= 3;
+                        const isOverTarget = !isOk && gapUnits > 0;
+                        const isUnderTarget = !isOk && gapUnits < 0;
+                        const gapColor = isOk ? "#3b82f6" : isOverTarget ? "#ef4444" : isUnderTarget ? "#10b981" : "#6b7280";
 
                         // Formater le label pour les tranches de prix
                         const formatLabel = (key) => {
@@ -9579,7 +9508,7 @@ const objTotalForCatMar = objectiveTotal * multCategory * multSize * multPrice;
                               padding: 16,
                               borderRadius: 12,
                               border: active ? `3px solid ${gapColor}` : "2px solid #e5e7eb",
-                              background: active ? (isOverTarget ? "rgba(239, 68, 68, 0.1)" : isUnderTarget ? "rgba(16, 185, 129, 0.1)" : "#f3f4f6") : "#fff",
+                              background: active ? (isOk ? "rgba(59, 130, 246, 0.1)" : isOverTarget ? "rgba(239, 68, 68, 0.1)" : isUnderTarget ? "rgba(16, 185, 129, 0.1)" : "#f3f4f6") : "#fff",
                               cursor: "pointer",
                               transition: "all 0.2s",
                               boxShadow: active ? `0 0 0 3px ${gapColor}33` : "none"
@@ -9614,7 +9543,7 @@ const objTotalForCatMar = objectiveTotal * multCategory * multSize * multPrice;
                               textAlign: "center",
                               transform: isOverTarget ? "scale(1.05)" : "scale(1)"
                             }}>
-                              {isOverTarget ? `⚠️ SURSTOCK +${Math.round(gapUnits)} u` : isUnderTarget ? `${Math.round(Math.abs(gapUnits))} u` : "✓"}
+                              {isOk ? "✓ OK" : isOverTarget ? `⚠️ SURSTOCK +${Math.round(gapUnits)} u` : isUnderTarget ? `${Math.round(Math.abs(gapUnits))} u manquants` : "✓"}
                             </div>
                           </div>
                         );
@@ -9622,192 +9551,287 @@ const objTotalForCatMar = objectiveTotal * multCategory * multSize * multPrice;
                     </div>
                   </div>
                 )}
+                </div>
               </div>
 
-            {/* ✅ ÉTAPE 4: MARQUES (CAT_MAR) */}
-            {parkingSelection.priceBand && (
-              <div style={{ marginBottom: 24 }}>
-                <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 12, color: "#1f2937" }}>
-                  4️⃣ Marques par CAT_MAR
-                </div>
-                  {/* Diagnostic: vélos par tier */}
-                  {(["A", "B", "C", "D"].every(tier => (getVelosByTier(tier) || []).length === 0)) && (
-                    <div style={{ color: "#b91c1c", fontWeight: 700, marginBottom: 12 }}>
-                      ⚠️ Aucun vélo trouvé dans les tiers. Vérifiez l'index des marques classées et la source des vélos.
-                    </div>
-                  )}
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: 12 }}>
-                  {[
-                    ["A", getBrandsByTier("A")],
-                    ["B", getBrandsByTier("B")],
-                    ["C", getBrandsByTier("C")],
-                    ["D", getBrandsByTier("D")],
-                  ].map(([tierLabel, list]) => {
-                    const velosInTier = getVelosByTier(tierLabel);
-                    const tierPct = parkingTierPct[tierLabel] || 0;
-                    const actualUnits = getUnitsByTier(tierLabel);
-                    const objTotalForTier = objTotalForCatMar || 0;
-                    const targetUnits = Math.round((tierPct || 0) * objTotalForTier);
-                    const gapUnits = actualUnits - targetUnits;
-                    const isOverTarget = gapUnits > 0;
-                    const isUnderTarget = gapUnits < 0;
-                    const gapColor = isOverTarget ? "#ef4444" : isUnderTarget ? "#10b981" : "#6b7280";
-                      // Diagnostic: objectif total
-                      if (objTotalForCatMar === 0 && velosInTier.length > 0) {
-                        console.warn(`⚠️ Objectif total (dn) est à 0 alors que des vélos existent dans le tier ${tierLabel}`);
-                      }
+              {/* COLONNE DROITE: Vélos par Tier */}
+              <div style={{
+                flex: "1 1 45%",
+                minWidth: 0,
+                background: "linear-gradient(180deg, #fafafa 0%, #f5f5f5 100%)",
+                borderRadius: 12,
+                padding: 16,
+                border: "1px solid #e5e7eb"
+              }}>
+                {!parkingSelection.category ? (
+                  <div style={{
+                    display: "flex",
+                    flexDirection: "column",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    height: "100%",
+                    minHeight: 300,
+                    color: "#9ca3af",
+                    textAlign: "center",
+                    padding: 24
+                  }}>
+                    <div style={{ fontSize: 48, marginBottom: 12 }}>📦</div>
+                    <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>Sélectionnez une catégorie</div>
+                    <div style={{ fontSize: 12 }}>Les vélos filtrés par tier apparaîtront ici</div>
+                  </div>
+                ) : (() => {
+                  // Calcul de l'objectif de base selon les étapes sélectionnées
+                  const categoryPct = parkingRules.categoryPct?.[parkingSelection.category] || 0;
+                  const sizePct = parkingSelection.size ? (parkingRules.sizePct?.[parkingSelection.size] || 0) : 1;
+                  const pricePct = parkingSelection.priceBand ? (() => {
+                    const bandObj = bandsToUse.find(b => normStr(b.label) === normStr(parkingSelection.priceBand));
+                    const raw = bandObj?.share_pct || 0;
+                    return raw > 1 ? raw / 100 : raw;
+                  })() : 1;
+                  const baseObjective = Math.round(objectiveTotal * categoryPct * sizePct * pricePct);
+                  const totalUnitsInTiers = ["A", "B", "C", "D"].reduce((sum, t) => sum + getUnitsByTier(t), 0);
+                  const totalRefsInTiers = ["A", "B", "C", "D"].reduce((sum, t) => sum + getVelosByTier(t).length, 0);
 
-                    return (
-                      <div
-                        key={tierLabel}
-                        className="tier-card-hover"
-                        style={{
-                          padding: 16,
-                          borderRadius: 12,
-                          border: "2px solid #e5e7eb",
-                          background: "#fff",
-                          cursor: "default",
-                          transition: "all 0.2s",
-                          position: "relative"
-                        }}
-                      >
-                        <div style={{ fontWeight: 700, fontSize: 15, color: "#1f2937", marginBottom: 10 }}>
-                          Tier {tierLabel}
-                        </div>
-                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 10 }}>
-                          <div style={{ padding: "8px", background: "#f3f4f6", borderRadius: 6 }}>
-                            <div style={{ fontSize: 10, color: "#666", marginBottom: 2 }}>Actuel</div>
-                            <div style={{ fontSize: 16, fontWeight: 800, color: "#1f2937" }}>
-                              {actualUnits}
-                            </div>
-                            <div style={{ fontSize: 10, color: "#999" }}>vélos</div>
-                          </div>
-                          <div style={{ padding: "8px", background: "#f3f4f6", borderRadius: 6 }}>
-                            <div style={{ fontSize: 10, color: "#666", marginBottom: 2 }}>Objectif</div>
-                            <div style={{ fontSize: 16, fontWeight: 800, color: "#1f2937" }}>
-                              {targetUnits}
-                            </div>
-                            <div style={{ fontSize: 10, color: "#999" }}>({Math.round(tierPct * 100)}%)</div>
+                  return (
+                    <>
+                      {/* Header avec stats */}
+                      <div style={{
+                        display: "flex",
+                        justifyContent: "space-between",
+                        alignItems: "center",
+                        marginBottom: 12,
+                        paddingBottom: 10,
+                        borderBottom: "2px solid #e5e7eb"
+                      }}>
+                        <div>
+                          <div style={{ fontWeight: 800, fontSize: 15, color: "#1f2937" }}>Vélos par Tier</div>
+                          <div style={{ fontSize: 11, color: "#6b7280", marginTop: 2 }}>
+                            {totalRefsInTiers} réf. · {totalUnitsInTiers} unités
                           </div>
                         </div>
-                        <div style={{
-                          padding: isOverTarget ? "10px 12px" : "8px 12px",
-                          borderRadius: 6,
-                          background: gapColor,
-                          color: "white",
-                          fontWeight: 700,
-                          fontSize: isOverTarget ? 14 : 13,
-                          textAlign: "center",
-                          transform: isOverTarget ? "scale(1.05)" : "scale(1)",
-                          marginBottom: 10
-                        }}>
-                          {isOverTarget ? `⚠️ SURSTOCK +${Math.round(gapUnits)} u` : isUnderTarget ? `${Math.round(Math.abs(gapUnits))} u manquants` : "✓ Équilibré"}
-                        </div>
-
-                        <div style={{ marginTop: 8, display: "flex", flexWrap: "wrap", gap: 4 }}>
-                          {list.map((b) => (
-                            <span
-                              key={b}
-                              style={{
-                                display: "inline-flex",
-                                alignItems: "center",
-                                padding: "4px 6px",
-                                borderRadius: 4,
-                                border: "1px solid rgba(0,0,0,0.12)",
-                                background: "#fafafa",
-                                fontWeight: 700,
-                                fontSize: 11,
-                                maxWidth: "100%",
-                                overflow: "hidden",
-                                textOverflow: "ellipsis",
-                                whiteSpace: "nowrap",
-                              }}
-                              title={b}
-                            >
-                              {b}
-                            </span>
-                          ))}
-                          {list.length === 0 && (
-                            <div style={{ fontSize: 11, color: "#999", fontStyle: "italic" }}>
-                              Aucune marque
-                            </div>
-                          )}
-                        </div>
-
-                        {/* Tooltip au survol avec liste des vélos */}
-                        {velosInTier.length > 0 && (
-                          <div className="tier-velos-tooltip">
-                            <div style={{ fontWeight: 700, marginBottom: 8, borderBottom: "1px solid #e5e7eb", paddingBottom: 6 }}>
-                              Vélos Tier {tierLabel} ({velosInTier.length})
-                            </div>
-                            <div style={{ maxHeight: 400, overflowY: "auto" }}>
-                              {velosInTier.map((v, i) => (
-                                <div
-                                  key={i}
-                                  style={{
-                                    display: "flex",
-                                    gap: 10,
-                                    padding: 8,
-                                    borderBottom: i < velosInTier.length - 1 ? "1px solid #f3f4f6" : "none",
-                                    alignItems: "center",
-                                  }}
-                                >
-                                  {v.photo && (
-                                    <img
-                                      src={v.photo}
-                                      alt={v.model}
-                                      style={{
-                                        width: 50,
-                                        height: 50,
-                                        objectFit: "cover",
-                                        borderRadius: 6,
-                                        flexShrink: 0,
-                                      }}
-                                    />
-                                  )}
-                                  <div style={{ flex: 1, minWidth: 0 }}>
-                                    <div style={{ fontWeight: 600, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                                      {v.brand} {v.model}
-                                    </div>
-                                    <div style={{ fontSize: 11, color: "#6b7280" }}>
-                                      {v.year} · {v.price}€
-                                    </div>
-                                  </div>
-                                </div>
-                              ))}
-                            </div>
+                        {baseObjective > 0 && (
+                          <div style={{
+                            background: "#dbeafe",
+                            padding: "4px 10px",
+                            borderRadius: 6,
+                            fontSize: 11,
+                            fontWeight: 600,
+                            color: "#1d4ed8"
+                          }}>
+                            Obj: {baseObjective}u
                           </div>
                         )}
                       </div>
-                    );
-                  })}
-                </div>
 
-                {/* Marques non classées dans un tier */}
-                {(() => {
-                  // Récupérer toutes les marques du stock filtré (parkingSelection)
-                  // Utilise la même source que pour l'affichage des cartes de tiers
-                  const allStockBrands = (priceRows || []).map(v => v.brand).filter(Boolean);
-                  // Récupérer toutes les marques classées dans un tier
-                  const tierBrands = ["A", "B", "C", "D"].flatMap(tier => getBrandsByTier(tier));
-                  // Marques non classées
-                  const unclassifiedBrands = [...new Set(allStockBrands.filter(b => !tierBrands.includes(b)))].sort((a, b) => a.localeCompare(b, "fr"));
-                  if (unclassifiedBrands.length === 0) return null;
-                  return (
-                    <div style={{ marginTop: 32, padding: 16, background: "#fef9c3", borderRadius: 10, border: "1px solid #fde68a" }}>
-                      <div style={{ fontWeight: 700, fontSize: 15, color: "#b45309", marginBottom: 8 }}>
-                        Marques à classer (non assignées à un tier)
+                      {/* Grille des 4 tiers */}
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                        {["A", "B", "C", "D"].map((tierLabel) => {
+                          const velosInTier = getVelosByTier(tierLabel);
+                          const tierColor = tierLabel === "A" ? "#16a34a" : tierLabel === "B" ? "#2563eb" : tierLabel === "C" ? "#d97706" : "#dc2626";
+                          const tierBg = tierLabel === "A" ? "#f0fdf4" : tierLabel === "B" ? "#eff6ff" : tierLabel === "C" ? "#fffbeb" : "#fef2f2";
+                          const actualUnits = getUnitsByTier(tierLabel);
+                          const tierPctValue = parkingTierPct[tierLabel] || 0;
+                          const targetUnits = Math.round(baseObjective * tierPctValue);
+                          const gap = actualUnits - targetUnits;
+                          const isOver = gap > 0;
+                          const isUnder = gap < 0;
+
+                          return (
+                            <div
+                              key={tierLabel}
+                              style={{
+                                background: tierBg,
+                                borderRadius: 10,
+                                padding: 10,
+                                border: `1.5px solid ${tierColor}30`,
+                                maxHeight: 280,
+                                display: "flex",
+                                flexDirection: "column"
+                              }}
+                            >
+                              {/* Header du tier */}
+                              <div style={{
+                                display: "flex",
+                                justifyContent: "space-between",
+                                alignItems: "center",
+                                marginBottom: 8,
+                                paddingBottom: 6,
+                                borderBottom: `2px solid ${tierColor}`
+                              }}>
+                                <div style={{ fontWeight: 800, fontSize: 13, color: tierColor }}>
+                                  {tierLabel} <span style={{ fontWeight: 500, fontSize: 10, opacity: 0.8 }}>({Math.round(tierPctValue * 100)}%)</span>
+                                </div>
+                                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                                  <span style={{ fontSize: 12, fontWeight: 700, color: "#374151" }}>{actualUnits}</span>
+                                  <span style={{ fontSize: 10, color: "#6b7280" }}>/ {targetUnits}</span>
+                                  {targetUnits > 0 && (
+                                    <span style={{
+                                      padding: "1px 4px",
+                                      borderRadius: 3,
+                                      fontWeight: 700,
+                                      fontSize: 9,
+                                      background: isOver ? "#dc2626" : isUnder ? "#10b981" : "#6b7280",
+                                      color: "white"
+                                    }}>
+                                      {isOver ? `+${gap}` : isUnder ? `${gap}` : "✓"}
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+
+                              {/* Liste des vélos */}
+                              <div style={{ flex: 1, overflowY: "auto", minHeight: 0 }}>
+                                {velosInTier.length === 0 ? (
+                                  <div style={{ color: "#9ca3af", fontSize: 11, fontStyle: "italic", padding: 8, textAlign: "center" }}>Aucun vélo</div>
+                                ) : (
+                                  velosInTier.map((v, idx) => {
+                                    const marque = v?.["Marque"] ?? "";
+                                    const modele = v?.["Modèle"] ?? "";
+                                    const annee = v?.["Année"] ?? "";
+                                    const prix = getPriceFromRow(v);
+                                    const prixStr = Number.isFinite(prix) ? `${Math.round(prix)}€` : "";
+
+                                    // Calcul du stock selon la taille sélectionnée
+                                    let stock = 0;
+                                    if (parkingSelection.size) {
+                                      const wanted = String(parkingSelection.size).trim().toUpperCase();
+                                      const sizeStocks = getSizeStocksFromRow(v);
+                                      if (sizeStocks) {
+                                        const key = Object.keys(sizeStocks).find(k => k.toUpperCase() === wanted);
+                                        stock = key ? Number(sizeStocks[key] || 0) : 0;
+                                      } else {
+                                        const buckets = getVariantSizeBucketsFromRow(v) || [];
+                                        if (buckets.length > 0 && buckets.map(b => String(b).toUpperCase()).includes(wanted)) {
+                                          stock = Math.round((getRowTotalStock(v) || 0) / buckets.length);
+                                        }
+                                      }
+                                    } else {
+                                      stock = getRowTotalStock(v);
+                                    }
+                                    const isLot = stock > 1;
+
+                                    return (
+                                      <div key={idx} style={{
+                                        padding: "5px 6px",
+                                        borderBottom: idx < velosInTier.length - 1 ? "1px solid rgba(0,0,0,0.06)" : "none",
+                                        fontSize: 11,
+                                        background: idx % 2 === 0 ? "transparent" : "rgba(0,0,0,0.02)"
+                                      }}>
+                                        <div style={{ fontWeight: 600, color: "#374151", display: "flex", alignItems: "center", gap: 4 }}>
+                                          <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                            {marque} {modele}
+                                          </span>
+                                          {isLot && (
+                                            <span style={{
+                                              background: "#8b5cf6",
+                                              color: "white",
+                                              fontSize: 8,
+                                              fontWeight: 700,
+                                              padding: "1px 4px",
+                                              borderRadius: 3,
+                                              flexShrink: 0
+                                            }}>
+                                              x{stock}
+                                            </span>
+                                          )}
+                                        </div>
+                                        <div style={{ color: "#9ca3af", fontSize: 10 }}>
+                                          {[annee, prixStr].filter(Boolean).join(" · ")}
+                                        </div>
+                                      </div>
+                                    );
+                                  })
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })}
                       </div>
-                      <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                        {unclassifiedBrands.map(b => (
-                          <span key={b} style={{ padding: "4px 8px", background: "#fef3c7", borderRadius: 6, fontWeight: 600, fontSize: 13, border: "1px solid #fde68a" }}>{b}</span>
-                        ))}
-                      </div>
-                    </div>
+
+                      {/* Section vélos NON CLASSÉS */}
+                      {(() => {
+                        const velosNonClasses = getVelosWithoutTier();
+                        if (velosNonClasses.length === 0) return null;
+
+                        // Grouper par marque pour identifier les problèmes
+                        const byBrand = {};
+                        velosNonClasses.forEach(v => {
+                          const marque = String(v?.["Marque"] ?? "").trim() || "(sans marque)";
+                          if (!byBrand[marque]) byBrand[marque] = [];
+                          byBrand[marque].push(v);
+                        });
+
+                        return (
+                          <div style={{
+                            marginTop: 12,
+                            background: "#fef2f2",
+                            borderRadius: 10,
+                            padding: 10,
+                            border: "1.5px solid #fecaca"
+                          }}>
+                            <div style={{
+                              display: "flex",
+                              justifyContent: "space-between",
+                              alignItems: "center",
+                              marginBottom: 8,
+                              paddingBottom: 6,
+                              borderBottom: "2px solid #ef4444"
+                            }}>
+                              <div style={{ fontWeight: 800, fontSize: 13, color: "#dc2626" }}>
+                                ⚠️ Non classés <span style={{ fontWeight: 500, fontSize: 10, opacity: 0.8 }}>(marque non trouvée dans brand_tiers)</span>
+                              </div>
+                              <div style={{ fontSize: 12, fontWeight: 700, color: "#dc2626" }}>
+                                {velosNonClasses.length} réf.
+                              </div>
+                            </div>
+
+                            {/* Liste groupée par marque */}
+                            <div style={{ maxHeight: 250, overflowY: "auto" }}>
+                              {Object.entries(byBrand).sort((a, b) => b[1].length - a[1].length).map(([marque, velos], idx) => {
+                                // Récupérer les infos du premier vélo pour debug
+                                const firstVelo = velos[0];
+                                const cat = firstVelo?.["Catégorie"] ?? firstVelo?.["Categorie"] ?? "";
+                                const type = firstVelo?.["Type de vélo"] ?? firstVelo?.["Type de velo"] ?? "";
+
+                                return (
+                                  <div key={marque} style={{
+                                    padding: "6px 8px",
+                                    borderBottom: idx < Object.keys(byBrand).length - 1 ? "1px solid rgba(0,0,0,0.06)" : "none",
+                                    background: idx % 2 === 0 ? "transparent" : "rgba(0,0,0,0.02)"
+                                  }}>
+                                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                                      <span style={{ fontWeight: 700, fontSize: 12, color: "#b91c1c" }}>
+                                        {marque}
+                                      </span>
+                                      <span style={{
+                                        background: "#dc2626",
+                                        color: "white",
+                                        fontSize: 9,
+                                        fontWeight: 700,
+                                        padding: "1px 5px",
+                                        borderRadius: 3
+                                      }}>
+                                        {velos.length} réf.
+                                      </span>
+                                    </div>
+                                    <div style={{ fontSize: 9, color: "#9ca3af", marginTop: 2, fontFamily: "monospace" }}>
+                                      Clé: {cat} | {type} | {marque}
+                                    </div>
+                                    <div style={{ fontSize: 10, color: "#6b7280", marginTop: 2 }}>
+                                      {velos.slice(0, 3).map(v => v?.["Modèle"] || "?").join(", ")}
+                                      {velos.length > 3 && ` +${velos.length - 3} autres`}
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        );
+                      })()}
+                    </>
                   );
                 })()}
               </div>
-            )}
             </div>
           );
         })()}
@@ -9826,27 +9850,6 @@ const objTotalForCatMar = objectiveTotal * multCategory * multSize * multPrice;
               gap: 14,
             }}
           >
-            {/* SECTION SÉLECTION CATÉGORIE/TYPE */}
-            <div className="parking-card" style={{background: "#f0fdf4", borderLeft: "4px solid #22c55e"}}>
-              <div className="parking-card-title">Filtre par catégorie et type</div>
-              
-              <div className="parking-form-row">
-                <label>Catégorie de vélo</label>
-                <select
-                  value={parkingCategory || ""}
-                  onChange={(e) => setParkingCategory(e.target.value || null)}
-                >
-                  {parkingCategories.map((cat) => (
-                    <option key={cat} value={cat}>{cat}</option>
-                  ))}
-                </select>
-              </div>
-
-              <div style={{marginTop: 10, fontSize: 12, color: "#666", fontStyle: "italic"}}>
-                Cette sélection s'applique à tous les objectifs ci-dessous
-              </div>
-            </div>
-
             {/* GAUCHE : RÈGLES */}
             <div
               style={{
@@ -9948,7 +9951,6 @@ const objTotalForCatMar = objectiveTotal * multCategory * multSize * multPrice;
                     onChange={e => setParkingCategory(e.target.value)}
                     style={{ width: "100%", padding: "8px 12px", borderRadius: 8, fontSize: 15, marginBottom: 8 }}
                   >
-                    <option value="">Sélectionner…</option>
                     {parkingCategories.map(opt => (
                       <option key={opt} value={opt}>{opt}</option>
                     ))}
@@ -10746,9 +10748,36 @@ const objTotalForCatMar = objectiveTotal * multCategory * multSize * multPrice;
           </label>
         </div>
 
+      </div>
+
+      {/* Étape 2 - Source de la promo */}
+      <div style={{ marginTop: 12, padding: 12, border: "1px solid #e5e7eb", borderRadius: 12 }}>
+        <div style={{ fontWeight: 800, marginBottom: 8 }}>2) Choisir la source du Montant promo</div>
+
+        <div style={{ display: "grid", gap: 8 }}>
+          <label style={{ display: "flex", gap: 10, alignItems: "center" }}>
+            <input
+              type="radio"
+              name="exportPromoSource"
+              checked={exportPromoSource === "configured"}
+              onChange={() => setExportPromoSource("configured")}
+            />
+            <span><b>Promo configurée</b> (mint_promo_amount de mode_pricing - ce que tu paramètres)</span>
+          </label>
+
+          <label style={{ display: "flex", gap: 10, alignItems: "center" }}>
+            <input
+              type="radio"
+              name="exportPromoSource"
+              checked={exportPromoSource === "actual"}
+              onChange={() => setExportPromoSource("actual")}
+            />
+            <span><b>Promo actuelle</b> (Montant promo de velosmint - la promo en cours sur le site)</span>
+          </label>
+        </div>
+
         <div style={{ marginTop: 10, fontSize: 12, color: "#6b7280" }}>
-          Pour l’instant, l’export contient : <b>Prix réduit</b> (velosmint) + <b>mint_promo_amount</b> (mode_pricing).
-          L’étape “choix des champs” viendra ensuite.
+          L'export contient : <b>Prix réduit</b> + <b>{exportPromoSource === "configured" ? "mint_promo_amount (configurée)" : "Montant promo (actuelle)"}</b>
         </div>
       </div>
 
