@@ -3253,16 +3253,21 @@ useEffect(() => {
 // Synchroniser tous les taux dans parkingRules dès que la catégorie ou les tranches changent
 const [rulesReady, setRulesReady] = useState(false);
 useEffect(() => {
-  // On ne bloque que si aucune catégorie ou aucune tranche n'est dispo ou en cours de chargement
-  if (!parkingCategory || priceBandsLoading) {
+  // On bloque seulement pendant le chargement initial des tranches de prix
+  if (priceBandsLoading) {
     setRulesReady(false);
     return;
   }
+
+  // Si pas de catégorie sélectionnée, on est quand même prêt (juste pas de données spécifiques)
+  if (!parkingCategory) {
+    setRulesReady(true);
+    return;
+  }
+
   const bands = allPriceBandsByCategory[parkingCategory] || [];
-  if (!parkingRules.categoryPct[parkingCategory] || bands.length === 0) {
-    setRulesReady(false);
-    return;
-  }
+
+  // Même si les bandes sont vides, on est prêt - l'utilisateur peut configurer plus tard
   const pricePct = {};
   bands.forEach(band => {
     pricePct[band.label] = band.share_pct || 0;
